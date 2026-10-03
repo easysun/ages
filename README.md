@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, and direct-upload APIs are implemented. The Worker has D1 identity/assets, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Asset Library, timelines, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct-upload, and owner-scoped Asset Library APIs are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timelines, reference-aware trash/restore, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -82,6 +82,25 @@ Local tests use real simulated D1/R2 and synthetic signing credentials. Wrangler
 
 References: [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), [conditional PutObject support](https://developers.cloudflare.com/r2/api/s3/api/), and [bucket CORS](https://developers.cloudflare.com/r2/buckets/cors/).
 
+## Asset Library
+
+All Library endpoints require a valid session cookie. They return `private, no-store` responses with `nosniff`; visibility never permits a foreign user to access these owner endpoints.
+
+| Route | Contract |
+| --- | --- |
+| `GET /api/assets` | Ready assets, ordered by `created_at DESC, id DESC`, with `tags` and `next_cursor` |
+| `GET /api/assets/:id` | Owned asset metadata and tags; pending/failed uploads remain inspectable; deleted/purged assets return 404 |
+| `GET /api/assets/:id/media` | Stream the validated ready asset from private R2; missing/changed objects return 404 |
+| `HEAD /api/assets/:id/media` | Validated full media metadata without reading a body; ignores Range |
+| `PUT /api/assets/:id/tags` | Replace the complete tag set atomically using JSON `{ "tags": ["Travel"] }`; exact same-origin policy applies |
+
+Listing accepts only `limit` (default 30, maximum 100), an exact case-sensitive `tag`, and the opaque `cursor` returned by the previous page. Keep the same tag filter when continuing; cursors from another owner or filter return standardized 400. New uploads ahead of the cursor do not shift older pages. This is keyset pagination, not a frozen snapshot of later completions or tag edits.
+
+Tags preserve their exact spelling and spaces. Supply at most 20 distinct nonblank strings, each at most 64 UTF-16 code units, without ASCII control characters. Duplicate tags, unknown body fields, invalid strings, and malformed JSON return standardized 400 without altering saved tags. An empty array clears the set. Tag ownership is also enforced by database triggers in additive migration `0004_asset_tags.sql`.
+
+Asset JSON excludes owner IDs, R2 keys, ETags, and upload expiry. Media responses use authoritative MIME/size and conditional ETag reads, checking R2 version consistency between metadata and streaming. Uploader cache headers are never copied. Single byte ranges return 206 with Content-Range; unsupported or unsatisfiable ranges return 416 with `bytes */<size>`. Storage validators are not exposed, so If-Range requests receive the complete representation.
+
+No asset delete/trash/restore endpoint is enabled. Those controls must wait for actual timeline item and cover references with tested deletion guards; tag removal never removes an asset or R2 object. The responsive Library UI and browser smoke tests remain unfinished.
 ## Timeline domain
 
 All `/api/timelines` routes require authentication and scope reads to the owner, including timelines marked public or unlisted. Public viewing is a later slice. Mutations require the exact same-origin policy and strict JSON bodies.

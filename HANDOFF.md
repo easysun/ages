@@ -2,6 +2,14 @@
 
 ## Goal and scope
 
+## Root integration checkpoint — October 4, 2026
+
+- PR #5 passed independent Library review (59 tests rerun) and latest GitHub CI, then merged into main as `88919b5`. Root main was fast-forwarded without changing the original checkout.
+- Root integrated Timeline commit `cf7ab6a` onto updated main as `80c1539` on `feat/timeline-api`, preserving both route sets and both README/HANDOFF sections. Independent Timeline review reran all 152 tests and found no blockers. Known limits remain the 1,000-ID reorder bound and a permissive list cursor contract; SQL ownership still applies.
+- Fresh combined `npm run check` passed lint, types, 211 tests in 11 files, and Worker dry-run build. Local migration 0005 applied after 0004; rerun reported no migrations to apply. No deployment occurred. Next: publish the focused Timeline API PR, verify CI, merge, then integrate the remaining product slices.
+- Isolated writers now own React Library at `/Users/bay/.codex/worktrees/react-library/ages`, public Timeline SSR at `/Users/bay/.codex/worktrees/public-timeline/ages`, and recoverable Asset trash/restore at `/Users/bay/.codex/worktrees/asset-trash/ages`. Their commits and acceptance gates remain pending. Keep the three earlier checkpoints below intact.
+- The reset continuation remains scheduled once at 2026-10-04 04:56:52 Asia/Taipei with exact prompt `繼續執行`. Cloud bindings/login, real browser R2 upload, 250 MB upload, editor integration, sharing, abuse controls, and operations gates remain open; the MVP is not complete.
+
 ## Timeline domain checkpoint — October 4, 2026
 
 This section describes the isolated `feat/timeline-domain` worktree at `/Users/bay/.codex/worktrees/timeline-domain/ages`, based on `3590b41`. It supersedes historical next steps for this branch only. Library is a parallel slice; no Library or original-checkout files were edited here.
@@ -26,9 +34,20 @@ This section describes the isolated `feat/timeline-domain` worktree at `/Users/b
 Root should independently review the committed Timeline slice, integrate it after Library 0004, resolve shared route/docs/error-file changes, and rerun full check plus fresh migration/rerun with both migrations. This branch must not push, publish a PR, merge, or deploy. The same reviewer is next assigned to read-only Library review at commits `8dfa0b0` and `d87be1b` in `/Users/bay/.codex/worktrees/7026/ages`; report concrete blockers without editing that checkout.
 
 
-## Current session checkpoint — October 4, 2026
 
-This section supersedes historical next steps and scheduling notes below.
+## Current session checkpoint — Library API, October 4, 2026
+
+This section supersedes historical next steps below. Earlier checkpoints remain intact for context.
+
+- Library implementation is committed as `8dfa0b0` on `feat/library-api` in `/Users/bay/.codex/worktrees/7026/ages`. Root integrated viewport PR #4's main merge `3590b41` with normal merge `0c98fca`, pushed the branch, and created [PR #5](https://github.com/easysun/ages/pull/5). No deployment occurred.
+- Library provides authenticated owner-only `GET /api/assets` (ready assets, descending created_at/id keyset cursor scoped to owner and exact tag, default 30/max 100), live asset detail, validated private R2 `GET`/`HEAD` media with single byte ranges, and same-origin transactional exact tag replacement. Tags are bounded at 20 distinct nonblank strings of 64 UTF-16 code units. Asset payloads hide storage keys/ETags; conditional media reads also check size/MIME and version consistency. Migration `0004_asset_tags.sql` adds only tags and ownership/count guards.
+- TDD evidence: initial Library run failed 46 tests with eight existing error-path passes; all initial 54 passed after implementation. Expanded regression observed stale Content-Length on media rejection (one failure/58 passes), then passed after delaying success headers. Fresh full `npm run check` passed lint, typechecks, 189 tests (59 Library tests), and dry-run build. Local migration 0004 applied successfully; rerun reported `No migrations to apply!`; `git diff --check` and staged whitespace checks passed.
+- Root independently reran `npm run check` after main integration: 189 tests passed, lint/types/dry-run build passed, and local migration rerun reported no migrations to apply. PR #5 awaits independent review and CI before merge. Timeline implementation owns `/Users/bay/.codex/worktrees/timeline-domain/ages`, branch `feat/timeline-domain`, and migration 0005. React Library implementation owns `/Users/bay/.codex/worktrees/react-library/ages`, branch `feat/react-library`, and is integrating the Library commits. These are isolated writers; do not edit or switch their files. Their browser and domain gates are not yet verified. Do not enable trash/delete/restore until real TimelineItem and cover references enforce tested deletion guards; never substitute a synthetic reference count.
+- Cloud gates remain open: root verified `wrangler whoami` reports `You are not authenticated. Please run wrangler login.` Environment bindings are placeholders. No credentialed Google login, real browser R2 upload, cloud deployment, or 250 MB upload has been verified. Scheduling cleanup, orphan reconciliation, rate limits, and abuse controls remain required before public beta. Viewport renderer/lifecycle/gestures/mobile/keyboard/accessibility/performance gates remain unfinished.
+
+## Previous session checkpoint — October 4, 2026
+
+This historical section has been superseded by the Library checkpoint above.
 
 - Active chat/worktree: `01a10287-0b6c-7ca3-848b-f92e33d8ff11`, `/Users/bay/.codex/worktrees/7026/ages`. Preserve the separate original checkout at `/Users/bay/dev/easysun/ages`, including its uncommitted HANDOFF update.
 - Usage API reports the five-hour reset at 2026-10-04 04:55:52 Asia/Taipei. Single-run same-chat heartbeat `continue-ages-after-usage-reset` is ACTIVE at 04:56:52, exact prompt `繼續執行`. Creation, view, and saved configuration were verified. The machine and desktop app must remain running for local work.
