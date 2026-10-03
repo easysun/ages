@@ -15,5 +15,6 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "types/worker.d.ts"]
+  "include": ["src/**/*.ts", "types/worker.d.ts"],
+  "exclude": ["src/client"]
 }

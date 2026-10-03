@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, direct-upload, and owner-scoped Asset Library APIs are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timelines, reference-aware trash/restore, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct-upload, owner-scoped Asset Library APIs, and a responsive React Library client are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timelines and reference-aware trash/restore are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -16,7 +16,7 @@ npm run db:migrate:local
 npm run dev
 ```
 
-Wrangler serves `http://127.0.0.1:8787` using local D1, R2, and KV, with state in ignored `.wrangler/`. The root URL intentionally returns 404 until the web client is implemented.
+Wrangler serves `http://127.0.0.1:8787` using local D1, R2, and KV, with state in ignored `.wrangler/`. The root URL opens the sign-in landing page or authenticated Library. `/library?tag=Coast` is refresh-safe. The client and APIs share the Worker origin.
 
 ```sh
 curl -i http://127.0.0.1:8787/health
@@ -38,8 +38,10 @@ curl -i http://127.0.0.1:8787/health/ready
 | `npm run test:unit` | Test validation, error, and logging contracts |
 | `npm run test:integration` | Test Worker entry point and actual local storage |
 | `npm test` | Run all Vitest tests in workerd |
-| `npm run build` | Bundle to `dist/` using a dry run; does not deploy |
-| `npm run check` | Run lint, types, all tests, and build |
+| `npm run build` | Build React assets into `dist/client` and dry-run Worker bundle into `dist/worker`; does not deploy |
+| `npm run check` | Build the client, run lint/types, runtime tests, dry-run Worker build, and desktop/mobile browser tests |
+| `npm run dev:client` | Watch and rebuild client assets alongside `npm run dev` |
+| `npm run test:e2e` | Build and test the real local Worker/client with isolated D1/R2 fixtures |
 
 Tests use isolated local storage, separate from the development database. Migration tests exercise a fresh database, reruns with preserved data, constraints, and batch rollback. JSON parser tests register test-only routes; no public echo or exception endpoint is deployed.
 
@@ -61,6 +63,16 @@ Sessions are random 256-bit tokens with a seven-day lifetime; D1 stores only SHA
 New accounts receive provisional private-beta allowances: 1 GiB storage, 250 MiB maximum asset size, ten timelines, and 100 links. These are not published pricing. Upload applies narrower per-media limits and reservation accounting. Returning sign-ins preserve existing quotas. Expired sessions/attempts are cleaned at login start; the hardening slice will also schedule cleanup. Real Google sign-in remains an external smoke gate; tests use locally signed synthetic tokens and mocked provider endpoints with real local D1.
 
 Reference: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect). JWT verification uses the pinned, Workers-compatible `jose` package instead of custom signature code.
+
+## Responsive Library client
+
+The React client is built with Vite and served through Wrangler static assets. API, auth, and health paths always reach Hono, including unknown API paths; browser navigation falls back to the client HTML. New static output and Worker bundles stay separate. No external site hosting or deployment is part of the local build.
+
+Sign-in uses the existing Google route. The authenticated Library shows private photos/videos, exact tag filters, cursor pagination, keyboard selection, storage use, and a responsive detail dialog with tag editing. Add moments sends the original File directly to the returned signed R2 PUT URL, then finalizes through JSON. Upload retries check completion first, preserving an upload whose PUT response was lost. Metadata and binary media keep their existing separate APIs. Timeline editing and sharing remain subsequent slices; there are no destructive asset controls.
+
+Before running `npm run check` for the first time, install the browser with `npx playwright install chromium` (CI installs Chromium and system dependencies). Browser tests run the built client through actual HTTP at `http://127.0.0.1:8791`, with `.wrangler/e2e` persistence and synthetic users, hashed sessions, and PNG media seeded by local Wrangler CLI commands. Session cookies are injected only by Playwright fixtures, with no production authentication or fixture endpoint. Tests cover anonymous gating, foreign asset isolation, real media, tag persistence, pagination, desktop keyboard controls, 375-pixel touch layouts, request races, upload recovery, and API/client routing. Test screenshots and traces are written to ignored `test-results/`.
+
+Local upload browser scenarios simulate only the signed R2 transport: Playwright intercepts the synthetic S3 hostname, checks the PUT headers and binary body, seeds that object into local R2, and calls the real completion API. These are **simulated upload transport** checks, not evidence of cloud signature enforcement or CORS. Actual Google sign-in and live browser PUT remain the existing credentialed cloud smoke gates.
 
 ## Direct media upload
 
@@ -104,7 +116,7 @@ No asset delete/trash/restore endpoint is enabled. Those controls must wait for 
 
 ## API foundation
 
-Every response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the error code, matched route pattern, method, status, and duration.
+Every API response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the error code, matched route pattern, method, status, and duration.
 
 ```json
 {

@@ -79,3 +79,5 @@ Inputs needed for external integration: GitHub repository URL; Cloudflare accoun
 - Stage 04 owner-scoped Library APIs are implemented locally: ready-asset keyset listing, live-asset detail, private validated R2 streaming/HEAD/ranges, and transactional exact tags with migration 0004. The Library tests use real local D1/R2; UI and cloud smoke are unfinished. Trash/restore requires actual TimelineItem and cover associations plus reference guards, so it remains deferred.
 - Stages 04-10 still require their remaining product implementations. Cloud upload smoke, scheduled cleanup, and rate-limit hardening remain required before public beta.
 - The remote is `https://github.com/easysun/ages`. No released branch, cloud deployment, or business UI exists yet.
+
+- Stage 04 client work adds responsive React Library, direct upload, exact tag filtering/details, and 22 passing local desktop/mobile Playwright checks, with 189 runtime tests and complete lint/types/build verification. Local simulated upload transport is distinct from the outstanding live Google/R2 smoke gates. No timeline editor, sharing UI, or trash controls are included.
