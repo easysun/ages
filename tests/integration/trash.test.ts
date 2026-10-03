@@ -586,7 +586,11 @@ describe("Internal trash token contract", () => {
     session = await seedUser();
     const objects = [await seedAsset("old_a"), await seedAsset("old_b")];
     await seedAsset("ready");
-    expect((await tags("old_a")).status).toBe(200);
+    await env.DB.prepare(
+      "INSERT INTO asset_tags(asset_id,owner_id,tag) VALUES (?, ?, ?), (?, ?, ?)",
+    )
+      .bind("old_a", "owner_a", "trip", "old_a", "owner_a", "旅行")
+      .run();
     await env.DB.prepare(
       "UPDATE assets SET status='deleted', deleted_at=? WHERE id IN ('old_a','old_b')",
     )
@@ -600,7 +604,10 @@ describe("Internal trash token contract", () => {
       await env.DB.prepare("SELECT * FROM assets ORDER BY id").all<Asset>()
     ).results;
     expect(
-      after.map(({ trash_generation: _generation, ...asset }) => asset),
+      after.map(
+        ({ trash_generation: _generation, purge_claim: _claim, ...asset }) =>
+          asset,
+      ),
     ).toEqual(before);
     const deleted = after.filter((asset) => asset.status === "deleted");
     expect(deleted).toHaveLength(2);

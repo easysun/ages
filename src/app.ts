@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { requestLimits } from "./abuse/limits";
 import type { AppContext } from "./bindings";
 import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
@@ -14,6 +15,7 @@ import { uploads } from "./routes/uploads";
 export function createApp() {
   const app = new Hono<AppContext>();
   app.use("*", requestContext);
+  app.use("*", requestLimits);
   app.use(
     "/api/*",
     bodyLimit({

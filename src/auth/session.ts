@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { createMiddleware } from "hono/factory";
+import { limitAuthenticatedWrite } from "../abuse/limits";
 import type { AppContext, Bindings } from "../bindings";
 import { ApiError } from "../http/errors";
 import { cookiePolicy } from "./config";
@@ -33,7 +34,12 @@ export const requireUser = createMiddleware<AppContext>(
         .bind(hash, new Date().toISOString())
         .first<AuthenticatedUser>());
     if (!user) throw new ApiError("UNAUTHENTICATED");
+    const alreadyAuthenticated = Boolean(context.get("user"));
     context.set("user", user);
+    if (!alreadyAuthenticated) {
+      const rejected = await limitAuthenticatedWrite(context);
+      if (rejected) return rejected;
+    }
     await next();
   },
 );

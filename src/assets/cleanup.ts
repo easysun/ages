@@ -5,7 +5,7 @@ export async function cleanupExpiredUploads(bindings: Bindings, afterId = "") {
   const now = new Date();
   // A reservation can be released immediately. Object deletion waits beyond PUT expiry.
   await bindings.DB.prepare(`UPDATE assets SET status = 'failed', updated_at = ?
-    WHERE status = 'pending' AND upload_expires_at <= ?`)
+    WHERE id IN (SELECT id FROM assets WHERE status = 'pending' AND upload_expires_at <= ? ORDER BY upload_expires_at, id LIMIT 100)`)
     .bind(now.toISOString(), now.toISOString())
     .run();
   const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
@@ -14,12 +14,16 @@ export async function cleanupExpiredUploads(bindings: Bindings, afterId = "") {
     .bind(cutoff, afterId)
     .all<Asset>();
   for (const asset of batch.results) {
-    await bindings.MEDIA.delete(asset.r2_key);
-    await bindings.DB.prepare(
-      "UPDATE assets SET status = 'purged', updated_at = ? WHERE id = ? AND status = 'failed'",
-    )
-      .bind(now.toISOString(), asset.id)
-      .run();
+    try {
+      await bindings.MEDIA.delete(asset.r2_key);
+      await bindings.DB.prepare(
+        "UPDATE assets SET status = 'purged', updated_at = ? WHERE id = ? AND status = 'failed'",
+      )
+        .bind(now.toISOString(), asset.id)
+        .run();
+    } catch {
+      console.error(JSON.stringify({ event: "upload_cleanup_retry" }));
+    }
   }
   return batch.results.length === 100 ? (batch.results[99]?.id ?? null) : null;
 }
