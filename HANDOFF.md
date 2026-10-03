@@ -2,6 +2,19 @@
 
 ## Goal and scope
 
+## Current session checkpoint — October 4, 2026
+
+This section supersedes historical next steps and scheduling notes below.
+
+- Active chat/worktree: `01a10287-0b6c-7ca3-848b-f92e33d8ff11`, `/Users/bay/.codex/worktrees/7026/ages`. Preserve the separate original checkout at `/Users/bay/dev/easysun/ages`, including its uncommitted HANDOFF update.
+- Usage API reports the five-hour reset at 2026-10-04 04:55:52 Asia/Taipei. Single-run same-chat heartbeat `continue-ages-after-usage-reset` is ACTIVE at 04:56:52, exact prompt `繼續執行`. Creation, view, and saved configuration were verified. The machine and desktop app must remain running for local work.
+- PR #3 merged into `main` as `8b32fed`; local main fast-forwarded. Independent upload review found quadratic JPEG parsing. Fix `dea96e4` uses a linear offset walk; a deterministic copy-budget test failed at 34,358,820,872 copied bytes before the fix and passed after. Integration tests verify 422, failed state, and unchanged completed quota. Final full check passed 114 tests, lint, types, and dry-run build; GitHub CI passed. Local migrations 0001–0003 and rerun passed. No deployment occurred.
+- The independently approved viewport core is carried on `feat/viewport-core` using cherry-picked `865f5ca` and `aea4660`, preserving the original viewport branch. Full combined check passed 130 tests, lint, types, and dry-run build. Renderer, gestures, lifecycle, accessibility, and performance gates remain unfinished.
+- Next: publish a viewport-only PR against updated main, verify CI and merge, then implement owner-scoped Library listing/detail/media and tags. Trash/delete must wait for real timeline associations and reference guards. Continue the remaining MVP stages; do not mark the goal complete while browser/cloud gates remain open.
+- GitHub CLI still lacks this private repository's access. SSH fetch/push and the signed-in Brave session work. Use supported browser interaction for PR management; do not extract browser credentials.
+
+## Historical goal and scope
+
 Deliver the Living Timeline MVP in reviewable vertical slices. The latest requirement adds resolution-independent timeline zoom, initial auto-fit, and a possible reusable React component. Parallel research is authorized. A local sibling repository under `/Users/bay/dev/easysun/` is allowed when justified, but no extraction or public release has been selected.
 
 Read `AGENTS.md` without modifying it, then `docs/implementation-plan.md` and `docs/timeline-viewport.md`. All repository content and Git/PR metadata must be English. Preserve independent Asset, TimelineItem, Timeline, and Link semantics. Do not deploy or publish a library without the required environment and release decisions.
