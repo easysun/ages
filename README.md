@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, direct-upload, owner-scoped Asset Library and Timeline APIs, and public Timeline SSR are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Reference-aware trash/restore, the React editor, and Link distribution are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct-upload, owner-scoped Asset Library and Timeline APIs, public Timeline SSR, and reference-aware trash/restore are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. The React editor and Link distribution remain subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -89,6 +89,9 @@ All Library endpoints require a valid session cookie. They return `private, no-s
 | Route | Contract |
 | --- | --- |
 | `GET /api/assets` | Ready assets, ordered by `created_at DESC, id DESC`, with `tags` and `next_cursor` |
+| `GET /api/assets/trash` | Owner-only deleted assets with tags and a collection-scoped keyset cursor |
+| `POST /api/assets/:id/trash` | Strict empty JSON `{}` moves an unreferenced owned ready asset to recoverable trash |
+| `POST /api/assets/:id/restore` | Strict empty JSON `{}` restores retained, validated media before the 30-day deadline |
 | `GET /api/assets/:id` | Owned asset metadata and tags; pending/failed uploads remain inspectable; deleted/purged assets return 404 |
 | `GET /api/assets/:id/media` | Stream the validated ready asset from private R2; missing/changed objects return 404 |
 | `HEAD /api/assets/:id/media` | Validated full media metadata without reading a body; ignores Range |
@@ -100,7 +103,9 @@ Tags preserve their exact spelling and spaces. Supply at most 20 distinct nonbla
 
 Asset JSON excludes owner IDs, R2 keys, ETags, and upload expiry. Media responses use authoritative MIME/size and conditional ETag reads, checking R2 version consistency between metadata and streaming. Uploader cache headers are never copied. Single byte ranges return 206 with Content-Range; unsupported or unsatisfiable ranges return 416 with `bytes */<size>`. Storage validators are not exposed, so If-Range requests receive the complete representation.
 
-No asset delete/trash/restore endpoint is enabled. Those controls must wait for actual timeline item and cover references with tested deletion guards; tag removal never removes an asset or R2 object. The responsive Library UI and browser smoke tests remain unfinished.
+Trash and restore require the same-origin policy and return the normal asset/tag shape. Trashing a real timeline item or cover reference returns 409 without changing the asset or media; removing a reference never deletes its asset. Repeated trash of an owned deleted asset and repeated restore of a ready asset are idempotent, including timestamps. Pending/failed assets return 409; missing, foreign, and purged assets return 404.
+
+Trash retains the R2 bytes, tags, and charged storage quota. Restore requires the retained object's validated ETag, size, and MIME, and clears `deleted_at` only before `deleted_at + 30 × 24 hours`; exactly at that deadline and later it returns 409. Expired trash remains visible and charged until a future scheduled purge. Additive migration `0007_asset_trash_generation.sql` assigns an internal generation token to existing deleted assets; every new trash gets a fresh token, and restore compares and clears it. The token is never returned in asset JSON. Distinct trash operations remain distinguishable even when their timestamps are identical. No physical deletion or purge endpoint is enabled, and these mutations never write or delete R2 objects. The trash list accepts only `limit` and `cursor`, uses the same creation-time/ID ordering, and rejects cursors from the ready collection or another owner. Restoring removes the item from the trash list. The responsive Library UI and browser smoke tests remain unfinished.
 
 ## Timeline domain
 
