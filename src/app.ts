@@ -4,7 +4,9 @@ import { HTTPException } from "hono/http-exception";
 import type { AppContext } from "./bindings";
 import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
+import { auth } from "./routes/auth";
 import { health } from "./routes/health";
+import { me } from "./routes/me";
 
 export function createApp() {
   const app = new Hono<AppContext>();
@@ -32,5 +34,7 @@ export function createApp() {
   });
   app.notFound((context) => errorResponse(context, "NOT_FOUND"));
   app.route("/health", health);
+  app.route("/auth", auth);
+  app.route("/api/me", me);
   return app;
 }

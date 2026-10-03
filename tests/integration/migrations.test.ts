@@ -18,6 +18,26 @@ beforeEach(async () => {
 });
 
 describe("D1 identity migration", () => {
+  it("upgrades the Foundation schema while preserving existing identities and sessions", async () => {
+    await reset();
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.slice(0, 1));
+    await addUser();
+    await env.DB.prepare(
+      "INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+    )
+      .bind("b".repeat(64), "user_a", "2030-01-01T00:00:00.000Z", timestamp)
+      .run();
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+    expect(
+      await env.DB.prepare("SELECT user_id FROM sessions").first("user_id"),
+    ).toBe("user_a");
+    expect(
+      await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM oauth_identities",
+      ).first("count"),
+    ).toBe(0);
+  });
+
   it("applies to an empty database and records its migration exactly once", async () => {
     const tables = await env.DB.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table'",
@@ -29,7 +49,7 @@ describe("D1 identity migration", () => {
       await env.DB.prepare("SELECT COUNT(*) AS count FROM d1_migrations").first(
         "count",
       ),
-    ).toBe(1);
+    ).toBe(env.TEST_MIGRATIONS.length);
   });
 
   it("reruns without losing users or duplicating migration records", async () => {
@@ -44,7 +64,7 @@ describe("D1 identity migration", () => {
       await env.DB.prepare("SELECT COUNT(*) AS count FROM d1_migrations").first(
         "count",
       ),
-    ).toBe(1);
+    ).toBe(env.TEST_MIGRATIONS.length);
   });
 
   it("enforces unique identities and known plans", async () => {
