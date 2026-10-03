@@ -30,6 +30,14 @@ Next: root should review the committed client slice against the already reviewed
 
 ## Goal and scope
 
+## Root Library client integration checkpoint — October 4, 2026
+
+- Link PR #9 passed updated CI and merged as `4688f75`; trash PR #8 is `a0d822c`. Root created `feat/library-client` from updated main and carried only client feature `1a8840f` and race/focus fix `6e53770` as `9fc0547` and `18d27c`, preserving backend routes, migrations, contracts and prior checkpoints.
+- Fresh combined `npm run check` passed lint/types, 293 runtime tests in 14 files, client/Worker builds and 30 actual desktop/mobile Playwright cases (1.4 minutes). Local migration/rerun reported no pending migrations. Root visually inspected generated synthetic desktop/mobile screenshots; four proof images are committed under `docs/screenshots/`. Simulated R2 PUT transport is explicitly test-only; live Google/R2/CORS and 250 MB upload remain unverified.
+- Independent Library browser review identified and the author fixed stale upload/filter, post-logout profile, disconnected modal opener focus and short-link SPA-routing defects with observed RED regressions. Root independently reran the original 189+30 suite and the fully integrated 293+30 suite. Next: push the focused client PR, verify its CI including Chromium installation, and merge.
+- Asset Links `21cf917` passed independent 307-test review and a temporary combined 0008/0009 purge-claim probe. Cleanup `9a92d03` has two independently reproduced blockers: failed-upload retry starvation and unbounded auth cleanup. The cleanup author is adding deterministic regressions and fixes before integration. Timeline editor remains an isolated writer with real API browser tests in progress. No deployment occurred; goal remains active and incomplete; continuation is 09:58:17 Asia/Taipei.
+
+
 ## Root integration checkpoint — October 4, 2026, Links and trash
 
 - Trash PR #8 passed CI and merged as `a0d822c`. Root normally merged it into `feat/links` as `9b144c9`, preserving every prior checkpoint. Fresh combined check passed lint/types, 293 tests in 14 files, and the dry-run Worker build; local migration 0007 applied after 0006 and rerun reported no pending migrations.
