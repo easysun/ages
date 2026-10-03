@@ -8,6 +8,7 @@ import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
 import { me } from "./routes/me";
+import { timelines } from "./routes/timelines";
 import { uploads } from "./routes/uploads";
 
 export function createApp() {
@@ -40,5 +41,6 @@ export function createApp() {
   app.route("/api/me", me);
   app.route("/api/assets", uploads);
   app.route("/api/assets", library);
+  app.route("/api/timelines", timelines);
   return app;
 }
