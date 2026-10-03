@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, direct-upload, owner-scoped Asset Library APIs, and a responsive React Library client are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timelines and reference-aware trash/restore are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct-upload, owner-scoped Asset Library and Timeline APIs, and a responsive React Library client are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timeline editing/viewing and reference-aware trash/restore are subsequent slices. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -112,7 +112,27 @@ Tags preserve their exact spelling and spaces. Supply at most 20 distinct nonbla
 
 Asset JSON excludes owner IDs, R2 keys, ETags, and upload expiry. Media responses use authoritative MIME/size and conditional ETag reads, checking R2 version consistency between metadata and streaming. Uploader cache headers are never copied. Single byte ranges return 206 with Content-Range; unsupported or unsatisfiable ranges return 416 with `bytes */<size>`. Storage validators are not exposed, so If-Range requests receive the complete representation.
 
-No asset delete/trash/restore endpoint is enabled. Those controls must wait for actual timeline item and cover references with tested deletion guards; tag removal never removes an asset or R2 object. The responsive Library UI and browser smoke tests remain unfinished.
+No asset delete/trash/restore endpoint is enabled. Those controls must wait for actual timeline item and cover references with tested deletion guards; tag removal never removes an asset or R2 object. The responsive Library UI and local desktop/mobile browser checks are implemented; credentialed cloud smoke gates remain open.
+## Timeline domain
+
+All `/api/timelines` routes require authentication and scope reads to the owner, including timelines marked public or unlisted. Public viewing is a later slice. Mutations require the exact same-origin policy and strict JSON bodies.
+
+| Route | Contract |
+| --- | --- |
+| `POST /api/timelines` | `{title}` creates a private timeline at version 1, subject to the account timeline quota |
+| `GET /api/timelines?limit=50&cursor=...` | Owner list in creation-time/ID descending order; `limit` is 1–100; returns `timelines` and nullable `next_cursor` |
+| `GET /api/timelines/:id` | Return `timeline` including story items in narrative position order |
+| `PATCH /api/timelines/:id` | `expected_version` plus one or more of `title`, `visibility`, nullable `cover_asset_id` |
+| `POST /api/timelines/:id/items` | `expected_version`, `asset_id`, optional `caption` and nullable `event_at`; append with a new independent item ID |
+| `PATCH /api/timelines/:id/items/:itemId` | `expected_version` plus `caption` and/or nullable `event_at` |
+| `DELETE /api/timelines/:id/items/:itemId` | JSON `{expected_version}` removes only that item, never its asset |
+| `PUT /api/timelines/:id/order` | `expected_version` and the complete unique `item_ids` list, up to 1,000 IDs |
+
+Mutations return the updated `timeline` and advance its version once. Stale/concurrent versions and unavailable associations return 409; malformed or incomplete reorder sets return 400 without changes. Owner mismatches return 404. Every dependent D1 write and returned result is gated by a fresh internal mutation token; a zero-row version comparison cannot modify item rows. The response reads belong to that same transaction. Tokens and owner IDs are not returned.
+
+An asset may appear in multiple timelines or multiple items with independent captions and event dates. Covers and items require owned, ready, undeleted assets. Database ownership constraints and reference triggers protect assets from trash, purge, or physical deletion while referenced. Item removal leaves narrative position gaps; a complete reorder assigns positions from zero. No timeline deletion endpoint, renderer, sharing URL resolver, or public viewer is implemented.
+
+`event_at` is either null, `{"kind":"date","date":"2024-02-29","time_zone":"Asia/Taipei","calendar":"iso8601"}`, or `{"kind":"instant","instant":"2026-10-04T08:30:00.000Z","time_zone":"Asia/Taipei"}`. Calendar dates retain their precision and named timezone without conversion to midnight UTC. Offset-qualified instants normalize to UTC millisecond timestamps while retaining the named presentation timezone. Numeric offset strings are not timezone names. These values never rewrite asset capture timestamps.
 
 ## API foundation
 

@@ -2,6 +2,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
+const port = process.env.AGES_E2E_PORT ?? "8791";
+const origin = `http://127.0.0.1:${port}`;
 const cli = resolve("node_modules/wrangler/bin/wrangler.js");
 const persistence = resolve(".wrangler/e2e");
 mkdirSync(persistence, { recursive: true });
@@ -32,11 +34,11 @@ const server = spawn(
     "--ip",
     "127.0.0.1",
     "--port",
-    "8791",
+    port,
     "--persist-to",
     persistence,
     "--var",
-    "APP_ORIGIN:http://127.0.0.1:8791",
+    `APP_ORIGIN:${origin}`,
     "--var",
     `R2_ACCOUNT_ID:${"a".repeat(32)}`,
     "--var",

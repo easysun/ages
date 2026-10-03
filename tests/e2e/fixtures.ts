@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import type { BrowserContext } from "@playwright/test";
 
+export const e2eOrigin = `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`;
+
 const cli = resolve("node_modules/wrangler/bin/wrangler.js");
 const persistence = resolve(".wrangler/e2e");
 const artifacts = resolve(".wrangler/e2e-fixtures");
@@ -117,7 +119,7 @@ export async function seedLibrary(context: BrowserContext) {
     {
       name: "ages_session",
       value: token,
-      url: "http://127.0.0.1:8791",
+      url: e2eOrigin,
       httpOnly: true,
       sameSite: "Lax",
     },
