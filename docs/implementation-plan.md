@@ -13,6 +13,7 @@ The north star is Monthly Active Timelines: distinct timelines receiving at leas
 - Browser uploads binary directly using short-lived, object-specific R2 PUT capabilities. Workers handle intent, authorization, validation, completion, API, and SSR.
 - Keep API contracts usable by web, Android, iOS, and VR. Native clients will need an explicit authentication flow; browser cookies alone are not a native API design.
 - Use responsive layouts, touch and keyboard alternatives to dragging, semantic controls, and reduced-motion support. Do not implement native or VR clients in the MVP.
+- Timeline navigation supports resolution-independent zoom and automatic initial framing. Keep viewport math independent of React and storage; distinguish story order from chronological scale. See [viewport design](timeline-viewport.md) for rendering, accessibility, extraction, and verification gates. Do not promise raster detail beyond the source resolution.
 - Use explicit local, development, preview, and production configuration. Provision cloud resources and deploy only after selecting the account and target environment.
 
 ## Domain invariants
@@ -39,7 +40,7 @@ Each row is a separate reviewable PR. New foundation features target `main`; cha
 | 03 Direct upload | Intent, reservation, presigned PUT, completion, file validation, orphan cleanup | Owner/size/signature/expiry errors fail; concurrent reservations cannot exceed quota; double completion counts once; post-completion PUT cannot change served media |
 | 04 Library | Owner-scoped cursor API, tags, references, trash/restore, minimal responsive React library | Cross-user reads/writes fail; pagination stable; tag filtering persists; referenced delete conflicts; restore works; media stays outside Worker upload bodies |
 | 05 Timeline domain | Timeline/item APIs, independent story metadata, versions, atomic order | One Asset reused in two timelines has independent captions; stale and concurrent edits conflict; invalid/duplicate/missing item sets make no changes; item removal preserves Asset |
-| 06 Editor | Desktop library and canvas, mobile Add moments, keyboard/touch reorder, edit date/caption, cover, visibility | 100 items reorder; reload preserves state; conflicts visibly refetch; mobile and keyboard flows pass Playwright |
+| 06 Editor | Desktop library and canvas, mobile Add moments, keyboard/touch reorder, date/caption, cover, visibility, scalable viewport and auto-fit | 100 items reorder; reload preserves state; conflicts visibly refetch; zoom preserves focus and data; initial framing respects readability; manual navigation survives resize/append; mobile and keyboard flows pass Playwright |
 | 07 Public timeline | Responsive SSR viewer, canonical URL, basic OG, authorized media delivery | Public HTML contains escaped OG without JS; unlisted has noindex; private page, cover, media and cache never leak; appending preserves URL |
 | 08 Distribution | URL/asset/timeline links, 302 resolution, reserved slugs, client QR | Inactive/expired links fail; collisions return 409; only safe HTTP(S) destinations; restricted access cannot be bypassed through canonical/media URLs |
 | 09 Abuse controls | Endpoint rate limits, report/takedown, cleanup, secret-safe logs | Invalid signatures, enumeration, intent floods and disabled content fail; cleanup is retry-safe; anonymous creation remains disabled |
@@ -73,6 +74,7 @@ Inputs needed for external integration: GitHub repository URL; Cloudflare accoun
 
 - Stage 01 was reviewed and merged into `main` in [PR #1](https://github.com/easysun/ages/pull/1). Local clean install, migration/rerun, lint, types, 27 runtime tests, Worker build, HTTP smoke checks, and GitHub CI passed.
 - Stage 02 was reviewed and merged in [PR #2](https://github.com/easysun/ages/pull/2). Local migration/upgrade/rerun, lint, typecheck, 70 tests, dry-run build, and GitHub CI passed. Credentialed Google sign-in remains an external smoke gate.
-- Stage 03 is implemented on `feat/direct-upload`: signed create-only R2 PUT, atomic quota reservation/completion, bounded format/image-metadata validation, and cleanup helpers. A signed `If-None-Match: *` freezes objects without a second copy. Local verification and PR/cloud gates are recorded with the feature delivery.
-- Stages 04-10 are planned, not implemented. Cloud upload smoke, scheduled cleanup, and rate-limit hardening remain required before public beta.
+- Stage 03 is implemented in [PR #3](https://github.com/easysun/ages/pull/3): signed create-only R2 PUT, atomic quota reservation/completion, bounded format/image-metadata validation, and cleanup helpers. Clean install, local migration/rerun, lint, types, 105 tests, and dry-run build passed. Live cloud upload, scheduled cleanup, and abuse gates remain open.
+- Stage 06 has a dependency-free viewport math foundation with 16 tests for fit, anchored zoom, pan, resize, coordinate precision, and invalid inputs. There is no React renderer or gesture integration yet; this does not complete the editor acceptance gate.
+- Stages 04-10 still require their product implementations. Cloud upload smoke, scheduled cleanup, and rate-limit hardening remain required before public beta.
 - The remote is `https://github.com/easysun/ages`. No released branch, cloud deployment, or business UI exists yet.
