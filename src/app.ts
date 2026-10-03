@@ -9,6 +9,7 @@ import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
 import { me } from "./routes/me";
+import { publicTimeline } from "./routes/public-timeline";
 import { timelines } from "./routes/timelines";
 import { uploads } from "./routes/uploads";
 
@@ -44,5 +45,6 @@ export function createApp() {
   app.route("/api/assets", uploads);
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
+  app.route("/t", publicTimeline);
   return app;
 }
