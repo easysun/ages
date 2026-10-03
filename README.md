@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, direct-upload, and owner-scoped Asset Library APIs are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Timeline domain APIs and reference-aware trash/restore are implemented locally; the React UI remains a subsequent slice. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct-upload, owner-scoped Asset Library and Timeline APIs, public Timeline SSR, and reference-aware trash/restore are implemented. The Worker has D1 identity/assets/tags, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. The React editor and Link distribution remain subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -109,7 +109,7 @@ Trash retains the R2 bytes, tags, and charged storage quota. Restore requires th
 
 ## Timeline domain
 
-All `/api/timelines` routes require authentication and scope reads to the owner, including timelines marked public or unlisted. Public viewing is a later slice. Mutations require the exact same-origin policy and strict JSON bodies.
+All `/api/timelines` routes require authentication and scope reads to the owner, including timelines marked public or unlisted. Public viewing uses the separate `/t/:id` routes below. Mutations require the exact same-origin policy and strict JSON bodies.
 
 | Route | Contract |
 | --- | --- |
@@ -124,9 +124,21 @@ All `/api/timelines` routes require authentication and scope reads to the owner,
 
 Mutations return the updated `timeline` and advance its version once. Stale/concurrent versions and unavailable associations return 409; malformed or incomplete reorder sets return 400 without changes. Owner mismatches return 404. Every dependent D1 write and returned result is gated by a fresh internal mutation token; a zero-row version comparison cannot modify item rows. The response reads belong to that same transaction. Tokens and owner IDs are not returned.
 
-An asset may appear in multiple timelines or multiple items with independent captions and event dates. Covers and items require owned, ready, undeleted assets. Database ownership constraints and reference triggers protect assets from trash, purge, or physical deletion while referenced. Item removal leaves narrative position gaps; a complete reorder assigns positions from zero. No timeline deletion endpoint, renderer, sharing URL resolver, or public viewer is implemented.
+An asset may appear in multiple timelines or multiple items with independent captions and event dates. Covers and items require owned, ready, undeleted assets. Database ownership constraints and reference triggers protect assets from trash, purge, or physical deletion while referenced. Item removal leaves narrative position gaps; a complete reorder assigns positions from zero. No timeline deletion endpoint, interactive editor, or Link resolver is implemented.
 
 `event_at` is either null, `{"kind":"date","date":"2024-02-29","time_zone":"Asia/Taipei","calendar":"iso8601"}`, or `{"kind":"instant","instant":"2026-10-04T08:30:00.000Z","time_zone":"Asia/Taipei"}`. Calendar dates retain their precision and named timezone without conversion to midnight UTC. Offset-qualified instants normalize to UTC millisecond timestamps while retaining the named presentation timezone. Numeric offset strings are not timezone names. These values never rewrite asset capture timestamps.
+
+## Public Timeline viewer
+
+`GET /t/:id` renders a responsive, script-free HTML story in narrative order with escaped title/captions, canonical URL, and basic Open Graph metadata. The configured `APP_ORIGIN` supplies canonical and OG origins; request Host headers and query strings do not change them. Appending an item keeps the same `/t/:id` URL. Image covers, or the first image item when no image cover is selected, supply the scoped OG image. Video-only stories do not advertise video bytes as an OG image.
+
+Public timelines emit `index, follow`. Unlisted timelines emit `noindex, nofollow` in both HTML and `X-Robots-Tag`. Private and missing timelines return the same generic 404 without title, captions, OG, or cover metadata, including when an owner cookie is present. Owner viewing/editing remains available through authenticated APIs; private viewer grants are not implemented.
+
+`GET`/`HEAD /t/:id/media/:assetId` authorizes against current D1 visibility and actual item or cover membership on every request. Assets must belong to that timeline's owner and be ready and undeleted. Asset visibility alone grants no access. Removing the association or making the timeline private immediately blocks subsequent media requests, even after an earlier successful fetch. A shared asset may remain available through a different authorized timeline.
+
+The public media route and owner Library route reuse `streamAssetMedia` for validated R2 ETag/MIME/size checks, metadata/read version consistency, direct streaming, single byte ranges, HEAD, and 416 handling. The helper grants no access; each route enforces its own authorization first. All HTML and media responses currently use `private, no-store` plus `nosniff`; no KV or public response cache is enabled. Content-Security-Policy permits only same-origin media and the static inline style.
+
+Local verification includes real D1/R2 HTTP tests and desktop/375-pixel browser inspection with synthetic media. This is a static viewer; automated interactive editor/mobile/keyboard tests, viewport gestures, large-story virtualization, real crawler smoke, and cloud deployment remain separate gates. No Link entity, private grants, QR codes, or deployment is included here.
 
 ## API foundation
 

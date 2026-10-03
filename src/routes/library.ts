@@ -3,7 +3,6 @@ import {
   emptyMutationSchema,
   encodeCursor,
   libraryQuery,
-  mediaRange,
   tagsSchema,
 } from "../assets/library";
 import { type Asset, assetPayload } from "../assets/model";
@@ -13,6 +12,7 @@ import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
 import { ApiError } from "../http/errors";
 import { parseJson } from "../http/json";
+import { streamAssetMedia } from "../media/stream";
 
 export const library = new Hono<AppContext>();
 library.use("*", requireUser, async (context, next) => {
@@ -172,58 +172,5 @@ library.on(["GET", "HEAD"], "/:id/media", async (context) => {
     context.req.param("id"),
     context.get("user").id,
   );
-  if (asset.status !== "ready" || !asset.etag) throw new ApiError("NOT_FOUND");
-  const head = await context.env.MEDIA.head(asset.r2_key);
-  if (
-    !head ||
-    head.etag !== asset.etag ||
-    head.size !== asset.size_bytes ||
-    head.httpMetadata?.contentType !== asset.mime_type
-  )
-    throw new ApiError("NOT_FOUND");
-  if (context.req.method === "HEAD") {
-    context.header("Content-Type", asset.mime_type);
-    context.header("Content-Length", String(asset.size_bytes));
-    context.header("Accept-Ranges", "bytes");
-    return context.body(null, 200);
-  }
-  // If-Range cannot match an undisclosed validator, so return the complete representation.
-  const rangeHeader = context.req.header("If-Range")
-    ? undefined
-    : context.req.header("Range");
-  const range =
-    rangeHeader === undefined
-      ? undefined
-      : mediaRange(rangeHeader, asset.size_bytes);
-  if (range === null) {
-    context.header("Accept-Ranges", "bytes");
-    context.header("Content-Length", "0");
-    context.header("Content-Range", `bytes */${asset.size_bytes}`);
-    return context.body(null, 416);
-  }
-  const object = await context.env.MEDIA.get(asset.r2_key, {
-    onlyIf: { etagMatches: asset.etag },
-    ...(range ? { range } : {}),
-  });
-  if (!object || !("body" in object)) throw new ApiError("NOT_FOUND");
-  if (
-    object.version !== head.version ||
-    object.etag !== asset.etag ||
-    object.size !== asset.size_bytes ||
-    object.httpMetadata?.contentType !== asset.mime_type
-  ) {
-    await object.body.cancel();
-    throw new ApiError("NOT_FOUND");
-  }
-  context.header("Content-Type", asset.mime_type);
-  context.header("Accept-Ranges", "bytes");
-  context.header("Content-Length", String(range?.length ?? asset.size_bytes));
-  if (range) {
-    context.header("Content-Length", String(range.length));
-    context.header(
-      "Content-Range",
-      `bytes ${range.offset}-${range.offset + range.length - 1}/${asset.size_bytes}`,
-    );
-  }
-  return context.body(object.body, range ? 206 : 200);
+  return streamAssetMedia(context, asset);
 });
