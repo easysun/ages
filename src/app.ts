@@ -6,6 +6,7 @@ import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
+import { library } from "./routes/library";
 import { me } from "./routes/me";
 import { uploads } from "./routes/uploads";
 
@@ -38,5 +39,6 @@ export function createApp() {
   app.route("/auth", auth);
   app.route("/api/me", me);
   app.route("/api/assets", uploads);
+  app.route("/api/assets", library);
   return app;
 }
