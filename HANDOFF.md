@@ -2,6 +2,25 @@
 
 ## Goal and scope
 
+## Abuse controls and scheduled cleanup checkpoint — October 4, 2026
+
+The isolated writer checkout is `/Users/bay/.codex/worktrees/abuse-cleanup/ages` on `feat/abuse-cleanup`. This bounded Stage 09 slice supersedes earlier scheduling/rate-limit next steps while preserving the previous checkpoints below.
+
+### Last three checkpoints
+
+1. Read AGENTS, approved Stage 09, auth/session cleanup, upload reservation/accounting, real Timeline reference guards, trash generation/restore, Worker entry point and Wrangler configuration. Installed the committed lockfile (zero reported vulnerabilities). The first 12 new real D1/R2 tests failed before implementation. A later delayed-old-bucket regression failed with 503 instead of the required 429 before switching to a separate row per scope/minute.
+2. Implemented additive migration `0009_abuse_cleanup.sql`, durable hashed-scope endpoint limits and bounded scheduled cleanup. Purge claims the exact trash generation before R2 deletion; both API and SQL guards block restore/claim replacement, while deletion failure keeps quota for retry. All 17 new tests passed, including concurrent exact bounds, bucket reset and delayed completion, owner/IP isolation, trusted-header/local fallback, secret masking, TTL cleanup preserving active buckets, ready preservation, expiry/grace, 30-day boundary, claim safety, retry/idempotent quota, and 100-row progress. Full initial check passed 257 tests, lint, types and dry-run build. Fresh local migrations 0001–0005, 0007 and 0009 applied; rerun had no pending migrations. Source was committed as `c1d4d4b`.
+3. Normally merged updated `origin/main` at `a0d822c` as `aef9517`, preserving the public viewer and shared validated streaming helper plus all trash behavior. Fresh combined `npm run check` passed 283 tests in 14 files, lint, types, and Worker dry-run build. Local migration/rerun and whitespace checks passed. Documentation now records exact limits, claim/accounting behavior and open gates. Existing informational Biome template suggestion and Node punycode deprecation remain nonblocking.
+
+### Exact contract and remaining gates
+
+- Per UTC minute: 600 per IP for known API/public Timeline/Link routes; 30 per auth IP; 120 authenticated mutations per owner; 30 upload intents per owner. Counters include failed attempts, persist only SHA-256 scope hashes, and expire one hour after the minute. Cloud protected requests require `CF-Connecting-IP`; only local may fall back. Health/unrelated unknown routes require neither counters nor client metadata.
+- Scheduled entry point invokes auth cleanup, up to 1,000 expired counter deletions, up to 100 expired pending transitions, up to 100 abandoned-object attempts after 24 hours, and up to 100 trash purge attempts after 30 days. Existing quota triggers release completed storage only after successful R2 deletion and conditional purged finalization. Claims remain internal and persistent across failures. Ready authenticated assets never expire silently.
+- Migrations 0006 (Links) and 0008 (Asset Links) belong to root's other slices and were neither created nor modified. Apply the complete chronological migration set on the final combined branch before serving protected traffic; this branch contains additive 0009 and requires prior trash token migration0007.
+- Root must independently review/integrate this branch and rerun checks with Link/client changes. No push, PR, merge into main, remote migration, deployment or real bucket deletion was performed. The only branch merge was the authorized local integration of origin/main. Local R2 deletions used isolated synthetic test objects.
+- Report/takedown, objects without Asset rows, cloud edge abuse configuration, credentialed upload/login, named-environment cron/backlog smoke, backup/recovery and remaining client/MVP browser gates remain open. Wrangler authentication/resources are still external gates; no cloud claim is made.
+
+
 ## Trash generation fix checkpoint — October 4, 2026
 
 This supersedes the earlier timestamp-only trash design while preserving the prior checkpoints below. The isolated branch remains `feat/asset-trash` at `/Users/bay/.codex/worktrees/asset-trash/ages`; no other checkout was edited.
