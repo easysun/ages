@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation and Google authentication: TypeScript/Hono Worker, D1 identity/session schema, local R2/KV bindings, request IDs, structured errors, runtime validation, health checks, and CI. Uploads, timelines, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, and direct-upload APIs are implemented. The Worker has D1 identity/assets, local R2/KV bindings, structured errors, runtime validation, health checks, and CI. Asset Library, timelines, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -58,9 +58,29 @@ Create a Google OAuth **Web application** client and register the exact redirect
 
 Sessions are random 256-bit tokens with a seven-day lifetime; D1 stores only SHA-256 hashes. Cookies are HttpOnly, SameSite=Lax, host-only, and Secure with the `__Host-` prefix outside `local`. State and browser bindings are hashed; short-lived PKCE verifiers remain server-side. The callback verifies signature, issuer, audience, authorized party, expiry, and nonce. No Google access/refresh tokens are persisted or returned. Accounts bind to Google subject, never implicitly to an email match; conflicting email ownership does not transfer an account.
 
-New accounts receive provisional private-beta allowances: 1 GiB storage, 250 MiB maximum asset size, ten timelines, and 100 links. These are not published pricing. Upload will apply narrower per-media limits and reservation accounting. Returning sign-ins preserve existing quotas. Expired sessions/attempts are cleaned at login start; the hardening slice will also schedule cleanup. Real Google sign-in remains an external smoke gate; tests use locally signed synthetic tokens and mocked provider endpoints with real local D1.
+New accounts receive provisional private-beta allowances: 1 GiB storage, 250 MiB maximum asset size, ten timelines, and 100 links. These are not published pricing. Upload applies narrower per-media limits and reservation accounting. Returning sign-ins preserve existing quotas. Expired sessions/attempts are cleaned at login start; the hardening slice will also schedule cleanup. Real Google sign-in remains an external smoke gate; tests use locally signed synthetic tokens and mocked provider endpoints with real local D1.
 
 Reference: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect). JWT verification uses the pinned, Workers-compatible `jose` package instead of custom signature code.
+
+## Direct media upload
+
+1. Authenticated clients send JSON to `POST /api/assets/upload-intent`: `filename`, `mime_type`, `size_bytes`, and optional offset-qualified `captured_at`.
+2. A 201 response returns a private pending `asset` and `upload` containing `method`, `url`, `headers`, and `expires_at`. Send the original File/Blob directly to that R2 URL, not through the Worker.
+3. Call `POST /api/assets/:id/complete` after PUT succeeds. A 200 response contains the ready asset; retries and simultaneous completions count storage once.
+
+Both API mutations require the session cookie and exact same-origin policy. The URL lasts ten minutes and signs the object path, Content-Type, exact Content-Length, and **If-None-Match: \***. Clients must send every returned header. Browsers calculate Content-Length from the File/Blob; do not set it manually or wrap the file in FormData. A second PUT returns a precondition failure instead of overwriting media. If a PUT response was lost, attempt completion before starting a replacement intent. Never log or persist the signed URL.
+
+Allowed media: JPEG, PNG, WebP, GIF (up to 25 MiB), MP4 and WebM (up to 250 MiB), additionally capped by account limits. Completion checks object size, stored MIME, ETag, format signatures, and image dimensions using at most 256 KiB. Images must have readable headers within that sample, sides at most 30,000 pixels, and at most 100 million pixels. This is metadata validation, not a full decoder, antivirus scan, or video codec/transcoding guarantee. Audio and arbitrary files remain disabled.
+
+Live pending/failed intents reserve quota until their capability expires; ready assets count in `storage_used_bytes`. `/api/me` also reports `storage_reserved_bytes`. Invalid uploaded objects require a new intent, not an overwrite. Missing objects can retry completion until expiry. `cleanupExpiredUploads` releases expired intents and purges abandoned objects only after a 24-hour grace period, in cursor batches; scheduling and orphan reconciliation belong to the hardening slice. Never enable public uploads before rate limits, cleanup scheduling, and abuse controls are verified.
+
+### R2 environment requirements
+
+Keep the bucket private: disable public `r2.dev` access and do not expose a public bucket domain. Configure `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for an isolated cloud environment whose `MEDIA` binding refers to that same bucket. Store keys through platform secrets. Bucket CORS must allow the exact app origin, PUT, Content-Type, If-None-Match, and Content-Length; optionally expose ETag. Do not use wildcard origins as a substitute for configuration.
+
+Local tests use real simulated D1/R2 and synthetic signing credentials. Wrangler's local R2 binding is not a public S3 endpoint; the app intentionally has no binary proxy fallback. A real browser direct-upload smoke test needs isolated cloud bindings, credentials, and CORS. Before release, verify a 250 MB PUT, signed-header tampering rejection, duplicate PUT rejection, expiry, and completion against real R2.
+
+References: [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), [conditional PutObject support](https://developers.cloudflare.com/r2/api/s3/api/), and [bucket CORS](https://developers.cloudflare.com/r2/buckets/cors/).
 
 ## API foundation
 

@@ -72,6 +72,7 @@ Inputs needed for external integration: GitHub repository URL; Cloudflare accoun
 ## Execution status
 
 - Stage 01 was reviewed and merged into `main` in [PR #1](https://github.com/easysun/ages/pull/1). Local clean install, migration/rerun, lint, types, 27 runtime tests, Worker build, HTTP smoke checks, and GitHub CI passed.
-- Stage 02 is implemented on `feat/auth`: Google OIDC with S256 PKCE, one-use browser-bound attempts, subject-based identities, hashed sessions, quota provisioning, `/api/me`, and same-origin logout. Local migration/upgrade/rerun, lint, typecheck, 70 tests, and dry-run build pass. PR review and a credentialed Google smoke check remain separate gates.
-- Stages 03-10 are planned, not implemented.
+- Stage 02 was reviewed and merged in [PR #2](https://github.com/easysun/ages/pull/2). Local migration/upgrade/rerun, lint, typecheck, 70 tests, dry-run build, and GitHub CI passed. Credentialed Google sign-in remains an external smoke gate.
+- Stage 03 is implemented on `feat/direct-upload`: signed create-only R2 PUT, atomic quota reservation/completion, bounded format/image-metadata validation, and cleanup helpers. A signed `If-None-Match: *` freezes objects without a second copy. Local verification and PR/cloud gates are recorded with the feature delivery.
+- Stages 04-10 are planned, not implemented. Cloud upload smoke, scheduled cleanup, and rate-limit hardening remain required before public beta.
 - The remote is `https://github.com/easysun/ages`. No released branch, cloud deployment, or business UI exists yet.
