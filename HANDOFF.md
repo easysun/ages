@@ -11,6 +11,42 @@
 - Independent Link review found two fail-closed redirect gaps: unsafe persisted URLs and invalid configured canonical origins. Both new real D1 regressions failed (25 existing tests passed), then passed after reusing the URL schema during resolution and existing `appOrigin()` validation. Fresh full check now passes lint/types, 238 tests (27 Link tests), and dry-run build. Review approval remains pending the immutable fix commit.
 - Public SSR is committed separately at `f0457d0` on `feat/public-timeline`, including integration merge `e519001` with the shared media helper and main `2b9870a`. Trash/restore is at `e8dc585` on `feat/asset-trash`; root review identified a potential timestamp ABA race and requested a deterministic test and true trash-generation token if confirmed (migration 0007 reserved). React Library remains an isolated writer with final browser regressions pending. Do not discard, switch, or edit their files.
 
+## Trash generation fix checkpoint — October 4, 2026
+
+This supersedes the earlier timestamp-only trash design while preserving the prior checkpoints below. The isolated branch remains `feat/asset-trash` at `/Users/bay/.codex/worktrees/asset-trash/ages`; no other checkout was edited.
+
+### Last three checkpoints
+
+1. Original backend trash/restore feature was committed as `9afce41`, then updated main was normally merged as `e8dc585`; post-merge full checks passed 237 tests. Root review identified that `deleted_at` alone could reuse an identical millisecond and could not safely identify separate trash generations.
+2. A deterministic real D1/R2 regression froze Date, paused the first restore's metadata read, ran a second restore followed by retrash at the same timestamp, then resumed the first. Before the fix it returned 200 instead of the required 409 and restored the newest trash. This RED was observed directly; there is no active tool/credit block.
+3. Added migration `0007_asset_trash_generation.sql`, which backfills a fresh random token on every existing deleted asset without changing other state. Trash now creates a fresh internal UUID token; restore compares the inspected token, deletion time, ETag/MIME and retention cutoff, then clears the token. `assetPayload` removes it from all JSON. All 29 trash integration tests and full 240-test suite passed, alongside lint/types/dry-run build; local migration application and rerun plus whitespace checks passed.
+
+### Exact remainder and boundaries
+
+- Feature commit and updated-main merge remain intact; the new focused fix must be integrated with them. Migration 0006 belongs to Links, while 0007 is additive and owned by this fix. On the combined branch apply the complete ordered migration set before running the Worker. Legacy deleted assets receive tokens during migration and remain restorable within their original deadline.
+- Root should independently review the immutable fix, integrate after Timeline, and rerun the combined suite/migrations. No push, PR, new merge, deployment, purge endpoint, or R2 write/delete was performed during this fix.
+- Root assigned the public author to Links review. Await the React Library author's immutable commit, then perform a read-only independent review of mobile/keyboard/auth upload behavior, refresh persistence, browser build integration, and API contract use. Do not edit root or another writer's checkout. UI, scheduled purge, browser/cloud and MVP release gates remain open.
+
+
+## Asset trash/restore checkpoint — October 4, 2026
+
+This section supersedes earlier backend next steps for the isolated `feat/asset-trash` branch at `/Users/bay/.codex/worktrees/asset-trash/ages`, based on combined Library/Timeline commit `80c1539`. The frontend writer remains isolated; this slice contains no UI changes.
+
+### Last three checkpoints
+
+1. Read AGENTS, the existing Library/upload/asset models, callers, migrations, cleanup behavior, and handoff. Created the authorized isolated branch and ran lockfile `npm ci --prefer-offline` (zero reported vulnerabilities). The initial real D1/R2 trash suite observed 19 expected missing-route failures and one existing purged-state 404 pass before production changes.
+2. Added same-origin strict-empty-JSON trash/restore routes, separate static trash listing before `/:id`, and collection-scoped cursors preserving existing ready-list cursor contracts. Trash conditionally updates only owned ready assets with no actual item/cover references; migration 0005 triggers remain the second guard and map reference violations to 409. Restore checks retained ETag/size/MIME, matches the inspected deletion/validation metadata, and rechecks retention after R2 inspection. All initial 20 tests passed.
+3. Expanded coverage verifies stale trash generations, authoritative metadata changes during inspection, invalid deletion times, idempotent ready restores, trigger error mapping, references/removal, race winners, pagination ties, 30-day millisecond boundaries, and retained R2 bytes/tags/quota. Fresh full `npm run check` passed lint, types, 237 tests in 12 files, and the dry-run Worker build. Local migrations 0001–0005 applied and reran with no pending migrations; whitespace checks passed. Existing Biome emits one informational template suggestion in the unchanged Library test, with zero errors and exit 0.
+
+### Decisions and exact remainder
+
+- Restore is available strictly before `deleted_at + 30 * 24 hours`; the exact deadline and older trash return 409. A repeated ready restore does not inspect or mutate R2. Both transition routes preserve timestamps on idempotent repeats, and quotas stay charged until eventual purge.
+- Trash keeps tags and R2 bytes; restore clears `deleted_at`. No physical deletion, purge, scheduler, or lifecycle expiry configuration is added. The existing expired-upload cleanup remains unchanged and handles only failed upload objects, not trashed memories.
+- The trash collection accepts only bounded `limit` and a cursor bound to owner and collection, sorted by immutable asset creation time and ID. Ready-list filters remain strict; neither collection accepts the other's cursors. Both return normal storage-redacted asset/tag payloads.
+- No migration or dependency was added; migration 0006 is reserved for future Link work. No other worktree was edited. No push, PR, feature merge into main, deployment, or live cloud mutation occurred.
+- Feature commit `9afce41` is retained. A normal merge of updated `origin/main` (`2b9870a`, Timeline PR #6) preserves the root integration checkpoint below; fresh post-merge full checks passed all 237 tests, lint, types, and dry-run build; migration rerun and whitespace checks passed.
+- Root should independently review and integrate this commit after the combined Timeline baseline, rerun full checks and migration/rerun, then publish through the normal review flow. Frontend trash/restore controls, scheduled purge/reconciliation, real cloud smoke, and remaining product/browser gates stay open.
+
 ## Public Timeline checkpoint — October 4, 2026
 
 This is the current checkpoint for isolated `feat/public-timeline` at `/Users/bay/.codex/worktrees/public-timeline/ages`. Earlier Root, Timeline, and Library checkpoints are preserved below.
