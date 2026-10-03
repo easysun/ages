@@ -2,6 +2,39 @@
 
 ## Goal and scope
 
+## Root integration checkpoint — October 4, 2026
+
+- PR #5 passed independent Library review (59 tests rerun) and latest GitHub CI, then merged into main as `88919b5`. Root main was fast-forwarded without changing the original checkout.
+- Root integrated Timeline commit `cf7ab6a` onto updated main as `80c1539` on `feat/timeline-api`, preserving both route sets and both README/HANDOFF sections. Independent Timeline review reran all 152 tests and found no blockers. Known limits remain the 1,000-ID reorder bound and a permissive list cursor contract; SQL ownership still applies.
+- Fresh combined `npm run check` passed lint, types, 211 tests in 11 files, and Worker dry-run build. Local migration 0005 applied after 0004; rerun reported no migrations to apply. No deployment occurred. Next: publish the focused Timeline API PR, verify CI, merge, then integrate the remaining product slices.
+- Isolated writers now own React Library at `/Users/bay/.codex/worktrees/react-library/ages`, public Timeline SSR at `/Users/bay/.codex/worktrees/public-timeline/ages`, and recoverable Asset trash/restore at `/Users/bay/.codex/worktrees/asset-trash/ages`. Their commits and acceptance gates remain pending. Keep the three earlier checkpoints below intact.
+- The reset continuation remains scheduled once at 2026-10-04 04:56:52 Asia/Taipei with exact prompt `繼續執行`. Cloud bindings/login, real browser R2 upload, 250 MB upload, editor integration, sharing, abuse controls, and operations gates remain open; the MVP is not complete.
+
+## Timeline domain checkpoint — October 4, 2026
+
+This section describes the isolated `feat/timeline-domain` worktree at `/Users/bay/.codex/worktrees/timeline-domain/ages`, based on `3590b41`. It supersedes historical next steps for this branch only. Library is a parallel slice; no Library or original-checkout files were edited here.
+
+### Last three checkpoints
+
+1. Read the repository contracts and approved Timeline design, created the isolated branch, and installed the committed dependencies with `npm ci --prefer-offline` (zero reported vulnerabilities). Twelve behavior-focused real D1 tests failed against the missing Timeline routes before implementation.
+2. Added migration `0005_timelines.sql`, strict named-zone calendar/instant schemas, owner-only routes, and token/version-guarded D1 mutation batches. The initial 12 tests passed; the first full check passed lint, types, all 142 then-current tests, and the local dry-run Worker build. Subsequent edge coverage passed for foreign IDs, sparse/empty order, mixed mutation races, direct SQL guards, and released cover references.
+3. Regression tests exposed the storage-specific quota message and Intl accepting numeric offsets as timezone names. Both failed before their fixes; the final Timeline suite has 18 real D1 tests and four pure date-schema tests. Fresh full verification passed 152 tests, lint, types, and local dry-run build. Local migration application (0001–0003 and 0005) and rerun passed; whitespace validation passed. No cloud changes, push, PR, or merge occurred.
+
+### Decisions and integration boundary
+
+- Timeline/Item IDs are opaque stable IDs. API fields use `event_at` and `position`; captions/date metadata are independent of Asset capture time. Dates preserve calendar precision; instants normalize to UTC milliseconds and retain their named timezone.
+- Every valid mutation advances version once. A first conditional timeline UPDATE generates an internal token; every dependent item write and response SELECT requires that token, new version, and owner. Stale zero-row CAS attempts cannot alter item rows, timestamps, or tokens. A later SQL failure rolls the whole batch back.
+- Composite owner foreign keys, readiness triggers, immutable association identities, and asset reference triggers include both item references and covers. Removing an item never deletes Asset. Timeline quota checks run inside SQL and have a database trigger for direct SQL callers.
+- Unique nonnegative item positions can have gaps after removal; two-phase complete-set reorder parks positions above the occupied range before assigning zero-based final positions. Reorder accepts at most 1,000 IDs and shares the existing 64 KiB metadata request limit. Append does not impose a product item cap; larger ordering/pagination policies remain future work.
+- API reads remain owner-only even for public/unlisted metadata. Public rendering/media authorization, React UI, native auth, sharing/links, browser accessibility, viewport integration, and live cloud gates are not implemented by this slice.
+- Library integration must account for `asset_referenced_by_timeline` on trash/purge/delete and count both `timeline_items` and `timelines.cover_asset_id` references. Migration 0004 belongs to Library; 0005 is independently additive and must be applied after 0004 in the combined branch.
+
+### Exact remainder
+
+Root should independently review the committed Timeline slice, integrate it after Library 0004, resolve shared route/docs/error-file changes, and rerun full check plus fresh migration/rerun with both migrations. This branch must not push, publish a PR, merge, or deploy. The same reviewer is next assigned to read-only Library review at commits `8dfa0b0` and `d87be1b` in `/Users/bay/.codex/worktrees/7026/ages`; report concrete blockers without editing that checkout.
+
+
+
 ## Current session checkpoint — Library API, October 4, 2026
 
 This section supersedes historical next steps below. Earlier checkpoints remain intact for context.
