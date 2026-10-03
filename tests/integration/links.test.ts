@@ -366,6 +366,27 @@ describe("Durable owner Links", () => {
 });
 
 describe("Authoritative Timeline Link resolution", () => {
+  it("rejects unsafe persisted destinations even if a non-API writer inserted them", async () => {
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      "INSERT INTO links(id,owner_id,slug,target_kind,target_url,created_at,updated_at) VALUES('bad','owner_a','unsafe','url','javascript:alert(1)',?,?)",
+    )
+      .bind(now, now)
+      .run();
+    await error(await resolve("unsafe"), 404, "NOT_FOUND");
+  });
+  it("fails closed when the configured canonical origin is invalid", async () => {
+    await timeline("story");
+    const saved = await link({
+      target: { kind: "timeline", timeline_id: "story" },
+    });
+    const response = await app.request(
+      `${origin}/s/${saved.slug}`,
+      {},
+      { ...bindings, APP_ENV: "production", APP_ORIGIN: "ftp://ages.test" },
+    );
+    await error(response, 503, "SERVICE_UNAVAILABLE");
+  });
   it("uses a stable canonical target across append and hides it as soon as visibility becomes private", async () => {
     await timeline("story");
     const saved = await link({

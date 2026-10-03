@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 const slugSchema = z.string().regex(/^[a-z0-9-]{3,64}$/);
-const urlSchema = z
+export const linkUrlSchema = z
   .string()
   .max(4096)
   .refine((value) => {
@@ -38,7 +38,7 @@ const expirySchema = z.iso
   .nullable();
 export const createLinkSchema = z.strictObject({
   target: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("url"), url: urlSchema }),
+    z.strictObject({ kind: z.literal("url"), url: linkUrlSchema }),
     z.strictObject({
       kind: z.literal("timeline"),
       timeline_id: z.string().min(1).max(100),

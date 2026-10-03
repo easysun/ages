@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { encodeCursor, libraryQuery } from "../assets/library";
-import { assertSameOrigin } from "../auth/config";
+import { appOrigin, assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
 import { ApiError } from "../http/errors";
@@ -9,6 +9,7 @@ import {
   createLinkSchema,
   type Link,
   linkPayload,
+  linkUrlSchema,
   updateLinkSchema,
 } from "../links/model";
 
@@ -175,9 +176,10 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
     if (!visible) throw new ApiError("NOT_FOUND");
     target = new URL(
       `/t/${encodeURIComponent(row.timeline_id ?? "")}`,
-      context.env.APP_ORIGIN,
+      appOrigin(context.env),
     ).href;
   }
-  if (!target) throw new ApiError("NOT_FOUND");
-  return context.redirect(target, 302);
+  const destination = linkUrlSchema.safeParse(target);
+  if (!destination.success) throw new ApiError("NOT_FOUND");
+  return context.redirect(destination.data, 302);
 });
