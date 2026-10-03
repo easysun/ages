@@ -2,9 +2,19 @@
 
 ## Goal and scope
 
-## Current session checkpoint — October 4, 2026
+## Current session checkpoint — Library API, October 4, 2026
 
-This section supersedes historical next steps and scheduling notes below.
+This section supersedes historical next steps below. Earlier checkpoints remain intact for context.
+
+- Library implementation is committed as `8dfa0b0` on `feat/library-api` in `/Users/bay/.codex/worktrees/7026/ages`, based on `410199478bd9d03f33c956bd0881baca964cbbfa`. Root verified viewport PR #4 merged into `origin/main` as `3590b41`; root will integrate that merge before publishing the Library PR. This implementer did not push, publish, merge, or deploy.
+- Library provides authenticated owner-only `GET /api/assets` (ready assets, descending created_at/id keyset cursor scoped to owner and exact tag, default 30/max 100), live asset detail, validated private R2 `GET`/`HEAD` media with single byte ranges, and same-origin transactional exact tag replacement. Tags are bounded at 20 distinct nonblank strings of 64 UTF-16 code units. Asset payloads hide storage keys/ETags; conditional media reads also check size/MIME and version consistency. Migration `0004_asset_tags.sql` adds only tags and ownership/count guards.
+- TDD evidence: initial Library run failed 46 tests with eight existing error-path passes; all initial 54 passed after implementation. Expanded regression observed stale Content-Length on media rejection (one failure/58 passes), then passed after delaying success headers. Fresh full `npm run check` passed lint, typechecks, 189 tests (59 Library tests), and dry-run build. Local migration 0004 applied successfully; rerun reported `No migrations to apply!`; `git diff --check` and staged whitespace checks passed.
+- Next: root reviews the immutable Library commit, integrates updated main, publishes its focused PR, checks CI, and merges if approved. A separately isolated `feat/timeline-domain` checkout owns migration 0005; do not edit or switch its files. There is no Library UI or browser smoke test yet. Do not enable trash/delete/restore until real TimelineItem and cover references enforce tested deletion guards; never substitute a synthetic reference count.
+- Cloud gates remain open: root verified `wrangler whoami` reports `You are not authenticated. Please run wrangler login.` Environment bindings are placeholders. No credentialed Google login, real browser R2 upload, cloud deployment, or 250 MB upload has been verified. Scheduling cleanup, orphan reconciliation, rate limits, and abuse controls remain required before public beta. Viewport renderer/lifecycle/gestures/mobile/keyboard/accessibility/performance gates remain unfinished.
+
+## Previous session checkpoint — October 4, 2026
+
+This historical section has been superseded by the Library checkpoint above.
 
 - Active chat/worktree: `01a10287-0b6c-7ca3-848b-f92e33d8ff11`, `/Users/bay/.codex/worktrees/7026/ages`. Preserve the separate original checkout at `/Users/bay/dev/easysun/ages`, including its uncommitted HANDOFF update.
 - Usage API reports the five-hour reset at 2026-10-04 04:55:52 Asia/Taipei. Single-run same-chat heartbeat `continue-ages-after-usage-reset` is ACTIVE at 04:56:52, exact prompt `繼續執行`. Creation, view, and saved configuration were verified. The machine and desktop app must remain running for local work.
