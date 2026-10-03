@@ -1,14 +1,26 @@
 # Timeline editor active checkpoint
 
-Worktree: `/Users/bay/.codex/worktrees/timeline-editor/ages`; branch: `feat/timeline-editor`, based on immutable client `1a8840f`. Editor implementation is paused; root reauthorized the original Library writer to fix four independently confirmed regressions there.
+Worktree: `/Users/bay/.codex/worktrees/timeline-editor/ages`; branch: `feat/timeline-editor`, based on immutable client `1a8840f`. The four independently confirmed Library regressions were fixed and verified as `6e53770` in the original checkout; this branch carries that fix after merge `8eeddb9`.
 
 ## Current three checkpoints
 
 1. Created the editor branch and normally merged `origin/main` at `2b9870a`, resolving app/README/HANDOFF conflicts by preserving Library and Timeline routes and all relevant delivery checkpoints. The actual Timeline API and migration0005 are now present; no fake viewer endpoint exists.
 2. `npm ci --prefer-offline` passed with zero audit findings. Combined baseline lint/types,211 runtime tests, and both builds passed. Browser baseline initially stopped because8791 was in use by the separate Library review; no other process was stopped or reused.
-3. Added an optional `AGES_E2E_PORT` override shared by Playwright/server/fixtures. The full combined `AGES_E2E_PORT=8792 npm run check` exited0: lint/types,211 runtime tests, both builds, and22 desktop/mobile HTTP browser cases passed. Timeline browser/UI/viewport/public-share gates remain unimplemented in this checkout.
+3. Added an optional `AGES_E2E_PORT` override shared by Playwright/server/fixtures. The original combined baseline passed22 browser cases; after carrying Library fix `6e53770`, fresh `AGES_E2E_PORT=8792 npm run check` exited0: lint/types,211 runtime tests, both builds, and30 desktop/mobile HTTP browser cases passed in1.5minutes. Timeline browser/UI/viewport/public-share gates remain unimplemented in this checkout.
 
-Next: commit this safe integration merge, fix and verify the four Library review regressions in the original Library checkout, then cherry-pick that fix here before writing editor tests. Preserve both checkouts. Root owns the real public SSR contract/integration; wait for that commit before testing canonical sharing. Do not push, create a PR, merge into main, or deploy.
+Next: write actual-API editor/viewport browser tests and observe missing-editor RED; this combined base is verified with the Library correction. Preserve both checkouts. Root owns the real public SSR contract/integration; wait for that commit before testing canonical sharing. Do not push, create a PR, merge into main, or deploy.
+
+# Library review corrections active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.
+
+## Current three checkpoints
+
+1. Reproduced delayed upload completion overriding a newer exact filter, a delayed real profile200 restoring authenticated UI after successful logout/server401, and `/s` returning SPA HTML200. Corrected focus-test setup to use actual browser tag mutations, then observed RED when Escape focused no surviving control after the edited card disappeared.
+2. Refreshed the current filter with functional state updates, guarded upload state/profile callbacks after unmount and invalidated profile callbacks when logout begins, preserved completed-upload/quota-refresh-error semantics, added Worker-first `/s` routing, and restored focus to the filter when the opener is disconnected. Eight targeted desktop/375px mobile actual HTTP cases passed; only upload S3 transport is simulated, with real local R2 completion.
+3. Fresh `npm run check` exited0 on October4: lint and all TypeScript configurations passed,189/189 runtime tests passed, client and dry-run Worker builds passed,30/30 actual HTTP desktop/375px mobile Chromium cases passed in1.4minutes. Refreshed desktop and mobile Library/detail screenshots were inspected. Existing nonfatal Library formatting info and expected negative-case Worker logs remain. No backend application or schema changes were made.
+
+Exact next step: commit this verified regression slice and cherry-pick it into the preserved Timeline editor branch before resuming approved Stage06 work. Original Library application code is frozen after this verification. No push, PR, merge into main, or deployment is authorized for this writer.
 
 # React Library active checkpoint
 
