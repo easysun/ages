@@ -389,3 +389,158 @@ test("a quota refresh failure does not turn a completed upload into a failed upl
     page.getByRole("button", { name: "Retry Already safe.png" }),
   ).toHaveCount(0);
 });
+
+test("upload completion preserves a newer exact tag filter", async ({
+  page,
+  context,
+}) => {
+  await seedLibrary(context);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = () => {};
+  const completing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  await page.route("**/api/assets/*/complete", async (route) => {
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    started();
+    await gate;
+    await route.fulfill({ response });
+  });
+  await page.route(
+    `https://${"a".repeat(32)}.r2.cloudflarestorage.com/**`,
+    async (route) => {
+      const key = new URL(route.request().url()).pathname
+        .split("/")
+        .slice(2)
+        .join("/");
+      putFixture(key, photo(120, 90));
+      await route.fulfill({ status: 200 });
+    },
+  );
+  try {
+    await page.goto("/library");
+    await page.getByLabel("Choose photos or videos").setInputFiles({
+      name: "Filter race.png",
+      mimeType: "image/png",
+      buffer: photo(120, 90),
+    });
+    await completing;
+    await page.getByRole("textbox", { name: "Filter by tag" }).fill("No match");
+    await page.getByRole("textbox", { name: "Filter by tag" }).press("Enter");
+    await expect(page.getByRole("button", { name: /^Open / })).toHaveCount(0);
+    release();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Saved to your library" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Tagged “No match”", exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Open / })).toHaveCount(0);
+  } finally {
+    release();
+  }
+});
+
+test("delayed upload profile cannot restore a signed-out library", async ({
+  page,
+  context,
+}) => {
+  await seedLibrary(context);
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = () => {};
+  const refreshing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let reads = 0;
+  await page.route("**/api/me", async (route) => {
+    if (++reads === 1) return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    started();
+    await gate;
+    await route.fulfill({ response });
+  });
+  await page.route(
+    `https://${"a".repeat(32)}.r2.cloudflarestorage.com/**`,
+    async (route) => {
+      const key = new URL(route.request().url()).pathname
+        .split("/")
+        .slice(2)
+        .join("/");
+      putFixture(key, photo(120, 90));
+      await route.fulfill({ status: 200 });
+    },
+  );
+  try {
+    await page.goto("/library");
+    await page.getByLabel("Choose photos or videos").setInputFiles({
+      name: "Logout race.png",
+      mimeType: "image/png",
+      buffer: photo(120, 90),
+    });
+    await refreshing;
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Keep your moments close." }),
+    ).toBeVisible();
+    expect((await context.request.get("/api/me")).status()).toBe(401);
+    const delivered = page.waitForResponse("**/api/me");
+    release();
+    await delivered;
+    // Let the fulfilled response and its client continuation settle.
+    await page.waitForLoadState("networkidle");
+    await expect(
+      page.getByRole("heading", { name: "Keep your moments close." }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+  } finally {
+    release();
+  }
+});
+
+test("short link namespace returns Worker JSON errors instead of the client shell", async ({
+  request,
+}) => {
+  for (const path of ["/s", "/s/missing"]) {
+    const response = await request.get(path);
+    expect(response.status()).toBe(404);
+    expect(response.headers()["content-type"]).toContain("application/json");
+    expect((await response.json()).error.code).toBe("NOT_FOUND");
+  }
+});
+
+test("closing details focuses the filter when edited tags remove its opener", async ({
+  page,
+  context,
+}) => {
+  await seedLibrary(context);
+  await page.goto("/library");
+  await page.getByRole("button", { name: "Open Coastal light.png" }).click();
+  await page.getByRole("textbox", { name: "Tags" }).fill("Coast");
+  await page.getByRole("button", { name: "Save tags" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Tags saved" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.goto("/library?tag=Coast");
+  await page.getByRole("button", { name: "Open Coastal light.png" }).click();
+  await page.getByRole("textbox", { name: "Tags" }).fill("Other");
+  await page.getByRole("button", { name: "Save tags" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Tags saved" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Open Coastal light.png" }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(
+    page.getByRole("textbox", { name: "Filter by tag" }),
+  ).toBeFocused();
+});

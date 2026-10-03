@@ -31,13 +31,15 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [profileRequest, setProfileRequest] = useState({ path: "/api/me" });
+  const authGeneration = useRef(0);
   useEffect(() => {
     let live = true;
+    const generation = authGeneration.current;
     setLoading(true);
     setError("");
     api<Profile>(profileRequest.path)
       .then((result) => {
-        if (live) setProfile(result);
+        if (live && generation === authGeneration.current) setProfile(result);
       })
       .catch((reason) => {
         if (
@@ -54,6 +56,7 @@ function App() {
     };
   }, [profileRequest]);
   async function logout() {
+    authGeneration.current++;
     try {
       const response = await fetch("/auth/logout", {
         method: "POST",
@@ -65,6 +68,7 @@ function App() {
       setError("Sign out could not be completed. Please try again.");
     }
   }
+  const generation = authGeneration.current;
   return (
     <>
       <a className="skip-link" href="#main">
@@ -102,7 +106,12 @@ function App() {
           </button>
         </main>
       ) : profile ? (
-        <Library profile={profile} onProfile={setProfile} />
+        <Library
+          profile={profile}
+          onProfile={(next) => {
+            if (generation === authGeneration.current) setProfile(next);
+          }}
+        />
       ) : (
         <Landing />
       )}
@@ -183,7 +192,15 @@ function Library({
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [uploading, setUploading] = useState(false);
   const [quotaNotice, setQuotaNotice] = useState("");
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const input = useRef<HTMLInputElement>(null);
+  const filter = useRef<HTMLInputElement>(null);
   const opener = useRef<HTMLButtonElement | null>(null);
   const pageRequest = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -243,12 +260,14 @@ function Library({
     window.history.replaceState(null, "", url);
   }
   async function run(job: UploadJob) {
-    const update = (change: Partial<UploadJob>) =>
+    const update = (change: Partial<UploadJob>) => {
+      if (!mounted.current) return;
       setJobs((current) =>
         current.map((item) =>
           item.id === job.id ? { ...item, ...change } : item,
         ),
       );
+    };
     update({ phase: "uploading", message: "" });
     try {
       await uploadFile(job, update);
@@ -256,12 +275,16 @@ function Library({
       update({ phase: "error", message: errorMessage(reason) });
       return;
     }
+    if (!mounted.current) return;
     update({ phase: "saved", message: "Saved to your library" });
-    setLibraryRequest({ tag });
+    setLibraryRequest((current) => ({ tag: current.tag }));
     try {
-      onProfile(await api<Profile>("/api/me"));
+      const next = await api<Profile>("/api/me");
+      if (!mounted.current) return;
+      onProfile(next);
       setQuotaNotice("");
     } catch {
+      if (!mounted.current) return;
       setQuotaNotice(
         "Storage display may be out of date. Refresh the page to update it.",
       );
@@ -281,20 +304,25 @@ function Library({
       ...added,
     ]);
     setUploading(true);
-    for (const job of added) await run(job);
+    for (const job of added) {
+      if (!mounted.current) return;
+      await run(job);
+    }
+    if (!mounted.current) return;
     setUploading(false);
     if (input.current) input.current.value = "";
   }
   async function retry(job: UploadJob) {
     setUploading(true);
     await run(job);
-    setUploading(false);
+    if (mounted.current) setUploading(false);
   }
   function saved(asset: LibraryAsset) {
+    if (!mounted.current) return;
     setAssets((current) =>
       current.map((row) => (row.id === asset.id ? asset : row)),
     );
-    setLibraryRequest({ tag });
+    setLibraryRequest((current) => ({ tag: current.tag }));
   }
   const quota = profile.quota;
   const progress = Math.min(
@@ -351,6 +379,7 @@ function Library({
           >
             <label htmlFor="tag-filter">Filter by tag</label>
             <input
+              ref={filter}
               id="tag-filter"
               type="text"
               value={filterInput}
@@ -619,7 +648,8 @@ function Library({
           onSaved={saved}
           onClose={() => {
             setDetails(null);
-            opener.current?.focus();
+            if (opener.current?.isConnected) opener.current.focus();
+            else filter.current?.focus();
           }}
         />
       ) : null}

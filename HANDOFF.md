@@ -1,3 +1,15 @@
+# Library review corrections active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.
+
+## Current three checkpoints
+
+1. Reproduced delayed upload completion overriding a newer exact filter, a delayed real profile200 restoring authenticated UI after successful logout/server401, and `/s` returning SPA HTML200. Corrected focus-test setup to use actual browser tag mutations, then observed RED when Escape focused no surviving control after the edited card disappeared.
+2. Refreshed the current filter with functional state updates, guarded upload state/profile callbacks after unmount and invalidated profile callbacks when logout begins, preserved completed-upload/quota-refresh-error semantics, added Worker-first `/s` routing, and restored focus to the filter when the opener is disconnected. Eight targeted desktop/375px mobile actual HTTP cases passed; only upload S3 transport is simulated, with real local R2 completion.
+3. Fresh `npm run check` exited0 on October4: lint and all TypeScript configurations passed,189/189 runtime tests passed, client and dry-run Worker builds passed,30/30 actual HTTP desktop/375px mobile Chromium cases passed in1.4minutes. Refreshed desktop and mobile Library/detail screenshots were inspected. Existing nonfatal Library formatting info and expected negative-case Worker logs remain. No backend application or schema changes were made.
+
+Exact next step: commit this verified regression slice and cherry-pick it into the preserved Timeline editor branch before resuming approved Stage06 work. Original Library application code is frozen after this verification. No push, PR, merge into main, or deployment is authorized for this writer.
+
 # React Library active checkpoint
 
 Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`; base: `3590b41`. Backend Library commits were cherry-picked as `fd306a2` and `5f821f2`; backend source/migrations are unchanged by the client writer. Do not deploy, push, or merge this client slice without root coordination.

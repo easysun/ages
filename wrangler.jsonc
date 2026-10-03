@@ -19,7 +19,9 @@
       "/health",
       "/health/*",
       "/t",
-      "/t/*"
+      "/t/*",
+      "/s",
+      "/s/*"
     ]
   },
   "d1_databases": [
