@@ -2,6 +2,25 @@
 
 ## Goal and scope
 
+
+## Raw Asset Link checkpoint — October 4, 2026
+
+The isolated `feat/asset-links` branch at `/Users/bay/.codex/worktrees/asset-links/ages` owns this extension. Earlier Root, public viewer, and trash checkpoints remain intact below.
+
+### Last three checkpoints
+
+1. Created the authorized branch from `fc511cd` and normally merged the verified trash branch `4a4b1f5` as `9b7e91a`. Resolved only the HANDOFF conflict by retaining both histories. Lockfile `npm ci --cache /private/tmp/ages-npm-cache --prefer-offline` completed; the combined baseline passed lint/types, 293 tests, and dry-run build.
+2. The first ten real D1/R2 Asset Link tests failed against the missing canonical schema and grant behavior before implementation. Additive migration 0008 copies old Link rows unchanged before quota/readiness guards, freezes the legacy table, and reserves every slug permanently. Runtime Link queries now use `distribution_links`; explicit owned ready Asset targets stream anonymously while owner APIs remain private. All initial 66 scoped Link/trash tests passed.
+3. Expanded coverage now passes fourteen Asset Link tests, including lowered-quota/private-Timeline backfill preservation and rerun, archive writes, cross-owner SQL/API, cross-kind quota/slug races, permanent reservations and batch rollback, HEAD/ranges, exact expiry and mid-inspection revocation, R2 loss/replacement, active expired references, deactivation, reactivation/trash races, retained tags/bytes/quota, and internal-token redaction. Fresh full `npm run check` passed lint/types, 307 tests in 15 files, and Worker dry-run build. Local migrations through 0008 applied; rerun reported no migrations to apply. Whitespace checks passed.
+
+### Decisions and exact remainder
+
+- The sole live Link entity is `distribution_links`, with exactly one URL, Timeline, or Asset target and real composite owner foreign keys. Old `links` rows remain a read-only archive; no old migration, table, or stored row was dropped, deleted, or overwritten. The slug-only reservation ledger survives Link row removal and forbids updates/deletes. All live rows, including inactive/expired Links, count toward creation quota.
+- Raw Asset grants are served directly at GET/HEAD `/s/:slug`, without owner API redirects or R2 URLs. Asset visibility stays private. The authoritative joined Link/Asset grant is checked per request and after R2 inspection; the shared streaming helper accepts an optional recheck and cancels the body on revoked grants before success headers. Already-started streams cannot retract bytes previously delivered.
+- Active Asset Link references block trash even after Link expiry until explicit deactivation. The conditional trash precondition and migration trigger enforce this transactionally; known Link reference trigger failures map to 409. Inactive Link foreign keys preserve Asset rows, allowing future purge to update state rather than physically remove records. Link deactivation/removal never deletes media or changes storage usage.
+- Root should independently review the immutable feature commit, integrate through normal review after the URL/Timeline Link PR, and rerun the combined checks/migrations. Purge migration 0009 and claim fields remain owned by the separate purge writer; none were invented or edited here. Preserve the shared helper callback and trash Link guard when integrating its changes.
+- No push, PR, deployment, live-cloud mutation, new endpoint for Link deletion, QR UI, password, or private Timeline grant was performed. Browser distribution controls, real cloud smoke, operational hardening, and the remaining editor/release gates are still open.
+
 ## Reset continuation and Link checkpoint — October 4, 2026
 
 - The scheduled `繼續執行` heartbeat arrived at 04:57:03 Asia/Taipei. Usage API confirms ordinary usage allowed and the new five-hour window at 0%; reset is 09:57:17. The existing same-chat automation was updated, not duplicated, to run once at 09:58:17 with the same exact prompt. The desktop app and computer must remain running.
