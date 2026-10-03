@@ -71,6 +71,6 @@ Inputs needed for external integration: GitHub repository URL; Cloudflare accoun
 
 ## Execution status
 
-- Stage 01 is implemented on `feat/foundation`, pending PR/CI review. Local clean install, migration/rerun, lint, types, 27 runtime tests, and Worker build have passed.
+- Stage 01 was reviewed and merged into `main` in [PR #1](https://github.com/easysun/ages/pull/1). Local clean install, migration/rerun, lint, types, 27 runtime tests, Worker build, HTTP smoke checks, and GitHub CI passed.
 - Stages 02-10 are planned, not implemented.
 - The remote is `https://github.com/easysun/ages`. No released branch, cloud deployment, or business UI exists yet.

@@ -45,7 +45,7 @@ Tests use isolated local storage, separate from the development database. Migrat
 
 ## API foundation
 
-Every response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Errors, raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the matched route pattern, method, status, and duration.
+Every response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the error code, matched route pattern, method, status, and duration.
 
 ```json
 {
