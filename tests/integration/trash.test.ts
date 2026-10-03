@@ -65,7 +65,7 @@ async function seedAsset(
       .run();
   if (status === "deleted" || status === "purged")
     await env.DB.prepare(
-      "UPDATE assets SET status='deleted',deleted_at=? WHERE id=?",
+      "UPDATE assets SET status='deleted',deleted_at=?,trash_generation=lower(hex(randomblob(16))) WHERE id=?",
     )
       .bind(stamp, id)
       .run();
@@ -507,5 +507,123 @@ describe("Restore inspection concurrency", () => {
     expect((await request("/a/trash", "POST", {})).status).toBe(409);
     expect(await row()).toEqual(before);
     expect(await used()).toBe(10);
+  });
+});
+
+describe("Distinct trash generations", () => {
+  it("rejects an old restore after restore and retrash at the identical millisecond", async () => {
+    const object = await seedAsset();
+    expect((await request("/a/trash", "POST", {})).status).toBe(200);
+    const firstTrash = await row();
+    let signalInspected: () => void = () => {};
+    const inspected = new Promise<void>((resolve) => {
+      signalInspected = resolve;
+    });
+    let releaseHead: () => void = () => {};
+    const heldHead = new Promise<void>((resolve) => {
+      releaseHead = resolve;
+    });
+    const head = env.MEDIA.head.bind(env.MEDIA);
+    let reads = 0;
+    vi.spyOn(env.MEDIA, "head").mockImplementation(async (key) => {
+      const metadata = await head(key);
+      if (++reads === 1) {
+        signalInspected();
+        await heldHead;
+      }
+      return metadata;
+    });
+    const oldRestore = request("/a/restore", "POST", {});
+    await inspected;
+    const secondRestore = await request("/a/restore", "POST", {});
+    const retrash = await request("/a/trash", "POST", {});
+    const newestTrash = await row();
+    releaseHead();
+    const staleResponse = await oldRestore;
+    expect(secondRestore.status).toBe(200);
+    expect(retrash.status).toBe(200);
+    expect(newestTrash?.deleted_at).toBe(firstTrash?.deleted_at);
+    expect(staleResponse.status).toBe(409);
+    expect(await row()).toEqual(newestTrash);
+    expect((await row())?.status).toBe("deleted");
+    expect(await used()).toBe(10);
+    await assertObject(object.key, object.version);
+  });
+});
+
+describe("Internal trash token contract", () => {
+  it("creates a fresh token per deletion, preserves it on retries, clears it on restore, and never exposes it", async () => {
+    await seedAsset();
+    expect((await row())?.trash_generation).toBeNull();
+    const response = await request("/a/trash", "POST", {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).not.toHaveProperty("asset.trash_generation");
+    const first = (await row())?.trash_generation;
+    expect(first).toMatch(/^[0-9a-f]{32}$/);
+    expect((await request("/a/trash", "POST", {})).status).toBe(200);
+    expect((await row())?.trash_generation).toBe(first);
+    const page = await (await request("/trash")).json<{
+      assets: Record<string, unknown>[];
+    }>();
+    expect(page.assets[0]).not.toHaveProperty("trash_generation");
+    const restored = await request("/a/restore", "POST", {});
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).not.toHaveProperty("asset.trash_generation");
+    expect((await row())?.trash_generation).toBeNull();
+    expect(await (await request("/a")).json()).not.toHaveProperty(
+      "asset.trash_generation",
+    );
+    expect(
+      (await (await request("")).json<{ assets: Record<string, unknown>[] }>())
+        .assets[0],
+    ).not.toHaveProperty("trash_generation");
+    expect((await request("/a/trash", "POST", {})).status).toBe(200);
+    expect((await row())?.trash_generation).not.toBe(first);
+  });
+  it("backfills existing deleted assets without changing media, tags, timestamps or quota", async () => {
+    await reset();
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.slice(0, 5));
+    session = await seedUser();
+    const objects = [await seedAsset("old_a"), await seedAsset("old_b")];
+    await seedAsset("ready");
+    expect((await tags("old_a")).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE assets SET status='deleted', deleted_at=? WHERE id IN ('old_a','old_b')",
+    )
+      .bind(new Date(now).toISOString())
+      .run();
+    const before = (
+      await env.DB.prepare("SELECT * FROM assets ORDER BY id").all<Asset>()
+    ).results;
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+    const after = (
+      await env.DB.prepare("SELECT * FROM assets ORDER BY id").all<Asset>()
+    ).results;
+    expect(
+      after.map(({ trash_generation: _generation, ...asset }) => asset),
+    ).toEqual(before);
+    const deleted = after.filter((asset) => asset.status === "deleted");
+    expect(deleted).toHaveLength(2);
+    for (const asset of deleted)
+      expect(asset.trash_generation).toMatch(/^[0-9a-f]{32}$/);
+    expect(deleted[0]?.trash_generation).not.toBe(deleted[1]?.trash_generation);
+    expect(
+      after.find((asset) => asset.id === "ready")?.trash_generation,
+    ).toBeNull();
+    expect(await used()).toBe(30);
+    for (const object of objects)
+      await assertObject(object.key, object.version);
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+    expect(
+      (await env.DB.prepare("SELECT * FROM assets ORDER BY id").all<Asset>())
+        .results,
+    ).toEqual(after);
+    const restored = await request("/old_a/restore", "POST", {});
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({
+      asset: { status: "ready", tags: ["trip", "旅行"] },
+    });
+    expect((await row("old_a"))?.trash_generation).toBeNull();
+    expect(await used()).toBe(30);
   });
 });

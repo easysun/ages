@@ -14,12 +14,12 @@ export async function trashAsset(db: D1Database, id: string, owner: string) {
   try {
     result = await db.batch([
       db
-        .prepare(`UPDATE assets SET status = 'deleted', deleted_at = ?, updated_at = ?
+        .prepare(`UPDATE assets SET status = 'deleted', deleted_at = ?, updated_at = ?, trash_generation = ?
         WHERE id = ? AND owner_id = ? AND status = 'ready'
           AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE asset_id = assets.id)
           AND NOT EXISTS (SELECT 1 FROM timelines WHERE cover_asset_id = assets.id)
         RETURNING *`)
-        .bind(now, now, id, owner),
+        .bind(now, now, crypto.randomUUID().replaceAll("-", ""), id, owner),
       db
         .prepare("SELECT * FROM assets WHERE id = ? AND owner_id = ?")
         .bind(id, owner),
@@ -57,6 +57,7 @@ export async function restoreAsset(
     asset.deleted_at === null ? Number.NaN : Date.parse(asset.deleted_at);
   if (
     asset.status !== "deleted" ||
+    !asset.trash_generation ||
     !Number.isFinite(deletedAt) ||
     deletedAt + retentionMs <= Date.now()
   )
@@ -75,14 +76,15 @@ export async function restoreAsset(
   // Match the inspected trash generation and recheck retention after the R2 read.
   const result = await db.batch([
     db
-      .prepare(`UPDATE assets SET status = 'ready', deleted_at = NULL, updated_at = ?
-      WHERE id = ? AND owner_id = ? AND status = 'deleted' AND deleted_at = ?
+      .prepare(`UPDATE assets SET status = 'ready', deleted_at = NULL, trash_generation = NULL, updated_at = ?
+      WHERE id = ? AND owner_id = ? AND status = 'deleted' AND deleted_at = ? AND trash_generation = ?
         AND etag = ? AND mime_type = ? AND julianday(deleted_at) > julianday(?) RETURNING *`)
       .bind(
         now.toISOString(),
         id,
         owner,
         asset.deleted_at,
+        asset.trash_generation,
         asset.etag,
         asset.mime_type,
         cutoff,

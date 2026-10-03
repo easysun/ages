@@ -2,6 +2,23 @@
 
 ## Goal and scope
 
+## Trash generation fix checkpoint — October 4, 2026
+
+This supersedes the earlier timestamp-only trash design while preserving the prior checkpoints below. The isolated branch remains `feat/asset-trash` at `/Users/bay/.codex/worktrees/asset-trash/ages`; no other checkout was edited.
+
+### Last three checkpoints
+
+1. Original backend trash/restore feature was committed as `9afce41`, then updated main was normally merged as `e8dc585`; post-merge full checks passed 237 tests. Root review identified that `deleted_at` alone could reuse an identical millisecond and could not safely identify separate trash generations.
+2. A deterministic real D1/R2 regression froze Date, paused the first restore's metadata read, ran a second restore followed by retrash at the same timestamp, then resumed the first. Before the fix it returned 200 instead of the required 409 and restored the newest trash. This RED was observed directly; there is no active tool/credit block.
+3. Added migration `0007_asset_trash_generation.sql`, which backfills a fresh random token on every existing deleted asset without changing other state. Trash now creates a fresh internal UUID token; restore compares the inspected token, deletion time, ETag/MIME and retention cutoff, then clears the token. `assetPayload` removes it from all JSON. All 29 trash integration tests and full 240-test suite passed, alongside lint/types/dry-run build; local migration application and rerun plus whitespace checks passed.
+
+### Exact remainder and boundaries
+
+- Feature commit and updated-main merge remain intact; the new focused fix must be integrated with them. Migration 0006 belongs to Links, while 0007 is additive and owned by this fix. On the combined branch apply the complete ordered migration set before running the Worker. Legacy deleted assets receive tokens during migration and remain restorable within their original deadline.
+- Root should independently review the immutable fix, integrate after Timeline, and rerun the combined suite/migrations. No push, PR, new merge, deployment, purge endpoint, or R2 write/delete was performed during this fix.
+- Root assigned the public author to Links review. Await the React Library author's immutable commit, then perform a read-only independent review of mobile/keyboard/auth upload behavior, refresh persistence, browser build integration, and API contract use. Do not edit root or another writer's checkout. UI, scheduled purge, browser/cloud and MVP release gates remain open.
+
+
 ## Asset trash/restore checkpoint — October 4, 2026
 
 This section supersedes earlier backend next steps for the isolated `feat/asset-trash` branch at `/Users/bay/.codex/worktrees/asset-trash/ages`, based on combined Library/Timeline commit `80c1539`. The frontend writer remains isolated; this slice contains no UI changes.
