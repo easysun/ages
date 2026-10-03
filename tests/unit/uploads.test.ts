@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { signUpload } from "../../src/assets/signing";
 import { validateSignature } from "../../src/assets/validation";
 import type { Bindings } from "../../src/bindings";
@@ -9,6 +9,32 @@ function decode(value: string) {
 }
 
 describe("Bounded media validation", () => {
+  it("rejects a maximum-sized corrupt JPEG without quadratic buffer copying", async () => {
+    const bytes = new Uint8Array(256 * 1024);
+    bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+    const slice = Uint8Array.prototype.slice;
+    let copied = 0;
+    const copy = vi
+      .spyOn(Uint8Array.prototype, "slice")
+      .mockImplementation(function (
+        this: Uint8Array,
+        start?: number,
+        end?: number,
+      ) {
+        const result = slice.call(this, start, end);
+        copied += result.length;
+        return result;
+      });
+    try {
+      await expect(
+        validateSignature(bytes.buffer, "image/jpeg"),
+      ).rejects.toThrow();
+      expect(copied).toBeLessThan(bytes.length * 4);
+    } finally {
+      copy.mockRestore();
+    }
+  });
+
   it.each([
     [
       "image/png",
@@ -43,6 +69,67 @@ describe("Bounded media validation", () => {
       ),
     ).rejects.toThrow();
   });
+
+  it.each([0xc0, 0xc1, 0xc2])(
+    "reads JPEG frame %s after repeated metadata and marker padding",
+    async (marker) => {
+      const bytes = new Uint8Array(128 * 1024 + 24);
+      bytes.set([0xff, 0xd8]);
+      for (let offset = 2; offset < 128 * 1024 + 2; offset += 4) {
+        bytes.set([0xff, 0xe0, 0, 2], offset);
+      }
+      bytes.set(
+        [
+          0xff,
+          0xff,
+          marker,
+          0,
+          17,
+          8,
+          0,
+          2,
+          0,
+          3,
+          3,
+          1,
+          17,
+          0,
+          2,
+          17,
+          1,
+          3,
+          17,
+          1,
+          0xff,
+          0xd9,
+        ],
+        128 * 1024 + 2,
+      );
+      expect(await validateSignature(bytes.buffer, "image/jpeg")).toEqual({
+        width: 3,
+        height: 2,
+      });
+    },
+  );
+
+  it.each(
+    [
+      [0xff, 0xe0, 0, 1],
+      [0xff, 0xe0, 0xff, 0xff],
+      [0xff, 0xda, 0, 2],
+      [0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1, 3],
+    ].map((segment) => ({ segment })),
+  )(
+    "rejects invalid or incomplete JPEG segments before a usable frame: %j",
+    async ({ segment }) => {
+      await expect(
+        validateSignature(
+          new Uint8Array([0xff, 0xd8, ...segment]).buffer,
+          "image/jpeg",
+        ),
+      ).rejects.toThrow();
+    },
+  );
 
   it("recognizes supported video containers without promising codec compatibility", async () => {
     const mp4 = new Uint8Array([

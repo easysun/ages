@@ -25,6 +25,48 @@ export const uploadSchema = z.strictObject({
   captured_at: z.iso.datetime({ offset: true }).optional(),
 });
 
+function jpegSize(header: Uint8Array) {
+  const data = new DataView(
+    header.buffer,
+    header.byteOffset,
+    header.byteLength,
+  );
+  let offset = 2;
+  // Advance offsets without copying the remaining sample for each marker.
+  while (offset < header.length) {
+    if (header[offset++] !== 0xff) break;
+    while (header[offset] === 0xff) offset++;
+    const marker = header[offset++];
+    if (marker === 0x01) continue;
+    if (
+      marker === undefined ||
+      marker === 0 ||
+      marker === 0xd8 ||
+      marker === 0xd9 ||
+      marker === 0xda ||
+      (marker >= 0xd0 && marker <= 0xd7) ||
+      offset + 2 > header.length
+    )
+      break;
+    const length = data.getUint16(offset);
+    if (length < 2 || offset + length > header.length) break;
+    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+      if (
+        length < 8 ||
+        header[offset + 7] === 0 ||
+        length !== 8 + 3 * (header[offset + 7] ?? 0)
+      )
+        break;
+      return {
+        height: data.getUint16(offset + 3),
+        width: data.getUint16(offset + 5),
+      };
+    }
+    offset += length;
+  }
+  throw new Error("Invalid or incomplete JPEG frame header");
+}
+
 export async function validateSignature(bytes: ArrayBuffer, mime: string) {
   // Bound reads and reject unrelated compressed formats before invoking a parser.
   const header = new Uint8Array(bytes);
@@ -47,7 +89,8 @@ export async function validateSignature(bytes: ArrayBuffer, mime: string) {
     const detected = await fileTypeFromBuffer(header.subarray(0, 8192));
     if (detected?.mime !== mime) throw new Error("MIME mismatch");
     if (mime.startsWith("image/")) {
-      const { width, height } = imageSize(header);
+      const { width, height } =
+        mime === "image/jpeg" ? jpegSize(header) : imageSize(header);
       if (
         !Number.isInteger(width) ||
         !Number.isInteger(height) ||

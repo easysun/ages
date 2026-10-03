@@ -261,6 +261,27 @@ describe("Upload capabilities and reservations", () => {
 });
 
 describe("Upload finalization", () => {
+  it("rejects a corrupt maximum-sample JPEG and retains only its pending reservation", async () => {
+    const bytes = new Uint8Array(256 * 1024);
+    bytes.set([0xff, 0xd8, 0xff, 0xe0]);
+    const upload = await createIntent({
+      mime_type: "image/jpeg",
+      size_bytes: bytes.length,
+    });
+    await put(upload, bytes, "image/jpeg");
+    expect((await request(`/${upload.asset.id}/complete`)).status).toBe(422);
+    expect((await asset(upload.asset.id)).status).toBe("failed");
+    expect(await used()).toBe(0);
+    const response = await app.request(
+      `${origin}/api/me`,
+      { headers: { Cookie: session } },
+      bindings,
+    );
+    expect(await response.json()).toMatchObject({
+      quota: { storage_used_bytes: 0, storage_reserved_bytes: bytes.length },
+    });
+  });
+
   it("checks ownership before looking up the object", async () => {
     const upload = await createIntent();
     const other = await seedUser("owner_b");
