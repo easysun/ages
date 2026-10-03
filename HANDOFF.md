@@ -2,6 +2,14 @@
 
 ## Goal and scope
 
+## Root integration checkpoint — October 4, 2026, Links and trash
+
+- Trash PR #8 passed CI and merged as `a0d822c`. Root normally merged it into `feat/links` as `9b144c9`, preserving every prior checkpoint. Fresh combined check passed lint/types, 293 tests in 14 files, and the dry-run Worker build; local migration 0007 applied after 0006 and rerun reported no pending migrations.
+- URL/Timeline Link PR #9 is open at https://github.com/easysun/ages/pull/9. Independent redirect review and 27 Link tests pass. Next: push the verified updated head, confirm its CI, and merge the focused PR. Asset grants and QR remain separate.
+- Root independently verified React Library fixes at `6e53770`: full check passed 189 runtime and 30 desktop/mobile browser cases, lint/types and builds. Integrate only client feature `1a8840f` and fix `6e53770` onto updated main, preserving backend migrations/routes and rerun the complete combined suite.
+- Asset Link immutable feature `21cf917` has 307 author-verified tests; cleanup immutable `9a92d03` has 283. Independent cross-reviews are running in isolated worktrees. Timeline editor is building actual API browser regressions after safely integrating public SSR and the Library fixes. No deployment occurred; cloud bindings/login and the remaining MVP gates stay open. Same-chat continuation remains 09:58:17 Asia/Taipei.
+
+
 ## Current root checkpoint — October 4, 2026, after reset
 
 - Public Timeline PR #7 passed CI and merged as `704d819`; canonical SSR/media is in main with synthetic desktop/mobile screenshot evidence under `docs/screenshots/`. Root Link branch normally integrated it as `fc511cd`; source and docs conflicts were resolved preserving all routes/contracts/checkpoints. Fresh combined check passed lint/types, 264 tests, and dry-run build.
