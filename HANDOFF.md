@@ -2,6 +2,14 @@
 
 ## Goal and scope
 
+## Current root checkpoint — October 4, 2026, after reset
+
+- Public Timeline PR #7 passed CI and merged as `704d819`; canonical SSR/media is in main with synthetic desktop/mobile screenshot evidence under `docs/screenshots/`. Root Link branch normally integrated it as `fc511cd`; source and docs conflicts were resolved preserving all routes/contracts/checkpoints. Fresh combined check passed lint/types, 264 tests, and dry-run build.
+- Link review fix `ad1941c` is independently approved after 27 Link tests were rerun. The root `feat/links` branch is pushed and awaiting a focused URL/Timeline PR. Migration 0006 and local rerun passed. No Asset grants or QR are included in this approval.
+- Trash true-generation fix `2a91ff6` is independently reviewed by root; fresh full check passed 240 tests. Root normally merged public main into `feat/asset-trash` as `4a4b1f5`, retained all trash routes and shared media helper, and fresh combined check passed 266 tests. The branch is pushed for its focused PR; migration 0007 is additive with preserved-data backfill.
+- React Library immutable `1a8840f` passed 189 runtime and 22 browser tests but independent browser probes found stale upload-filter, post-logout profile, removed-opener focus, and missing `/s` Worker routing defects. Author is fixing all four with observed RED regressions in the original client worktree. The new editor worktree is safely paused at main integration commit `8eeddb9` until those fixes are verified and propagated.
+- Isolated next writers: `feat/abuse-cleanup` at `/Users/bay/.codex/worktrees/abuse-cleanup/ages` owns additive 0009, durable rate limits and retry-safe scheduled cleanup with purge claims; `feat/asset-links` at `/Users/bay/.codex/worktrees/asset-links/ages` owns additive 0008, a data-preserving canonical Link extension and raw Asset grants. Do not edit their checkouts. Reset schedule is verified for 09:58:17 Asia/Taipei; exact prompt remains `繼續執行`. No deployment/cloud smoke occurred; the MVP goal remains active and incomplete.
+
 ## Reset continuation and Link checkpoint — October 4, 2026
 
 - The scheduled `繼續執行` heartbeat arrived at 04:57:03 Asia/Taipei. Usage API confirms ordinary usage allowed and the new five-hour window at 0%; reset is 09:57:17. The existing same-chat automation was updated, not duplicated, to run once at 09:58:17 with the same exact prompt. The desktop app and computer must remain running.
