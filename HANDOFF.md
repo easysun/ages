@@ -1,3 +1,19 @@
+# React Library active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`; base: `3590b41`. Backend Library commits were cherry-picked as `fd306a2` and `5f821f2`; backend source/migrations are unchanged by the client writer. Do not deploy, push, or merge this client slice without root coordination.
+
+## Last three client checkpoints
+
+1. Exact registry versions installed: React/ReactDOM19.3.0, Vite8.3.2, React plugin6.1.1, Playwright1.63.0. Real local Wrangler HTTP fixtures seed users, hashed sessions, and PNGs into isolated `.wrangler/e2e`. Four desktop browser tests failed at missing UI before product implementation; the initial missing browser executable failure was not counted as RED.
+2. Implemented one-origin Vite/static-assets client: auth landing, ready Library/media, selection, upload/retry, tags/filter, pagination, and responsive native detail dialog. Kept Worker and browser TypeScript configurations separate. Detail response/edit race was independently reproduced with a delayed real response (expected disabled, received enabled), then fixed by waiting for authoritative metadata before editing.
+3. Pagination/filter race was independently reproduced (expected0 cards, received1), then fixed by aborting the page request when its tag changes and ignoring aborted results. Further observed-RED regressions exposed unwanted exact-tag space trimming (expected ` Coast `, received `Coast`) and completed uploads mislabeled as failed when quota refresh failed. Both were fixed. Deferred focus restoration was replaced with synchronous restoration, and keyboard/tag/quota scenarios passed six repeated desktop cases. Final `npm run check` exited0 on October4 after reset: lint and all TypeScript configs passed (existing nonfatal Library style info remains),189/189 runtime tests passed, client and dry-run Worker builds passed,22/22 actual HTTP desktop/375px mobile Chromium cases passed in1.1minutes. Final library/landing/detail screenshots were inspected.
+
+## Files and exact next step
+
+Client files are `src/client/`, `vite.config.ts`, `tsconfig.client.json`; tests are `tests/e2e/` and `playwright.config.ts`. Config changes: package/lock, Wrangler assets, separate TS includes, CI browser installation, README/implementation plan. No production auth or upload fixture backdoors exist.
+
+Next: root should review the committed client slice against the already reviewed Library API, integrate the client commit onto updated main, and handle the PR/CI flow. The client writer must not push, create a PR, or merge. Screenshots are ignored artifacts at `test-results/library-desktop.png`, `test-results/library-mobile.png`, and matching landing/details files in this worktree. No application-code edits followed final verification; only this handoff and API-response documentation wording were finalized. Live Google OAuth and R2 S3/browser/CORS signatures remain unverified cloud gates. No timeline/editor/share/delete UI is implemented.
+
 # Ages Development Handoff
 
 ## Goal and scope

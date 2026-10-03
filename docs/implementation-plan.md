@@ -82,3 +82,5 @@ Inputs needed for external integration: GitHub repository URL; Cloudflare accoun
 - Stages 04-10 still require their remaining product implementations. Cloud upload smoke, scheduled cleanup, and rate-limit hardening remain required before public beta.
 - Stage 08 URL/Timeline Link backend is implemented locally with additive migration 0006: immutable reserved slugs/targets, owner-only management, atomic quota checks, future expiry/deactivation, safe HTTP(S) destinations, and uncached 302 resolution with authoritative Timeline visibility checks. Asset targets, QR client controls, and restricted grants remain unfinished. This slice does not complete the public release gate.
 - The remote is `https://github.com/easysun/ages`. No released branch, cloud deployment, or business UI exists yet.
+
+- Stage 04 client work adds responsive React Library, direct upload, exact tag filtering/details, and 22 passing local desktop/mobile Playwright checks, with 189 runtime tests and complete lint/types/build verification. Local simulated upload transport is distinct from the outstanding live Google/R2 smoke gates. No timeline editor, sharing UI, or trash controls are included.
