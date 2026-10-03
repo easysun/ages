@@ -2,26 +2,28 @@
 
 ## Product Direction
 
-The product is an editable, collaborative, reversible timeline for photos, video, audio, and text - not a generic cloud album, social feed, or file drop. Prioritize this MVP loop:
+The product centers on Living Timelines for photos, video, audio, and text. Upload acquires users; continued additions create lasting value. Short links, raw media, OG previews, and QR codes are distribution capabilities. Prioritize this MVP loop:
 
 ```text
-upload -> infer time -> create timeline -> drag to reorder -> share
+login -> upload -> library -> timeline -> reorder and describe -> share -> append
 ```
 
-Do not build a full social feed before this loop is excellent. Every timeline item must keep these concepts separate:
+Do not build a full social feed before this loop is excellent. Keep Asset, TimelineItem, Timeline, and Link as separate entities. One Asset may appear in multiple Timelines with independent story metadata. Keep these concepts separate:
 
-- `occurred_at` - when the real-world event happened.
-- `sort_key` - the narrative order chosen by the user.
+- `Asset.captured_at` - original media capture time.
+- `TimelineItem.event_at` - the user-defined event date/time.
+- `TimelineItem.position` - the narrative order chosen by the user.
 
-Never overload one field for both meanings; users must be able to sort by reality and still tell a deliberate story.
+These names supersede the earlier `occurred_at` and `sort_key` proposal. Removing a TimelineItem or Link must never delete its Asset. New Assets and Timelines are private; unlisted means URL-accessible, with no indexing. Anonymous creation is disabled at launch. Authenticated memories must not expire silently due to inactivity. See `docs/implementation-plan.md` for stages and acceptance gates.
 
 ## Project Structure & Module Organization
 
-The repository is newly initialized and currently has no source, tests, assets, or build configuration. As it grows, use:
+Use these boundaries as the project grows:
 
 - `src/` - production code organized by feature or domain.
 - `tests/` - tests mirroring the relevant `src/` paths.
-- `assets/` - media, fixtures, and other non-code resources.
+- `migrations/` - ordered, forward-only D1 SQL migrations.
+- `tests/fixtures/` - synthetic test data, never private user media.
 - `docs/` - design notes, API decisions, and operations guidance.
 
 Keep domain modules cohesive and avoid placing application code at the root.
@@ -34,7 +36,7 @@ UI must be responsive and accessible across desktop, tablet, and phone, with mou
 
 ## Build, Test, and Development Commands
 
-No package manifest or build system exists yet, so no canonical commands are available. When a toolchain is selected, document one predictable command each for installation, local development, formatting, building, and testing in this file and the README.
+Use Node.js 22 and npm with the committed lockfile. Run `npm ci`, `npm run db:migrate:local`, then `npm run dev`. Before committing, run `npm run check` (lint, typecheck, unit/integration tests, build). Use `npm run format` for Biome formatting. `npm run build` only creates a local Worker bundle. See the README for environment setup.
 
 ## Coding Style & Language
 
@@ -42,11 +44,13 @@ All committed source code, comments, identifiers, configuration, developer docum
 
 ## Testing Guidelines
 
-No test framework or coverage threshold is configured yet. Add behavior-focused tests under `tests/`. Any change that affects existing functionality requires a regression test and a passing full suite before merge. Use the naming convention required by the chosen framework, such as `*.test.*` or `test_*.py`.
+Use Vitest with the Cloudflare Workers runtime and name tests `*.test.ts`. Add behavior-focused tests under `tests/`; integration tests must exercise real local D1/R2/KV bindings. Any change affecting existing functionality requires a regression test and a passing full suite before merge. No arbitrary coverage percentage is mandated. Add Playwright browser tests when the React client is introduced, including mobile, keyboard interaction, and refresh persistence.
 
 ## Branch, Commit, and Pull Request Guidelines
 
 Keep commits small, atomic, focused, and written in imperative English (for example, `Add timeline item model`). Small, reversible changes may go directly to `main` after self-review and validation. Changes spanning many files, changes that are difficult to reverse, or other materially risky work must use a branch and PR. Any change affecting existing behavior must use a separate branch, include a regression test, and target the applicable release branch. Self-review and merging an approved PR into `main` are allowed; record validation results and screenshots or recordings for UI changes in the PR.
+
+Use `feat/`, `fix/`, or `docs/` branch prefixes. Before a release exists, new foundation work targets `main`. Once a release branch exists, confirm the affected release and target it for behavior changes; do not guess a release branch. If no remote is configured, finish local validation and retain the branch, reporting that publishing the PR remains blocked. Never treat that as permission to merge a required PR locally.
 
 ## Security & Configuration
 
