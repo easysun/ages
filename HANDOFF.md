@@ -2,6 +2,14 @@
 
 ## Goal and scope
 
+## Reset continuation and Link checkpoint — October 4, 2026
+
+- The scheduled `繼續執行` heartbeat arrived at 04:57:03 Asia/Taipei. Usage API confirms ordinary usage allowed and the new five-hour window at 0%; reset is 09:57:17. The existing same-chat automation was updated, not duplicated, to run once at 09:58:17 with the same exact prompt. The desktop app and computer must remain running.
+- PR #6 passed CI and merged into main as `2b9870a`. Root Link work is on `feat/links`, based on `5872193`, and will integrate that main merge after committing. Original checkout changes remain preserved.
+- Link TDD observed 22 initial failing tests, then 22 passed. Account deletion releasing a slug failed its new regression before changing the Link owner FK to RESTRICT. Two further tests failed for cross-collection cursors and corrupt expiration metadata, then passed after collection prefixes and fail-closed expiry checks. Fresh full check passed lint/types, 236 tests (25 Link tests), and dry-run build. Migration 0006 applied locally; rerun reported no migrations to apply.
+- Link scope is owner-managed immutable URL/Timeline targets and slugs, active/expiry/quota checks, strict HTTP(S) destinations, and uncached anonymous 302 resolution. Private Timeline targets are rejected and current visibility is checked per request. No Asset grants, QR UI, or cloud deployment is included. Next: independent review of the immutable commit and a focused PR; integrate public SSR before claiming a working canonical viewer.
+- Public SSR is committed separately at `f0457d0` on `feat/public-timeline`, including integration merge `e519001` with the shared media helper and main `2b9870a`. Trash/restore is at `e8dc585` on `feat/asset-trash`; root review identified a potential timestamp ABA race and requested a deterministic test and true trash-generation token if confirmed (migration 0007 reserved). React Library remains an isolated writer with final browser regressions pending. Do not discard, switch, or edit their files.
+
 ## Root integration checkpoint — October 4, 2026
 
 - PR #5 passed independent Library review (59 tests rerun) and latest GitHub CI, then merged into main as `88919b5`. Root main was fast-forwarded without changing the original checkout.
