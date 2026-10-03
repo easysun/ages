@@ -2,6 +2,22 @@
 
 ## Goal and scope
 
+## Cleanup fairness and bounded auth checkpoint — October 4, 2026
+
+This focused fix supersedes the initial cleanup retry ordering and unbounded auth helper below. Work remains isolated on `feat/abuse-cleanup` at `/Users/bay/.codex/worktrees/abuse-cleanup/ages`; no other checkout was edited.
+
+### Last three checkpoints
+
+1. Root and the independent reviewer reviewed immutable `9a92d03`. Their deterministic probe found 101 failed uploads with persistent R2 failure for the first 100: three sweeps retried exactly those 100 and never attempted the final object. Auth cleanup also deleted all 1,201 expired sessions in one sweep. Separately, this writer approved Asset Links `21cf917` read-only after independently passing 307 full checks, 70 focused Link/trash tests, and a temporary real D1/R2 integration probe combining its migration0008 with cleanup0009 to verify active references, claimed purge/retry, quota and reactivation safety.
+2. Added two deterministic integration regressions before the fix. The failed-upload fairness test observed 300 attempts excluding the final object; the bounded auth test observed one remaining live session instead of the required 202 total after the first sweep. RED was two failures with the existing 17 tests passing. No input or network timing assumption is needed: the synthetic scheduler time advances fifteen minutes between sweeps.
+3. Removed the unused upload-cleanup cursor, selected failed objects by `updated_at, id`, and updated each eligible attempt before R2 deletion so failed attempts rotate behind untouched rows. Auth cleanup now orders expiry/hash and deletes at most 1,000 rows per table per invocation. GREEN passes 19 cleanup tests and fresh full `npm run check`: lint, types, 285 tests in 14 files and dry-run build. Local migrations/rerun report no pending migrations; SQL migration0009 was unchanged. Whitespace checks passed; README records the exact bounds and retry behavior.
+
+### Exact remainder
+
+- Root should independently review the focused fix and integrate the cleanup branch together with Asset Links/client changes. Preserve the Asset Link trash guard and shared streaming recheck callback, cleanup claim checks and redaction, and additive migrations0008/0009 when resolving the final combined branch.
+- Claims and completed-storage accounting are unchanged by this fix. Failed uploads preserve failed state and their metadata; only their maintenance attempt timestamp advances on failure. Live auth credentials remain unchanged while expired records drain over subsequent invocations.
+- No push, PR, remote migration, deployment or real cloud R2 deletion occurred. Only isolated synthetic test objects were deleted. Report/takedown, untracked-object reconciliation, named-environment edge/cron/backlog smoke, backups and remaining browser/client/release gates remain open.
+
 ## Abuse controls and scheduled cleanup checkpoint — October 4, 2026
 
 The isolated writer checkout is `/Users/bay/.codex/worktrees/abuse-cleanup/ages` on `feat/abuse-cleanup`. This bounded Stage 09 slice supersedes earlier scheduling/rate-limit next steps while preserving the previous checkpoints below.

@@ -399,6 +399,74 @@ describe("Scheduled retry-safe cleanup", () => {
     ).toBe(101);
     expect(await used()).toBe(0);
   });
+  it("rotates failed upload retries so a full failing page cannot starve later objects", async () => {
+    for (let n = 0; n < 101; n++)
+      await seedAsset(`asset_${n.toString().padStart(3, "0")}`, "failed");
+    const remove = env.MEDIA.delete.bind(env.MEDIA);
+    const attempted: string[] = [];
+    vi.spyOn(env.MEDIA, "delete").mockImplementation(async (key) => {
+      if (typeof key !== "string") throw new Error("Unexpected batch delete");
+      attempted.push(key);
+      if (key !== "synthetic/asset_100")
+        throw new Error("persistent R2 failure");
+      return remove(key);
+    });
+    for (let sweep = 0; sweep < 3; sweep++) {
+      vi.setSystemTime(now + sweep * 15 * 60 * 1000);
+      await cleanup();
+    }
+    expect(attempted).toContain("synthetic/asset_100");
+    expect(attempted).toHaveLength(300);
+    expect((await row("asset_100"))?.status).toBe("purged");
+    expect(await env.MEDIA.head("synthetic/asset_100")).toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT count(*) FROM assets WHERE status='failed'",
+      ).first("count(*)"),
+    ).toBe(100);
+    expect(await used()).toBe(0);
+  });
+  it("bounds auth cleanup per table and advances across batches while preserving live credentials", async () => {
+    const hashes = Array.from({ length: 1201 }, (_, n) =>
+      (n + 1).toString(16).padStart(64, "0"),
+    );
+    const expired = new Date(now - 1).toISOString();
+    await env.DB.prepare(
+      "INSERT INTO sessions(token_hash,user_id,expires_at,created_at) SELECT value,'owner_a',?,? FROM json_each(?)",
+    )
+      .bind(expired, expired, JSON.stringify(hashes))
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO oauth_attempts(state_hash,browser_hash,verifier,nonce,expires_at) SELECT value,?,'synthetic-verifier','synthetic-nonce',? FROM json_each(?)",
+    )
+      .bind("b".repeat(64), expired, JSON.stringify(hashes))
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO oauth_attempts(state_hash,browser_hash,verifier,nonce,expires_at) VALUES (?,?, 'live-verifier','live-nonce',?)",
+    )
+      .bind("f".repeat(64), "b".repeat(64), new Date(now + day).toISOString())
+      .run();
+    await cleanup();
+    for (const table of ["sessions", "oauth_attempts"]) {
+      expect(
+        await env.DB.prepare(`SELECT count(*) FROM ${table}`).first("count(*)"),
+      ).toBe(202);
+      expect(
+        await env.DB.prepare(
+          `SELECT count(*) FROM ${table} WHERE expires_at <= ?`,
+        )
+          .bind(expired)
+          .first("count(*)"),
+      ).toBe(201);
+    }
+    expect((await request("/api/me")).status).toBe(200);
+    await cleanup();
+    for (const table of ["sessions", "oauth_attempts"])
+      expect(
+        await env.DB.prepare(`SELECT count(*) FROM ${table}`).first("count(*)"),
+      ).toBe(1);
+    expect((await request("/api/me")).status).toBe(200);
+  });
   it("removes expired counter rows and auth records without invalidating live sessions", async () => {
     await request("/t/missing");
     await env.DB.prepare(

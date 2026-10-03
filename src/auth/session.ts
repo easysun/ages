@@ -122,9 +122,11 @@ export async function createSession(
 export async function cleanupAuth(bindings: Bindings) {
   const now = new Date().toISOString();
   await bindings.DB.batch([
-    bindings.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
-    bindings.DB.prepare(
-      "DELETE FROM oauth_attempts WHERE expires_at <= ?",
-    ).bind(now),
+    bindings.DB.prepare(`DELETE FROM sessions WHERE token_hash IN (
+      SELECT token_hash FROM sessions WHERE expires_at <= ? ORDER BY expires_at, token_hash LIMIT 1000
+    )`).bind(now),
+    bindings.DB.prepare(`DELETE FROM oauth_attempts WHERE state_hash IN (
+      SELECT state_hash FROM oauth_attempts WHERE expires_at <= ? ORDER BY expires_at, state_hash LIMIT 1000
+    )`).bind(now),
   ]);
 }
