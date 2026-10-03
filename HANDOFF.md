@@ -2,6 +2,14 @@
 
 ## Goal and scope
 
+## Root integration checkpoint — October 4, 2026
+
+- PR #5 passed independent Library review (59 tests rerun) and latest GitHub CI, then merged into main as `88919b5`. Root main was fast-forwarded without changing the original checkout.
+- Root integrated Timeline commit `cf7ab6a` onto updated main as `80c1539` on `feat/timeline-api`, preserving both route sets and both README/HANDOFF sections. Independent Timeline review reran all 152 tests and found no blockers. Known limits remain the 1,000-ID reorder bound and a permissive list cursor contract; SQL ownership still applies.
+- Fresh combined `npm run check` passed lint, types, 211 tests in 11 files, and Worker dry-run build. Local migration 0005 applied after 0004; rerun reported no migrations to apply. No deployment occurred. Next: publish the focused Timeline API PR, verify CI, merge, then integrate the remaining product slices.
+- Isolated writers now own React Library at `/Users/bay/.codex/worktrees/react-library/ages`, public Timeline SSR at `/Users/bay/.codex/worktrees/public-timeline/ages`, and recoverable Asset trash/restore at `/Users/bay/.codex/worktrees/asset-trash/ages`. Their commits and acceptance gates remain pending. Keep the three earlier checkpoints below intact.
+- The reset continuation remains scheduled once at 2026-10-04 04:56:52 Asia/Taipei with exact prompt `繼續執行`. Cloud bindings/login, real browser R2 upload, 250 MB upload, editor integration, sharing, abuse controls, and operations gates remain open; the MVP is not complete.
+
 ## Timeline domain checkpoint — October 4, 2026
 
 This section describes the isolated `feat/timeline-domain` worktree at `/Users/bay/.codex/worktrees/timeline-domain/ages`, based on `3590b41`. It supersedes historical next steps for this branch only. Library is a parallel slice; no Library or original-checkout files were edited here.
