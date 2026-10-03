@@ -11,6 +11,24 @@
 - Independent Link review found two fail-closed redirect gaps: unsafe persisted URLs and invalid configured canonical origins. Both new real D1 regressions failed (25 existing tests passed), then passed after reusing the URL schema during resolution and existing `appOrigin()` validation. Fresh full check now passes lint/types, 238 tests (27 Link tests), and dry-run build. Review approval remains pending the immutable fix commit.
 - Public SSR is committed separately at `f0457d0` on `feat/public-timeline`, including integration merge `e519001` with the shared media helper and main `2b9870a`. Trash/restore is at `e8dc585` on `feat/asset-trash`; root review identified a potential timestamp ABA race and requested a deterministic test and true trash-generation token if confirmed (migration 0007 reserved). React Library remains an isolated writer with final browser regressions pending. Do not discard, switch, or edit their files.
 
+## Public Timeline checkpoint — October 4, 2026
+
+This is the current checkpoint for isolated `feat/public-timeline` at `/Users/bay/.codex/worktrees/public-timeline/ages`. Earlier Root, Timeline, and Library checkpoints are preserved below.
+
+### Last three checkpoints
+
+1. Created the isolated branch at reviewed Timeline commit `cf7ab6a`. Installed the committed dependencies with `npm ci --cache /private/tmp/ages-npm-cache --prefer-offline` (zero reported vulnerabilities). All 26 new public SSR/media integration tests failed before implementation against missing routes and cache-policy behavior.
+2. Added escaped Hono HTML SSR at `/t/:id`, same-owner item/cover authorization for `/t/:id/media/:assetId`, and reusable `src/media/stream.ts`. All 26 tests passed; full check passed 178 tests, lint, types, and Worker dry-run build. Local migrations 0001–0003 plus 0005 and rerun passed. Actual local HTTP and desktop/375-pixel browser inspection showed synthetic media loaded, and mobile document scroll width equaled the 375-pixel viewport. Implementation commit: `7a79c3f`.
+3. Merged announced `origin/main` at `2b9870a`, preserving Library and Timeline route/docs/checkpoints, and routed owner Library media through the shared helper; removed its duplicate range implementation. Combined full check passed 237 tests in 12 files, lint, types, and dry-run build. The 59 Library tests also passed separately. A fresh local D1 database applied 0001–0005 in order; rerun reported no migrations to apply. Whitespace checks passed. Integration merge: `e519001`.
+
+### Contract and remaining gates
+
+- Canonical and OG origins come from configured APP_ORIGIN, never request Host/query input. Story order follows item position. Date-only labels retain their calendar precision; instants display in their named timezone. HTML uses escaped interpolation with no executable script. Unlisted emits noindex; public emits index; private/missing content and media return generic 404 even for owner cookies.
+- Media access depends on current timeline visibility, same-owner ready/undeleted asset, and an actual item or cover association. Private Asset visibility is not rewritten to share through a timeline. The shared streaming helper authorizes nothing; callers authorize first. Both Library and viewer keep private/no-store/nosniff, conditional R2 ETag reads, MIME/size checks, and R2 head/read version consistency. No KV caching, private grants, Links, or QR codes were added.
+- Screenshot evidence: `/private/tmp/ages-proof/public-desktop.jpg` and `/private/tmp/ages-proof/public-mobile.jpg`; local HTTP capture: `/private/tmp/ages-public-preview.html` and `.headers`. Preview uses synthetic assets only in ignored local state, with temporary fixture files outside the repository. No fixture data was added to runtime source.
+- Next: root independently reviews this public-viewer branch, integrates it using a normal merge (the Library helper refactor is in merge commit e519001), reruns combined checks with other slices, and handles focused PR/CI/merge. This implementer did not push, publish a PR, merge to main, or deploy. No cloud smoke or crawler behavior is claimed.
+- Interactive React Library/editor, mobile/keyboard browser regression tests, Timeline viewport integration/performance, large-story virtualization, real direct-upload/Google-login/cloud smoke, scheduled cleanup, rate limits, and abuse controls remain open. Link distribution and recoverable asset trash/restore are separately owned worktrees; do not edit their files or migration 0006 from this branch.
+
 ## Root integration checkpoint — October 4, 2026
 
 - PR #5 passed independent Library review (59 tests rerun) and latest GitHub CI, then merged into main as `88919b5`. Root main was fast-forwarded without changing the original checkout.
