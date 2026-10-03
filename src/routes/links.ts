@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { encodeCursor, libraryQuery } from "../assets/library";
+import type { Asset } from "../assets/model";
 import { appOrigin, assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
@@ -12,6 +13,7 @@ import {
   linkUrlSchema,
   updateLinkSchema,
 } from "../links/model";
+import { streamAssetMedia } from "../media/stream";
 
 export const links = new Hono<AppContext>();
 links.use("*", requireUser, async (context, next) => {
@@ -38,13 +40,24 @@ links.post("/", async (context) => {
       .first())
   )
     throw new ApiError("CONFLICT");
+  if (
+    target.kind === "asset" &&
+    !(await db
+      .prepare(
+        "SELECT id FROM assets WHERE id = ? AND owner_id = ? AND status = 'ready' AND deleted_at IS NULL",
+      )
+      .bind(target.asset_id, owner)
+      .first())
+  )
+    throw new ApiError("CONFLICT");
   let row: Link | null;
   try {
     row = await db
-      .prepare(`INSERT INTO links (id, owner_id, slug, target_kind, target_url, timeline_id, expires_at, created_at, updated_at)
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? FROM usage_quotas q WHERE user_id = ?
-      AND (SELECT count(*) FROM links WHERE owner_id = q.user_id) < link_limit
+      .prepare(`INSERT INTO distribution_links (id, owner_id, slug, target_kind, target_url, timeline_id, asset_id, expires_at, created_at, updated_at)
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM usage_quotas q WHERE user_id = ?
+      AND (SELECT count(*) FROM distribution_links WHERE owner_id = q.user_id) < link_limit
       AND (? IS NULL OR EXISTS (SELECT 1 FROM timelines WHERE id = ? AND owner_id = q.user_id AND visibility IN ('public', 'unlisted')))
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM assets WHERE id = ? AND owner_id = q.user_id AND status = 'ready' AND deleted_at IS NULL))
       RETURNING *`)
       .bind(
         `ln_${crypto.randomUUID()}`,
@@ -53,18 +66,27 @@ links.post("/", async (context) => {
         target.kind,
         target.kind === "url" ? target.url : null,
         target.kind === "timeline" ? target.timeline_id : null,
+        target.kind === "asset" ? target.asset_id : null,
         input.expires_at,
         now,
         now,
         owner,
         target.kind === "timeline" ? target.timeline_id : null,
         target.kind === "timeline" ? target.timeline_id : null,
+        target.kind === "asset" ? target.asset_id : null,
+        target.kind === "asset" ? target.asset_id : null,
       )
       .first<Link>();
   } catch (failure) {
     if (
       failure instanceof Error &&
-      failure.message.includes("UNIQUE constraint failed: links.slug")
+      (failure.message.includes(
+        "UNIQUE constraint failed: distribution_links.slug",
+      ) ||
+        failure.message.includes(
+          "UNIQUE constraint failed: reserved_link_slugs.slug",
+        ) ||
+        failure.message.includes("invalid_link_asset"))
     )
       throw new ApiError("CONFLICT");
     throw failure;
@@ -72,7 +94,7 @@ links.post("/", async (context) => {
   if (!row) {
     const quota = await db
       .prepare(
-        "SELECT link_limit, (SELECT count(*) FROM links WHERE owner_id = ?) AS count FROM usage_quotas WHERE user_id = ?",
+        "SELECT link_limit, (SELECT count(*) FROM distribution_links WHERE owner_id = ?) AS count FROM usage_quotas WHERE user_id = ?",
       )
       .bind(owner, owner)
       .first<{ link_limit: number; count: number }>();
@@ -98,7 +120,7 @@ links.get("/", async (context) => {
   }
   const { limit, cursor } = libraryQuery(url.href, owner);
   const result =
-    await context.env.DB.prepare(`SELECT * FROM links WHERE owner_id = ?
+    await context.env.DB.prepare(`SELECT * FROM distribution_links WHERE owner_id = ?
     ${cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
     ORDER BY created_at DESC, id DESC LIMIT ?`)
       .bind(
@@ -125,7 +147,7 @@ links.get("/", async (context) => {
 });
 links.get("/:id", async (context) => {
   const row = await context.env.DB.prepare(
-    "SELECT * FROM links WHERE id = ? AND owner_id = ?",
+    "SELECT * FROM distribution_links WHERE id = ? AND owner_id = ?",
   )
     .bind(context.req.param("id"), context.get("user").id)
     .first<Link>();
@@ -134,19 +156,29 @@ links.get("/:id", async (context) => {
 });
 links.patch("/:id", async (context) => {
   const input = await parseJson(context, updateLinkSchema);
-  const row =
-    await context.env.DB.prepare(`UPDATE links SET active = CASE WHEN ? THEN ? ELSE active END,
+  let row: Link | null;
+  try {
+    row =
+      await context.env.DB.prepare(`UPDATE distribution_links SET active = CASE WHEN ? THEN ? ELSE active END,
     expires_at = CASE WHEN ? THEN ? ELSE expires_at END, updated_at = ? WHERE id = ? AND owner_id = ? RETURNING *`)
-      .bind(
-        Number(input.active !== undefined),
-        Number(input.active),
-        Number(input.expires_at !== undefined),
-        input.expires_at ?? null,
-        new Date().toISOString(),
-        context.req.param("id"),
-        context.get("user").id,
-      )
-      .first<Link>();
+        .bind(
+          Number(input.active !== undefined),
+          Number(input.active),
+          Number(input.expires_at !== undefined),
+          input.expires_at ?? null,
+          new Date().toISOString(),
+          context.req.param("id"),
+          context.get("user").id,
+        )
+        .first<Link>();
+  } catch (failure) {
+    if (
+      failure instanceof Error &&
+      failure.message.includes("invalid_link_asset")
+    )
+      throw new ApiError("CONFLICT");
+    throw failure;
+  }
   if (!row) throw new ApiError("NOT_FOUND");
   return context.json({ link: linkPayload(row) });
 });
@@ -154,7 +186,7 @@ links.patch("/:id", async (context) => {
 export const linkResolver = new Hono<AppContext>();
 linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
   const row = await context.env.DB.prepare(
-    "SELECT * FROM links WHERE slug = ? AND active = 1",
+    "SELECT * FROM distribution_links WHERE slug = ? AND active = 1",
   )
     .bind(context.req.param("slug"))
     .first<Link>();
@@ -166,6 +198,34 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
       (!Number.isFinite(expiration) || expiration <= Date.now()))
   )
     throw new ApiError("NOT_FOUND");
+  if (row.target_kind === "asset") {
+    const grant = async () => {
+      const current =
+        await context.env.DB.prepare(`SELECT a.*, l.expires_at AS link_expires_at FROM assets a
+        JOIN distribution_links l ON l.asset_id = a.id AND l.owner_id = a.owner_id
+        WHERE l.id = ? AND l.slug = ? AND l.active = 1 AND l.target_kind = 'asset'
+          AND a.status = 'ready' AND a.deleted_at IS NULL`)
+          .bind(row.id, row.slug)
+          .first<Asset & { link_expires_at: string | null }>();
+      const deadline =
+        current?.link_expires_at === null
+          ? null
+          : Date.parse(current?.link_expires_at ?? "");
+      if (
+        !current ||
+        (deadline !== null &&
+          (!Number.isFinite(deadline) || deadline <= Date.now()))
+      )
+        throw new ApiError("NOT_FOUND");
+      return current;
+    };
+    const asset = await grant();
+    return streamAssetMedia(context, asset, async () => {
+      const current = await grant();
+      if (current.etag !== asset.etag || current.mime_type !== asset.mime_type)
+        throw new ApiError("NOT_FOUND");
+    });
+  }
   let target = row.target_url;
   if (row.target_kind === "timeline") {
     const visible = await context.env.DB.prepare(
