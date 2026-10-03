@@ -13,6 +13,8 @@ const errors = {
   },
   PAYLOAD_TOO_LARGE: { status: 413, message: "Request body is too large." },
   ASSET_TOO_LARGE: { status: 413, message: "Asset exceeds the size limit." },
+  QUOTA_EXCEEDED: { status: 403, message: "Storage quota exceeded." },
+  UPLOAD_EXPIRED: { status: 409, message: "Upload intent has expired." },
   UPLOAD_VALIDATION_FAILED: {
     status: 422,
     message: "Upload validation failed.",

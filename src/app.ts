@@ -7,6 +7,7 @@ import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { me } from "./routes/me";
+import { uploads } from "./routes/uploads";
 
 export function createApp() {
   const app = new Hono<AppContext>();
@@ -36,5 +37,6 @@ export function createApp() {
   app.route("/health", health);
   app.route("/auth", auth);
   app.route("/api/me", me);
+  app.route("/api/assets", uploads);
   return app;
 }
