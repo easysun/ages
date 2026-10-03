@@ -2,6 +2,30 @@
 
 ## Goal and scope
 
+## Root integration checkpoint — October 4, 2026, Links and trash
+
+- Trash PR #8 passed CI and merged as `a0d822c`. Root normally merged it into `feat/links` as `9b144c9`, preserving every prior checkpoint. Fresh combined check passed lint/types, 293 tests in 14 files, and the dry-run Worker build; local migration 0007 applied after 0006 and rerun reported no pending migrations.
+- URL/Timeline Link PR #9 is open at https://github.com/easysun/ages/pull/9. Independent redirect review and 27 Link tests pass. Next: push the verified updated head, confirm its CI, and merge the focused PR. Asset grants and QR remain separate.
+- Root independently verified React Library fixes at `6e53770`: full check passed 189 runtime and 30 desktop/mobile browser cases, lint/types and builds. Integrate only client feature `1a8840f` and fix `6e53770` onto updated main, preserving backend migrations/routes and rerun the complete combined suite.
+- Asset Link immutable feature `21cf917` has 307 author-verified tests; cleanup immutable `9a92d03` has 283. Independent cross-reviews are running in isolated worktrees. Timeline editor is building actual API browser regressions after safely integrating public SSR and the Library fixes. No deployment occurred; cloud bindings/login and the remaining MVP gates stay open. Same-chat continuation remains 09:58:17 Asia/Taipei.
+
+
+## Current root checkpoint — October 4, 2026, after reset
+
+- Public Timeline PR #7 passed CI and merged as `704d819`; canonical SSR/media is in main with synthetic desktop/mobile screenshot evidence under `docs/screenshots/`. Root Link branch normally integrated it as `fc511cd`; source and docs conflicts were resolved preserving all routes/contracts/checkpoints. Fresh combined check passed lint/types, 264 tests, and dry-run build.
+- Link review fix `ad1941c` is independently approved after 27 Link tests were rerun. The root `feat/links` branch is pushed and awaiting a focused URL/Timeline PR. Migration 0006 and local rerun passed. No Asset grants or QR are included in this approval.
+- Trash true-generation fix `2a91ff6` is independently reviewed by root; fresh full check passed 240 tests. Root normally merged public main into `feat/asset-trash` as `4a4b1f5`, retained all trash routes and shared media helper, and fresh combined check passed 266 tests. The branch is pushed for its focused PR; migration 0007 is additive with preserved-data backfill.
+- React Library immutable `1a8840f` passed 189 runtime and 22 browser tests but independent browser probes found stale upload-filter, post-logout profile, removed-opener focus, and missing `/s` Worker routing defects. Author is fixing all four with observed RED regressions in the original client worktree. The new editor worktree is safely paused at main integration commit `8eeddb9` until those fixes are verified and propagated.
+- Isolated next writers: `feat/abuse-cleanup` at `/Users/bay/.codex/worktrees/abuse-cleanup/ages` owns additive 0009, durable rate limits and retry-safe scheduled cleanup with purge claims; `feat/asset-links` at `/Users/bay/.codex/worktrees/asset-links/ages` owns additive 0008, a data-preserving canonical Link extension and raw Asset grants. Do not edit their checkouts. Reset schedule is verified for 09:58:17 Asia/Taipei; exact prompt remains `繼續執行`. No deployment/cloud smoke occurred; the MVP goal remains active and incomplete.
+
+## Reset continuation and Link checkpoint — October 4, 2026
+
+- The scheduled `繼續執行` heartbeat arrived at 04:57:03 Asia/Taipei. Usage API confirms ordinary usage allowed and the new five-hour window at 0%; reset is 09:57:17. The existing same-chat automation was updated, not duplicated, to run once at 09:58:17 with the same exact prompt. The desktop app and computer must remain running.
+- PR #6 passed CI and merged into main as `2b9870a`. Root Link work is on `feat/links`, based on `5872193`, and will integrate that main merge after committing. Original checkout changes remain preserved.
+- Link TDD observed 22 initial failing tests, then 22 passed. Account deletion releasing a slug failed its new regression before changing the Link owner FK to RESTRICT. Two further tests failed for cross-collection cursors and corrupt expiration metadata, then passed after collection prefixes and fail-closed expiry checks. Fresh full check passed lint/types, 236 tests (25 Link tests), and dry-run build. Migration 0006 applied locally; rerun reported no migrations to apply.
+- Link scope is owner-managed immutable URL/Timeline targets and slugs, active/expiry/quota checks, strict HTTP(S) destinations, and uncached anonymous 302 resolution. Private Timeline targets are rejected and current visibility is checked per request. No Asset grants, QR UI, or cloud deployment is included. Next: independent review of the immutable commit and a focused PR; integrate public SSR before claiming a working canonical viewer.
+- Independent Link review found two fail-closed redirect gaps: unsafe persisted URLs and invalid configured canonical origins. Both new real D1 regressions failed (25 existing tests passed), then passed after reusing the URL schema during resolution and existing `appOrigin()` validation. Fresh full check now passes lint/types, 238 tests (27 Link tests), and dry-run build. Review approval remains pending the immutable fix commit.
+- Public SSR is committed separately at `f0457d0` on `feat/public-timeline`, including integration merge `e519001` with the shared media helper and main `2b9870a`. Trash/restore is at `e8dc585` on `feat/asset-trash`; root review identified a potential timestamp ABA race and requested a deterministic test and true trash-generation token if confirmed (migration 0007 reserved). React Library remains an isolated writer with final browser regressions pending. Do not discard, switch, or edit their files.
 ## Trash generation fix checkpoint — October 4, 2026
 
 This supersedes the earlier timestamp-only trash design while preserving the prior checkpoints below. The isolated branch remains `feat/asset-trash` at `/Users/bay/.codex/worktrees/asset-trash/ages`; no other checkout was edited.

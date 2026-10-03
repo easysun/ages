@@ -128,6 +128,14 @@ An asset may appear in multiple timelines or multiple items with independent cap
 
 `event_at` is either null, `{"kind":"date","date":"2024-02-29","time_zone":"Asia/Taipei","calendar":"iso8601"}`, or `{"kind":"instant","instant":"2026-10-04T08:30:00.000Z","time_zone":"Asia/Taipei"}`. Calendar dates retain their precision and named timezone without conversion to midnight UTC. Offset-qualified instants normalize to UTC millisecond timestamps while retaining the named presentation timezone. Numeric offset strings are not timezone names. These values never rewrite asset capture timestamps.
 
+## Short Links
+
+Link ownership is independent of the target. Authenticated, same-origin `POST /api/links` accepts `{ "target": { "kind": "url", "url": "https://example.com" }, "slug": "optional-name", "expires_at": null }` or an owned public/unlisted Timeline target `{ "kind": "timeline", "timeline_id": "tl_..." }`. Only HTTP(S) URLs without embedded credentials or control characters are accepted. Slugs contain 3–64 lowercase ASCII letters, digits, or hyphens; omitted slugs are generated. Collisions return 409. Target, slug, and owner are immutable.
+
+Owner-only `GET /api/links` lists links with descending creation-time/ID keyset pagination (default 30, maximum 100), and `GET /api/links/:id` returns details. Cursors are bound to the owner and Link collection. `PATCH /api/links/:id` changes only `active` and nullable future UTC `expires_at`. Inactive links continue to count toward the account limit and retain their slugs. There is no Link deletion endpoint; migration 0006 prevents account deletion from silently releasing reserved slugs.
+
+Anonymous `GET`/`HEAD /s/:slug` resolves active, unexpired links with a 302 and no-store policy. Timeline targets recheck authoritative visibility on every resolution, then redirect to the stable canonical `/t/:id` URL. Making the Timeline private immediately blocks subsequent resolutions. Basic Link expiry controls this alias, not the independent public target URL. Asset targets, QR UI, passwords, and scoped private grants remain separate slices; unsupported grant fields are rejected.
+
 ## Public Timeline viewer
 
 `GET /t/:id` renders a responsive, script-free HTML story in narrative order with escaped title/captions, canonical URL, and basic Open Graph metadata. The configured `APP_ORIGIN` supplies canonical and OG origins; request Host headers and query strings do not change them. Appending an item keeps the same `/t/:id` URL. Image covers, or the first image item when no image cover is selected, supply the scoped OG image. Video-only stories do not advertise video bytes as an OG image.
