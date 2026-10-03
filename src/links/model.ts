@@ -43,6 +43,10 @@ export const createLinkSchema = z.strictObject({
       kind: z.literal("timeline"),
       timeline_id: z.string().min(1).max(100),
     }),
+    z.strictObject({
+      kind: z.literal("asset"),
+      asset_id: z.string().min(1).max(100),
+    }),
   ]),
   slug: slugSchema.optional(),
   expires_at: expirySchema.default(null),
@@ -59,9 +63,10 @@ export type Link = {
   id: string;
   owner_id: string;
   slug: string;
-  target_kind: "url" | "timeline";
+  target_kind: "url" | "timeline" | "asset";
   target_url: string | null;
   timeline_id: string | null;
+  asset_id: string | null;
   active: number;
   expires_at: string | null;
   created_at: string;
@@ -74,7 +79,9 @@ export function linkPayload(link: Link) {
     target:
       link.target_kind === "url"
         ? { kind: "url" as const, url: link.target_url }
-        : { kind: "timeline" as const, timeline_id: link.timeline_id },
+        : link.target_kind === "timeline"
+          ? { kind: "timeline" as const, timeline_id: link.timeline_id }
+          : { kind: "asset" as const, asset_id: link.asset_id },
     active: link.active === 1,
     expires_at: link.expires_at,
     created_at: link.created_at,

@@ -246,7 +246,7 @@ describe("Durable owner Links", () => {
         await link({ target: { kind: "url", url: "https://example.test" } }),
       );
     await env.DB.prepare(
-      "UPDATE links SET created_at = '2026-01-01T00:00:00.000Z'",
+      "UPDATE distribution_links SET created_at = '2026-01-01T00:00:00.000Z'",
     ).run();
     const first = (await (await request("?limit=2")).json()) as {
       links: Link[];
@@ -301,7 +301,7 @@ describe("Durable owner Links", () => {
     );
     expect(
       await env.DB.prepare(
-        "SELECT count(*) AS n FROM links WHERE owner_id = 'owner_a'",
+        "SELECT count(*) AS n FROM distribution_links WHERE owner_id = 'owner_a'",
       ).first("n"),
     ).toBe(1);
   });
@@ -310,18 +310,22 @@ describe("Durable owner Links", () => {
       target: { kind: "url", url: "https://example.test" },
     });
     await expect(
-      env.DB.prepare("UPDATE links SET owner_id = 'owner_b' WHERE id = ?")
-        .bind(saved.id)
-        .run(),
-    ).rejects.toThrow();
-    await expect(
-      env.DB.prepare("UPDATE links SET slug = 'stolen' WHERE id = ?")
+      env.DB.prepare(
+        "UPDATE distribution_links SET owner_id = 'owner_b' WHERE id = ?",
+      )
         .bind(saved.id)
         .run(),
     ).rejects.toThrow();
     await expect(
       env.DB.prepare(
-        "UPDATE links SET target_url = 'https://other.test' WHERE id = ?",
+        "UPDATE distribution_links SET slug = 'stolen' WHERE id = ?",
+      )
+        .bind(saved.id)
+        .run(),
+    ).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        "UPDATE distribution_links SET target_url = 'https://other.test' WHERE id = ?",
       )
         .bind(saved.id)
         .run(),
@@ -358,7 +362,9 @@ describe("Durable owner Links", () => {
     const saved = await link({
       target: { kind: "url", url: "https://example.test" },
     });
-    await env.DB.prepare("UPDATE links SET expires_at = 'invalid' WHERE id = ?")
+    await env.DB.prepare(
+      "UPDATE distribution_links SET expires_at = 'invalid' WHERE id = ?",
+    )
       .bind(saved.id)
       .run();
     await error(await resolve(saved.slug), 404, "NOT_FOUND");
@@ -369,7 +375,7 @@ describe("Authoritative Timeline Link resolution", () => {
   it("rejects unsafe persisted destinations even if a non-API writer inserted them", async () => {
     const now = new Date().toISOString();
     await env.DB.prepare(
-      "INSERT INTO links(id,owner_id,slug,target_kind,target_url,created_at,updated_at) VALUES('bad','owner_a','unsafe','url','javascript:alert(1)',?,?)",
+      "INSERT INTO distribution_links(id,owner_id,slug,target_kind,target_url,created_at,updated_at) VALUES('bad','owner_a','unsafe','url','javascript:alert(1)',?,?)",
     )
       .bind(now, now)
       .run();
@@ -420,7 +426,9 @@ describe("Authoritative Timeline Link resolution", () => {
         "CONFLICT",
       );
     expect(
-      await env.DB.prepare("SELECT count(*) AS n FROM links").first("n"),
+      await env.DB.prepare(
+        "SELECT count(*) AS n FROM distribution_links",
+      ).first("n"),
     ).toBe(0);
     await error(await resolve("missing"), 404, "NOT_FOUND");
   });
