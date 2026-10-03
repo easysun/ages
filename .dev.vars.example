@@ -2,3 +2,9 @@
 APP_ORIGIN=http://127.0.0.1:8787
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
+# Real R2 direct upload requires an isolated cloud environment and matching MEDIA binding.
+# Do not point local simulated metadata at a production bucket.
+R2_ACCOUNT_ID=
+R2_BUCKET_NAME=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
