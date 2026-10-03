@@ -12,6 +12,7 @@ export const tagSchema = z
         (char) => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127,
       ),
   );
+export const emptyMutationSchema = z.strictObject({});
 export const tagsSchema = z.strictObject({
   tags: z
     .array(tagSchema)
@@ -20,6 +21,7 @@ export const tagsSchema = z.strictObject({
 });
 const cursorSchema = z.strictObject({
   v: z.literal(1),
+  collection: z.literal("trash").optional(),
   owner: z.string().min(1).max(200),
   tag: tagSchema.nullable(),
   created_at: z.iso.datetime(),
@@ -35,11 +37,15 @@ export function encodeCursor(cursor: Cursor) {
     .replace(/=+$/, "");
 }
 
-export function libraryQuery(url: string, owner: string) {
+export function libraryQuery(url: string, owner: string, collection?: "trash") {
   const params = new URL(url).searchParams;
   for (const key of params.keys()) {
     if (
-      !["limit", "tag", "cursor"].includes(key) ||
+      !(
+        collection === "trash"
+          ? ["limit", "cursor"]
+          : ["limit", "tag", "cursor"]
+      ).includes(key) ||
       params.getAll(key).length !== 1
     )
       throw new ApiError("INVALID_REQUEST");
@@ -75,6 +81,7 @@ export function libraryQuery(url: string, owner: string) {
       if (
         encodeCursor(cursor) !== encoded ||
         cursor.owner !== owner ||
+        cursor.collection !== collection ||
         cursor.tag !== tag
       )
         throw new Error("Cursor scope mismatch");

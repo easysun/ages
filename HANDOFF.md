@@ -2,6 +2,25 @@
 
 ## Goal and scope
 
+## Asset trash/restore checkpoint — October 4, 2026
+
+This section supersedes earlier backend next steps for the isolated `feat/asset-trash` branch at `/Users/bay/.codex/worktrees/asset-trash/ages`, based on combined Library/Timeline commit `80c1539`. The frontend writer remains isolated; this slice contains no UI changes.
+
+### Last three checkpoints
+
+1. Read AGENTS, the existing Library/upload/asset models, callers, migrations, cleanup behavior, and handoff. Created the authorized isolated branch and ran lockfile `npm ci --prefer-offline` (zero reported vulnerabilities). The initial real D1/R2 trash suite observed 19 expected missing-route failures and one existing purged-state 404 pass before production changes.
+2. Added same-origin strict-empty-JSON trash/restore routes, separate static trash listing before `/:id`, and collection-scoped cursors preserving existing ready-list cursor contracts. Trash conditionally updates only owned ready assets with no actual item/cover references; migration 0005 triggers remain the second guard and map reference violations to 409. Restore checks retained ETag/size/MIME, matches the inspected deletion/validation metadata, and rechecks retention after R2 inspection. All initial 20 tests passed.
+3. Expanded coverage verifies stale trash generations, authoritative metadata changes during inspection, invalid deletion times, idempotent ready restores, trigger error mapping, references/removal, race winners, pagination ties, 30-day millisecond boundaries, and retained R2 bytes/tags/quota. Fresh full `npm run check` passed lint, types, 237 tests in 12 files, and the dry-run Worker build. Local migrations 0001–0005 applied and reran with no pending migrations; whitespace checks passed. Existing Biome emits one informational template suggestion in the unchanged Library test, with zero errors and exit 0.
+
+### Decisions and exact remainder
+
+- Restore is available strictly before `deleted_at + 30 * 24 hours`; the exact deadline and older trash return 409. A repeated ready restore does not inspect or mutate R2. Both transition routes preserve timestamps on idempotent repeats, and quotas stay charged until eventual purge.
+- Trash keeps tags and R2 bytes; restore clears `deleted_at`. No physical deletion, purge, scheduler, or lifecycle expiry configuration is added. The existing expired-upload cleanup remains unchanged and handles only failed upload objects, not trashed memories.
+- The trash collection accepts only bounded `limit` and a cursor bound to owner and collection, sorted by immutable asset creation time and ID. Ready-list filters remain strict; neither collection accepts the other's cursors. Both return normal storage-redacted asset/tag payloads.
+- No migration or dependency was added; migration 0006 is reserved for future Link work. No other worktree was edited. No push, PR, merge, deployment, or live cloud mutation occurred.
+- Root should independently review and integrate this commit after the combined Timeline baseline, rerun full checks and migration/rerun, then publish through the normal review flow. Frontend trash/restore controls, scheduled purge/reconciliation, real cloud smoke, and remaining product/browser gates stay open.
+
+
 ## Timeline domain checkpoint — October 4, 2026
 
 This section describes the isolated `feat/timeline-domain` worktree at `/Users/bay/.codex/worktrees/timeline-domain/ages`, based on `3590b41`. It supersedes historical next steps for this branch only. Library is a parallel slice; no Library or original-checkout files were edited here.

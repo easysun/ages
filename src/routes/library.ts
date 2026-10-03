@@ -1,11 +1,13 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import {
+  emptyMutationSchema,
   encodeCursor,
   libraryQuery,
   mediaRange,
   tagsSchema,
 } from "../assets/library";
 import { type Asset, assetPayload } from "../assets/model";
+import { restoreAsset, trashAsset } from "../assets/trash";
 import { assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
@@ -50,11 +52,18 @@ async function payloads(db: D1Database, assets: Asset[], owner: string) {
   }));
 }
 
-library.get("/", async (context) => {
+async function listAssets(
+  context: Context<AppContext>,
+  status: "ready" | "deleted",
+) {
   const owner = context.get("user").id;
-  const { limit, tag, cursor } = libraryQuery(context.req.url, owner);
-  const clauses = ["owner_id = ?", "status = 'ready'"];
-  const values: (string | number)[] = [owner];
+  const { limit, tag, cursor } = libraryQuery(
+    context.req.url,
+    owner,
+    status === "deleted" ? "trash" : undefined,
+  );
+  const clauses = ["owner_id = ?", "status = ?"];
+  const values: (string | number)[] = [owner, status];
   if (tag !== null) {
     clauses.push(
       "EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = assets.id AND t.owner_id = assets.owner_id AND t.tag = ?)",
@@ -76,6 +85,7 @@ library.get("/", async (context) => {
     result.results.length > limit && last
       ? encodeCursor({
           v: 1,
+          ...(status === "deleted" ? { collection: "trash" as const } : {}),
           owner,
           tag,
           created_at: last.created_at,
@@ -85,6 +95,30 @@ library.get("/", async (context) => {
   return context.json({
     assets: await payloads(context.env.DB, rows, owner),
     next_cursor: nextCursor,
+  });
+}
+
+library.get("/", (context) => listAssets(context, "ready"));
+library.get("/trash", (context) => listAssets(context, "deleted"));
+
+library.post("/:id/trash", async (context) => {
+  await parseJson(context, emptyMutationSchema);
+  const owner = context.get("user").id;
+  const asset = await trashAsset(
+    context.env.DB,
+    context.req.param("id"),
+    owner,
+  );
+  return context.json({
+    asset: (await payloads(context.env.DB, [asset], owner))[0],
+  });
+});
+library.post("/:id/restore", async (context) => {
+  await parseJson(context, emptyMutationSchema);
+  const owner = context.get("user").id;
+  const asset = await restoreAsset(context.env, context.req.param("id"), owner);
+  return context.json({
+    asset: (await payloads(context.env.DB, [asset], owner))[0],
   });
 });
 
