@@ -4,11 +4,11 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation only: TypeScript/Hono Worker, D1 identity schema, local R2/KV bindings, request IDs, structured errors, runtime JSON validation, health checks, and CI. Authentication, uploads, timelines, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for product decisions, sequencing, acceptance gates, and launch requirements.
+Foundation and Google authentication: TypeScript/Hono Worker, D1 identity/session schema, local R2/KV bindings, request IDs, structured errors, runtime validation, health checks, and CI. Uploads, timelines, and the React UI are subsequent PRs. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
-Install Node.js 22.22.2 (see `.node-version`) and npm. No Cloudflare account or secrets are needed locally.
+Install Node.js 22.22.2 (see `.node-version`) and npm. Foundation and automated tests need no Cloudflare account or secrets. Interactive Google sign-in needs the configuration below.
 
 ```sh
 npm ci
@@ -42,6 +42,25 @@ curl -i http://127.0.0.1:8787/health/ready
 | `npm run check` | Run lint, types, all tests, and build |
 
 Tests use isolated local storage, separate from the development database. Migration tests exercise a fresh database, reruns with preserved data, constraints, and batch rollback. JSON parser tests register test-only routes; no public echo or exception endpoint is deployed.
+
+## Google authentication
+
+Create a Google OAuth **Web application** client and register the exact redirect URI `http://127.0.0.1:8787/auth/google/callback` for local development. Copy `.dev.vars.example` to ignored `.dev.vars`, then set the client ID and secret there. Never paste secrets into chat, commits, or PRs. Each deployed environment needs its own `APP_ORIGIN` and registered HTTPS redirect URI; supply credentials through platform secrets.
+
+| Route | Contract |
+| --- | --- |
+| `GET /auth/google` | Start a ten-minute, browser-bound Google OIDC/PKCE attempt |
+| `GET /auth/google/callback` | Consume the attempt once, verify the ID token, rotate the session, redirect to `/` |
+| `GET /api/me` | Return the authenticated `user` and `quota`; otherwise 401 |
+| `POST /auth/logout` | Revoke immediately and clear the cookie; idempotent 204 |
+
+`APP_ORIGIN` is a canonical origin without a trailing slash. HTTP is accepted only for loopback hosts in `local`. Logout requires an exact `Origin` header; missing, null, or foreign origins are rejected. Future browser mutation endpoints must reuse this policy. No bearer-token/native sign-in endpoint is implemented yet.
+
+Sessions are random 256-bit tokens with a seven-day lifetime; D1 stores only SHA-256 hashes. Cookies are HttpOnly, SameSite=Lax, host-only, and Secure with the `__Host-` prefix outside `local`. State and browser bindings are hashed; short-lived PKCE verifiers remain server-side. The callback verifies signature, issuer, audience, authorized party, expiry, and nonce. No Google access/refresh tokens are persisted or returned. Accounts bind to Google subject, never implicitly to an email match; conflicting email ownership does not transfer an account.
+
+New accounts receive provisional private-beta allowances: 1 GiB storage, 250 MiB maximum asset size, ten timelines, and 100 links. These are not published pricing. Upload will apply narrower per-media limits and reservation accounting. Returning sign-ins preserve existing quotas. Expired sessions/attempts are cleaned at login start; the hardening slice will also schedule cleanup. Real Google sign-in remains an external smoke gate; tests use locally signed synthetic tokens and mocked provider endpoints with real local D1.
+
+Reference: [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect). JWT verification uses the pinned, Workers-compatible `jose` package instead of custom signature code.
 
 ## API foundation
 
