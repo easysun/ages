@@ -87,7 +87,14 @@ beforeEach(async () => {
 });
 
 function request(path: string, init: RequestInit = {}, config = bindings) {
-  return app.request(`${origin}${path}`, init, config);
+  return app.request(
+    `${origin}${path}`,
+    {
+      ...init,
+      headers: { "CF-Connecting-IP": "203.0.113.1", ...init.headers },
+    },
+    config,
+  );
 }
 
 function cookie(response: Response, name: string) {
