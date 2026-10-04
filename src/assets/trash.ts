@@ -60,6 +60,7 @@ export async function restoreAsset(
   if (
     asset.status !== "deleted" ||
     !asset.trash_generation ||
+    asset.purge_claim !== null ||
     !Number.isFinite(deletedAt) ||
     deletedAt + retentionMs <= Date.now()
   )
@@ -80,7 +81,7 @@ export async function restoreAsset(
     db
       .prepare(`UPDATE assets SET status = 'ready', deleted_at = NULL, trash_generation = NULL, updated_at = ?
       WHERE id = ? AND owner_id = ? AND status = 'deleted' AND deleted_at = ? AND trash_generation = ?
-        AND etag = ? AND mime_type = ? AND julianday(deleted_at) > julianday(?) RETURNING *`)
+        AND purge_claim IS NULL AND etag = ? AND mime_type = ? AND julianday(deleted_at) > julianday(?) RETURNING *`)
       .bind(
         now.toISOString(),
         id,
