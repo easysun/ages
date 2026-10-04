@@ -433,3 +433,98 @@ describe("Authoritative Timeline Link resolution", () => {
     await error(await resolve("missing"), 404, "NOT_FOUND");
   });
 });
+
+it("returns canonical short URLs for owner create/list/get/update independently of the request host", async () => {
+  const saved = await link({
+    target: { kind: "url", url: "https://example.test" },
+    slug: "canonical-url",
+  });
+  const config = { ...bindings, APP_ORIGIN: "https://share.example.test" };
+  for (const [path, method, body] of [
+    [`/${saved.id}`, "GET", undefined],
+    ["", "GET", undefined],
+    [`/${saved.id}`, "PATCH", { active: false }],
+  ] as const) {
+    const response = await app.request(
+      `${origin}/api/links${path}`,
+      {
+        method,
+        headers: {
+          Cookie: session,
+          Origin: config.APP_ORIGIN,
+          "Content-Type": "application/json",
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      },
+      config,
+    );
+    expect(response.status).toBe(200);
+    const data = await response.json<{
+      link?: { short_url: string };
+      links?: { short_url: string }[];
+    }>();
+    expect((data.link ?? data.links?.[0])?.short_url).toBe(
+      "https://share.example.test/s/canonical-url",
+    );
+  }
+  const created = await app.request(
+    `${origin}/api/links`,
+    {
+      method: "POST",
+      headers: {
+        Cookie: session,
+        Origin: config.APP_ORIGIN,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        target: { kind: "url", url: "https://example.test" },
+        slug: "canonical-created",
+      }),
+    },
+    config,
+  );
+  expect(created.status).toBe(201);
+  expect(await created.json()).toMatchObject({
+    link: { short_url: "https://share.example.test/s/canonical-created" },
+  });
+});
+it("fails closed on invalid canonical origins without creating or mutating Links", async () => {
+  const saved = await link({
+    target: { kind: "url", url: "https://example.test" },
+  });
+  const before = (
+    await env.DB.prepare("SELECT * FROM distribution_links").all()
+  ).results;
+  const config = { ...bindings, APP_ORIGIN: "ftp://invalid.test" };
+  for (const [path, method, body] of [
+    [`/${saved.id}`, "GET", undefined],
+    ["", "GET", undefined],
+    [
+      "",
+      "POST",
+      {
+        target: { kind: "url", url: "https://example.test" },
+        slug: "no-write",
+      },
+    ],
+    [`/${saved.id}`, "PATCH", { active: false }],
+  ] as const) {
+    const response = await app.request(
+      `${origin}/api/links${path}`,
+      {
+        method,
+        headers: {
+          Cookie: session,
+          Origin: config.APP_ORIGIN,
+          "Content-Type": "application/json",
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      },
+      config,
+    );
+    expect(response.status).toBe(503);
+  }
+  expect(
+    (await env.DB.prepare("SELECT * FROM distribution_links").all()).results,
+  ).toEqual(before);
+});

@@ -1,10 +1,22 @@
+# Root sharing integration verified checkpoint — October 4, 2026
+
+1. Merged the clean `feat/library-sharing` commit `b6cdf9c` into `feat/sharing-integration`, preserving the cleanup branch's exact-generation purge safeguards and resolving only README, plan, handoff, and AssetDetails conflicts. The dialog still reports dismissal once and a successful Trash action cannot dismiss a newer dialog.
+2. Fresh `npm run check` exited 0: lint, TypeScript checks, client and Worker builds, 328 runtime tests, and all 48 desktop/mobile Chromium cases passed. The browser cases cover canonical Asset share links, actual QR decoding, grant expiry/revocation, recoverable Trash, and delayed responses.
+3. No cloud calls or deployment occurred. PR #14's release preflight is merged into `main` as `7a76f8a`; next, record this merge, integrate that main commit, repeat the full check, then publish the sharing PR and wait for CI.
+
 # Root scheduled cleanup verified checkpoint — October 4, 2026
 
 1. Raw Asset Links PR #11 merged as `3dc687c`; dialog dismissal PR #12 passed CI and merged as `8f121ea`. Root normally merged updated main into `feat/scheduled-cleanup`. The final merge changes no files compared with the freshly tested `3bfb6e2` tree.
 2. Fresh full `npm run check` exited 0: lint/types, 326 runtime tests, client/Worker builds, and 32 desktop/mobile Chromium cases passed (1.7 minutes). Migration 0009 applied locally and its rerun had no pending migrations. Independent cleanup probes verified fair failed-object retries, trash rotation and bounded session cleanup.
 3. Cleanup preserves active distribution-Link trash guards and exact-generation purge claims. Failed R2 deletion retains quota and its claim; successful deletion releases quota once. Ready memories have no inactivity expiry. This is local runtime verification, not a deployed cron or cloud deletion rehearsal.
 
-Exact next step: publish the focused cleanup branch/PR, verify CI, and merge if green. Continue isolated editor/sharing/moderation and guarded release preflight work. The saved continuation remains 14:59:46 Asia/Taipei with prompt `繼續執行`; the goal flag is system-managed usageLimited despite ordinary usage being allowed. Cloud resource bindings, live OAuth/direct uploads, orphan reconciliation and recovery gates remain open. No deployment occurred.
+PR #13 has since passed CI and merged as `4339f14`. Continue the sharing integration, guarded release preflight and separate editor/moderation slices. The saved continuation is 20:01:38 Asia/Taipei with prompt `繼續執行`; the goal flag is system-managed usageLimited despite ordinary usage being allowed. Cloud resource bindings, live OAuth/direct uploads, orphan reconciliation and recovery gates remain open. No deployment occurred.
+
+## Library sharing and Trash integration checkpoint — October 4, 2026
+
+The clean `feat/library-sharing` commit `b6cdf9c` adds canonical server-provided Asset short URLs, copy/local QR generation and decoding, active/expiry Link management, and responsive recoverable Trash/restore controls. Its author passed 309 runtime and 48 browser cases on port 8793. Root merged it into isolated `feat/sharing-integration` from main `4339f14`; merge conflicts were limited to docs and AssetDetails. The combined dialog dismissal preserves the one-shot close notification and suppresses a second dismissal when Trash closes the dialog.
+
+Next: install the branch's exact lockfile packages (QR dependencies), run the fresh root full check with port 8791, resolve any combined cleanup/link/browser regressions, document the merge, then publish and merge after CI. Moderation `55e0365` and editor work remain separate. This branch has not been pushed. No cloud deployment or live QR target was opened.
 
 # Library review corrections active checkpoint
 

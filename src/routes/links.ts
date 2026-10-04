@@ -17,6 +17,7 @@ import { streamAssetMedia } from "../media/stream";
 
 export const links = new Hono<AppContext>();
 links.use("*", requireUser, async (context, next) => {
+  appOrigin(context.env);
   context.header("Cache-Control", "private, no-store");
   if (!["GET", "HEAD", "OPTIONS"].includes(context.req.method))
     assertSameOrigin(context);
@@ -104,7 +105,7 @@ links.post("/", async (context) => {
         : "CONFLICT",
     );
   }
-  return context.json({ link: linkPayload(row) }, 201);
+  return context.json({ link: linkPayload(row, appOrigin(context.env)) }, 201);
 });
 links.get("/", async (context) => {
   const owner = context.get("user").id;
@@ -132,7 +133,7 @@ links.get("/", async (context) => {
   const rows = result.results.slice(0, limit);
   const last = rows.at(-1);
   return context.json({
-    links: rows.map(linkPayload),
+    links: rows.map((row) => linkPayload(row, appOrigin(context.env))),
     next_cursor:
       result.results.length > limit && last
         ? `links.${encodeCursor({
@@ -152,7 +153,7 @@ links.get("/:id", async (context) => {
     .bind(context.req.param("id"), context.get("user").id)
     .first<Link>();
   if (!row) throw new ApiError("NOT_FOUND");
-  return context.json({ link: linkPayload(row) });
+  return context.json({ link: linkPayload(row, appOrigin(context.env)) });
 });
 links.patch("/:id", async (context) => {
   const input = await parseJson(context, updateLinkSchema);
@@ -180,7 +181,7 @@ links.patch("/:id", async (context) => {
     throw failure;
   }
   if (!row) throw new ApiError("NOT_FOUND");
-  return context.json({ link: linkPayload(row) });
+  return context.json({ link: linkPayload(row, appOrigin(context.env)) });
 });
 
 export const linkResolver = new Hono<AppContext>();

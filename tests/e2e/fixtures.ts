@@ -16,6 +16,9 @@ function command(args: string[]) {
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
+export function executeFixtureSql(sql: string) {
+  command(["d1", "execute", "DB", "--command", sql]);
+}
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -117,7 +120,7 @@ export async function seedLibrary(context: BrowserContext) {
     {
       name: "ages_session",
       value: token,
-      url: "http://127.0.0.1:8791",
+      url: `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`,
       httpOnly: true,
       sameSite: "Lax",
     },

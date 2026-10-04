@@ -4,6 +4,7 @@ import {
   api,
   bytesLabel,
   errorMessage,
+  jsonBody,
   type LibraryAsset,
   type LibraryPage,
   mediaUrl,
@@ -164,11 +165,11 @@ function Landing() {
     </main>
   );
 }
-function query(filter: string, next?: string) {
+function query(filter: string, next?: string, trash = false) {
   const params = new URLSearchParams({ limit: "30" });
-  if (filter) params.set("tag", filter);
+  if (filter && !trash) params.set("tag", filter);
   if (next) params.set("cursor", next);
-  return `/api/assets?${params}`;
+  return `/api/assets${trash ? "/trash" : ""}?${params}`;
 }
 
 function Library({
@@ -180,7 +181,13 @@ function Library({
 }) {
   const initialTag =
     new URLSearchParams(window.location.search).get("tag") ?? "";
-  const [libraryRequest, setLibraryRequest] = useState({ tag: initialTag });
+  const initialTrash =
+    new URLSearchParams(window.location.search).get("view") === "trash";
+  const [libraryRequest, setLibraryRequest] = useState({
+    tag: initialTag,
+    trash: initialTrash,
+  });
+  const trash = libraryRequest.trash;
   const tag = libraryRequest.tag;
   const [filterInput, setFilterInput] = useState(initialTag);
   const [assets, setAssets] = useState<LibraryAsset[]>([]);
@@ -192,6 +199,9 @@ function Library({
   const [jobs, setJobs] = useState<UploadJob[]>([]);
   const [uploading, setUploading] = useState(false);
   const [quotaNotice, setQuotaNotice] = useState("");
+  const [notice, setNotice] = useState("");
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const trashTab = useRef<HTMLButtonElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -209,7 +219,10 @@ function Library({
     setLoading(true);
     setError("");
     setSelected(new Set());
-    api<LibraryPage>(query(libraryRequest.tag), { signal: controller.signal })
+    api<LibraryPage>(
+      query(libraryRequest.tag, undefined, libraryRequest.trash),
+      { signal: controller.signal },
+    )
       .then((page) => {
         if (controller.signal.aborted) return;
         setAssets(page.assets);
@@ -230,7 +243,7 @@ function Library({
     setLoading(true);
     setError("");
     try {
-      const page = await api<LibraryPage>(query(tag, cursor), {
+      const page = await api<LibraryPage>(query(tag, cursor, trash), {
         signal: controller.signal,
       });
       if (controller.signal.aborted) return;
@@ -251,10 +264,11 @@ function Library({
     const next = value;
     setAssets([]);
     setCursor(null);
-    setLibraryRequest({ tag: next });
+    setLibraryRequest({ tag: next, trash: false });
     setFilterInput(next);
     const url = new URL(window.location.href);
     url.pathname = "/library";
+    url.searchParams.delete("view");
     if (next) url.searchParams.set("tag", next);
     else url.searchParams.delete("tag");
     window.history.replaceState(null, "", url);
@@ -277,7 +291,7 @@ function Library({
     }
     if (!mounted.current) return;
     update({ phase: "saved", message: "Saved to your library" });
-    setLibraryRequest((current) => ({ tag: current.tag }));
+    setLibraryRequest((current) => ({ ...current }));
     try {
       const next = await api<Profile>("/api/me");
       if (!mounted.current) return;
@@ -322,7 +336,46 @@ function Library({
     setAssets((current) =>
       current.map((row) => (row.id === asset.id ? asset : row)),
     );
-    setLibraryRequest((current) => ({ tag: current.tag }));
+    setLibraryRequest((current) => ({ ...current }));
+  }
+  function switchCollection(toTrash: boolean) {
+    setAssets([]);
+    setCursor(null);
+    setError("");
+    setNotice("");
+    setLibraryRequest({ tag: "", trash: toTrash });
+    setFilterInput("");
+    const url = new URL(window.location.href);
+    url.pathname = "/library";
+    url.searchParams.delete("tag");
+    if (toTrash) url.searchParams.set("view", "trash");
+    else url.searchParams.delete("view");
+    window.history.replaceState(null, "", url);
+  }
+  async function restore(asset: LibraryAsset) {
+    const controller = pageRequest.current;
+    setRestoring(asset.id);
+    setError("");
+    try {
+      await api(`/api/assets/${encodeURIComponent(asset.id)}/restore`, {
+        method: "POST",
+        ...jsonBody({}),
+      });
+      if (!mounted.current || controller?.signal.aborted) return;
+      setAssets((current) => current.filter((row) => row.id !== asset.id));
+      setNotice("Moment restored to your library");
+      trashTab.current?.focus();
+      setLibraryRequest((current) => ({ ...current }));
+    } catch (reason) {
+      if (mounted.current && !controller?.signal.aborted)
+        setError(
+          reason instanceof RequestError && reason.code === "CONFLICT"
+            ? "This moment could not be restored. Its recovery window may have ended, or its media is unavailable."
+            : errorMessage(reason),
+        );
+    } finally {
+      if (mounted.current) setRestoring(null);
+    }
   }
   const quota = profile.quota;
   const progress = Math.min(
@@ -366,43 +419,65 @@ function Library({
       </section>
       <div className="library-layout">
         <aside className="library-sidebar">
-          <div className="sidebar-current">
-            <span aria-hidden="true">▧</span>All moments
-            <span className="sidebar-dot" aria-hidden="true" />
-          </div>
-          <form
-            className="filter-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              applyFilter(filterInput);
-            }}
-          >
-            <label htmlFor="tag-filter">Filter by tag</label>
-            <input
-              ref={filter}
-              id="tag-filter"
-              type="text"
-              value={filterInput}
-              maxLength={64}
-              placeholder="Find a familiar thread"
-              onChange={(event) => setFilterInput(event.target.value)}
-            />
-            <button className="button secondary" type="submit">
-              Apply filter
+          <nav className="collection-switcher" aria-label="Library collections">
+            <button
+              type="button"
+              className="button secondary"
+              aria-pressed={!trash}
+              onClick={() => switchCollection(false)}
+            >
+              All moments
             </button>
-            {tag ? (
-              <button
-                className="text-button"
-                type="button"
-                onClick={() => applyFilter("")}
-              >
-                Clear filter
+            <button
+              ref={trashTab}
+              type="button"
+              className="button secondary"
+              aria-pressed={trash}
+              onClick={() => switchCollection(true)}
+            >
+              Trash
+            </button>
+          </nav>
+          {!trash ? (
+            <form
+              className="filter-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                applyFilter(filterInput);
+              }}
+            >
+              <label htmlFor="tag-filter">Filter by tag</label>
+              <input
+                ref={filter}
+                id="tag-filter"
+                type="text"
+                value={filterInput}
+                maxLength={64}
+                placeholder="Find a familiar thread"
+                onChange={(event) => setFilterInput(event.target.value)}
+              />
+              <button className="button secondary" type="submit">
+                Apply filter
               </button>
-            ) : null}
+              {tag ? (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => applyFilter("")}
+                >
+                  Clear filter
+                </button>
+              ) : null}
+              <p className="field-help">
+                Tags match exactly, including spaces and capitals.
+              </p>
+            </form>
+          ) : (
             <p className="field-help">
-              Tags match exactly, including spaces and capitals.
+              Moments can be restored for 30 days. Storage remains in use while
+              they are in Trash.
             </p>
-          </form>
+          )}
           <div className="storage-card">
             <span className="eyebrow">Your space</span>
             <p>
@@ -436,12 +511,17 @@ function Library({
         </aside>
         <section className="collection" aria-label="Library moments">
           <div className="collection-heading">
-            <h2>{tag ? `Tagged “${tag}”` : "All moments"}</h2>
+            <h2>{trash ? "Trash" : tag ? `Tagged “${tag}”` : "All moments"}</h2>
             <span>
               {assets.length} {assets.length === 1 ? "moment" : "moments"}
               {cursor ? " shown" : ""}
             </span>
           </div>
+          {notice ? (
+            <p role="status" className="notice">
+              {notice}
+            </p>
+          ) : null}
           {jobs.length ? (
             <section className="upload-list" aria-label="Uploads">
               {jobs.map((job) => (
@@ -510,7 +590,7 @@ function Library({
               <button
                 className="button secondary"
                 type="button"
-                onClick={() => setLibraryRequest({ tag })}
+                onClick={() => setLibraryRequest((current) => ({ ...current }))}
               >
                 Retry library
               </button>
@@ -520,16 +600,20 @@ function Library({
             <div className="empty-state">
               <span aria-hidden="true">＋</span>
               <h3>
-                {tag
-                  ? "No moments with this tag yet"
-                  : "A beginning, waiting for you"}
+                {trash
+                  ? "Trash is empty"
+                  : tag
+                    ? "No moments with this tag yet"
+                    : "A beginning, waiting for you"}
               </h3>
               <p>
-                {tag
-                  ? "Try another tag or clear the filter to see your library."
-                  : "Add a photo or a video. It doesn’t have to be a special occasion."}
+                {trash
+                  ? "Moments you move to Trash will appear here."
+                  : tag
+                    ? "Try another tag or clear the filter to see your library."
+                    : "Add a photo or a video. It doesn’t have to be a special occasion."}
               </p>
-              {tag ? (
+              {trash ? null : tag ? (
                 <button
                   className="button secondary"
                   type="button"
@@ -555,56 +639,82 @@ function Library({
                 key={asset.id}
               >
                 <div className="card-media">
-                  <button
-                    className="open-asset"
-                    type="button"
-                    aria-label={`Open ${asset.original_name}`}
-                    onClick={(event) => {
-                      opener.current = event.currentTarget;
-                      setDetails(asset);
-                    }}
-                  >
-                    {asset.kind === "image" ? (
-                      <img
-                        src={mediaUrl(asset)}
-                        alt={asset.original_name}
-                        loading="lazy"
-                      />
-                    ) : (
-                      <>
-                        <video
-                          src={mediaUrl(asset)}
-                          preload="metadata"
-                          aria-label={asset.original_name}
-                        >
-                          <track kind="captions" />
-                        </video>
-                        <span className="video-label">Video</span>
-                      </>
-                    )}
-                  </button>
-                  <label className="select-asset">
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${asset.original_name}`}
-                      checked={selected.has(asset.id)}
-                      onChange={(event) => {
-                        const checked = event.target.checked;
-                        setSelected((current) => {
-                          const next = new Set(current);
-                          if (checked) next.add(asset.id);
-                          else next.delete(asset.id);
-                          return next;
-                        });
-                      }}
-                    />
-                  </label>
+                  {trash ? (
+                    <div className="trash-placeholder" aria-hidden="true">
+                      ↺
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        className="open-asset"
+                        type="button"
+                        aria-label={`Open ${asset.original_name}`}
+                        onClick={(event) => {
+                          opener.current = event.currentTarget;
+                          setDetails(asset);
+                        }}
+                      >
+                        {asset.kind === "image" ? (
+                          <img
+                            src={mediaUrl(asset)}
+                            alt={asset.original_name}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <>
+                            <video
+                              src={mediaUrl(asset)}
+                              preload="metadata"
+                              aria-label={asset.original_name}
+                            >
+                              <track kind="captions" />
+                            </video>
+                            <span className="video-label">Video</span>
+                          </>
+                        )}
+                      </button>
+                      <label className="select-asset">
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${asset.original_name}`}
+                          checked={selected.has(asset.id)}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setSelected((current) => {
+                              const next = new Set(current);
+                              if (checked) next.add(asset.id);
+                              else next.delete(asset.id);
+                              return next;
+                            });
+                          }}
+                        />
+                      </label>
+                    </>
+                  )}
                 </div>
                 <div className="card-caption">
                   <h3>{asset.original_name}</h3>
                   <span>{bytesLabel(asset.size_bytes)}</span>
                 </div>
-                {asset.tags.length ? (
+                {trash ? (
+                  <div className="trash-card-actions">
+                    <p className="field-help">
+                      Moved to Trash{" "}
+                      {asset.deleted_at
+                        ? new Date(asset.deleted_at).toLocaleDateString()
+                        : ""}
+                    </p>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      disabled={restoring !== null}
+                      aria-label={`Restore ${asset.original_name}`}
+                      onClick={() => void restore(asset)}
+                    >
+                      {restoring === asset.id ? "Restoring…" : "Restore"}
+                    </button>
+                  </div>
+                ) : asset.tags.length ? (
                   <div className="card-tags">
                     {asset.tags.map((value) => (
                       <button
@@ -646,6 +756,16 @@ function Library({
           key={details.id}
           asset={details}
           onSaved={saved}
+          onTrashed={(asset) => {
+            if (!mounted.current) return;
+            setDetails(null);
+            setAssets((current) =>
+              current.filter((row) => row.id !== asset.id),
+            );
+            setLibraryRequest((current) => ({ ...current }));
+            setNotice("Moved to Trash");
+            filter.current?.focus();
+          }}
           onClose={() => {
             setDetails(null);
             if (opener.current?.isConnected) opener.current.focus();
