@@ -9,14 +9,15 @@ import {
 async function operator(context: Parameters<typeof seedLibrary>[0], count = 1) {
   const { owner, ids } = await seedLibrary(context);
   const { id } = seedTimeline(owner, ids);
-  executeFixtureSql(
+  const statements = [
     `UPDATE users SET plan='admin' WHERE id='${owner}'; UPDATE timelines SET visibility='unlisted' WHERE id='${id}';`,
-  );
+  ];
   for (let i = 0; i < count; i++) {
-    executeFixtureSql(
+    statements.push(
       `INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at,observed_timeline_version) VALUES('rp_${owner}_${i}','${owner}','timeline','${id}','abuse','Review ${i} <script>literal</script>','${new Date(Date.now() + i).toISOString()}',1);`,
     );
   }
+  executeFixtureSql(statements.join("\n"));
   return { owner, id, ids };
 }
 
