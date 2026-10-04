@@ -30,6 +30,12 @@ Next: root should review the committed client slice against the already reviewed
 
 ## Goal and scope
 
+## Root dialog/main verification checkpoint — October 4, 2026
+
+- Raw Asset Link PR #11 passed CI and merged as `3dc687c`. Root normally merged it into the focused dialog fix as `89bc375`, retaining the reviewed `c9cdcdc` change and every checkpoint. Fresh combined full check passed lint/types, 307 runtime tests, 32 desktop/mobile browser cases and client/Worker builds. Next: push and merge the focused dialog fix PR after its CI passes.
+- Editor/sharing/moderation writers have the verified dialog fix and preserve their own changes. Root scheduled cleanup at `f06c9b9` still requires the same fix before repeating its full browser gate. Release preflight tests in the isolated `release-preflight` worktree observed the expected missing-module RED; configuration/resource validation is the next implementation step. No deployment occurred.
+
+
 ## Dialog dismissal regression checkpoint — October 4, 2026
 
 - Combined scheduled-cleanup integration passed 326 runtime tests but one existing desktop tag-filter browser case failed; 29 browser cases passed. Trace confirmed native Escape restored the opener before its queued close notification, so a rapid filter Enter was redirected to the opener and reopened details. No filter request was sent; this was a client focus race, not a rate-limit rejection.
