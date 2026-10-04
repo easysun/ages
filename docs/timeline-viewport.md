@@ -43,7 +43,9 @@ Extract into a local sibling repository only after a working Ages integration an
 
 Callers choose unit-appropriate finite positive span limits, skip resize while hidden, and set a maximum span large enough for an intended overview. The module has no date parser, render lifecycle, gesture binding, storage dependency, or automatic data-change listener. The React adapter must implement the initial-fit/manual-navigation policy; it is not provided by these math helpers.
 
-Sixteen unit tests cover these contracts, including millisecond-level event-time round trips and subpixel drift after 1,000 reciprocal zoom pairs. These are numeric guarantees over the tested ranges, not promises of infinite precision or verified screen rendering. Browser and performance gates above remain unimplemented.
+Sixteen unit tests cover these contracts, including millisecond-level event-time round trips and subpixel drift after 1,000 reciprocal zoom pairs. These are numeric guarantees over the tested ranges, not promises of infinite precision or verified screen rendering. The React adapter is implemented in `src/client/story-viewport.tsx`: ResizeObserver measurement, readable initial framing, explicit Fit all, anchored Shift-wheel zoom, pointer pan/pinch, grouped SVG markers, and native keyboard buttons. Its local browser fixtures verify manual navigation after resize/append, unchanged domain data, native vertical scrolling and story pan/pinch, the viewport/touch-action policy that leaves page magnification available, reduced motion, focus, and observer/wheel-listener cleanup. The semantic editable HTML list remains available independently of the overview. Synthetic CDP pinch scale telemetry differs across headless platforms, so the page-zoom gate checks the browser policy rather than `visualViewport.scale`.
+
+This first adapter uses narrative positions. Chronological overview, 10,000-record virtualization, and named-hardware frame/input latency measurements remain open; the100-item fixture verifies functional behavior without making a frame-rate claim.
 
 ## Evidence and intellectual property
 

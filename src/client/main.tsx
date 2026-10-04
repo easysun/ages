@@ -12,6 +12,7 @@ import {
   RequestError,
 } from "./api";
 import { AssetDetails } from "./details";
+import { TimelineScreen } from "./timelines";
 import { type UploadJob, uploadFile } from "./upload";
 import "./styles.css";
 
@@ -33,6 +34,23 @@ function App() {
   const [error, setError] = useState("");
   const [profileRequest, setProfileRequest] = useState({ path: "/api/me" });
   const authGeneration = useRef(0);
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const popped = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", popped);
+    return () => window.removeEventListener("popstate", popped);
+  }, []);
+  function navigate(next: string) {
+    window.history.pushState(null, "", next);
+    setPath(next);
+    window.scrollTo(0, 0);
+  }
+  function collectionLink(event: React.MouseEvent<HTMLAnchorElement>) {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+      return;
+    event.preventDefault();
+    navigate(event.currentTarget.pathname);
+  }
   useEffect(() => {
     let live = true;
     const generation = authGeneration.current;
@@ -89,6 +107,26 @@ function App() {
           <span className="private-label">Made to keep</span>
         )}
       </header>
+      {profile ? (
+        <nav className="client-nav" aria-label="Your collections">
+          <a
+            href="/library"
+            onClick={collectionLink}
+            aria-current={
+              path === "/library" || path === "/" ? "page" : undefined
+            }
+          >
+            Library
+          </a>
+          <a
+            href="/timelines"
+            onClick={collectionLink}
+            aria-current={path.startsWith("/timelines") ? "page" : undefined}
+          >
+            Timelines
+          </a>
+        </nav>
+      ) : null}
       {loading ? (
         <main id="main" className="loading-page">
           <p role="status">Opening your library…</p>
@@ -107,12 +145,30 @@ function App() {
           </button>
         </main>
       ) : profile ? (
-        <Library
-          profile={profile}
-          onProfile={(next) => {
-            if (generation === authGeneration.current) setProfile(next);
-          }}
-        />
+        path === "/timelines" || path.startsWith("/timelines/") ? (
+          <TimelineScreen
+            id={
+              path === "/timelines"
+                ? undefined
+                : path.slice("/timelines/".length)
+            }
+            navigate={navigate}
+          />
+        ) : path === "/library" || path === "/" ? (
+          <Library
+            profile={profile}
+            onProfile={(next) => {
+              if (generation === authGeneration.current) setProfile(next);
+            }}
+          />
+        ) : (
+          <main id="main" className="loading-page">
+            <h1>Page not found</h1>
+            <a href="/library" onClick={collectionLink}>
+              Open your library
+            </a>
+          </main>
+        )
       ) : (
         <Landing />
       )}
