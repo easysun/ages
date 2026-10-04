@@ -1,8 +1,10 @@
-# Root sharing integration verified checkpoint — October 4, 2026
+# Root sharing and release integration checkpoint — October 4, 2026
 
-1. Merged the clean `feat/library-sharing` commit `b6cdf9c` into `feat/sharing-integration`, preserving the cleanup branch's exact-generation purge safeguards and resolving only README, plan, handoff, and AssetDetails conflicts. The dialog still reports dismissal once and a successful Trash action cannot dismiss a newer dialog.
-2. Fresh `npm run check` exited 0: lint, TypeScript checks, client and Worker builds, 328 runtime tests, and all 48 desktop/mobile Chromium cases passed. The browser cases cover canonical Asset share links, actual QR decoding, grant expiry/revocation, recoverable Trash, and delayed responses.
-3. No cloud calls or deployment occurred. PR #14's release preflight is merged into `main` as `7a76f8a`; next, record this merge, integrate that main commit, repeat the full check, then publish the sharing PR and wait for CI.
+1. Cleanup PR #13 merged as `4339f14`. The tested cleanup retains active-Link trash guards, bounded auth cleanup, fair object retries, and generation-claimed purge accounting; no cloud scheduler or R2 purge was deployed.
+2. Merged sharing commit `b6cdf9c` into `feat/sharing-integration` as `a2ccfb3`, preserving the cleanup safeguards and the AssetDetails one-shot close behavior. PR #14's guarded Cloudflare release preflight is now in this branch from `main` at `7a76f8a`; it verifies named-environment resources, the live Cron schedule, and the exact D1 ledger, then deploys only after explicit preflight.
+3. The combined post-merge `npm run check` exited 0: lint, types, client/Worker builds, 342 runtime tests, and 48 desktop/mobile Chromium cases passed. `npm run preflight -- preview` safely stopped at the missing Cloudflare `account_id` before any API request; no cloud request, migration, secret use, or deployment occurred.
+
+Next: commit the verified main merge, push a focused sharing/release integration PR, and merge only after CI passes. Moderation `55e0365` and Timeline editor work remain independent follow-ups. The same-thread continuation is saved for 20:01:38 Asia/Taipei with prompt `繼續執行`; the goal status remains system-managed `usageLimited`.
 
 # Root scheduled cleanup verified checkpoint — October 4, 2026
 
