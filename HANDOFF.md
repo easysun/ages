@@ -1,3 +1,11 @@
+# Root scheduled cleanup verified checkpoint — October 4, 2026
+
+1. Raw Asset Links PR #11 merged as `3dc687c`; dialog dismissal PR #12 passed CI and merged as `8f121ea`. Root normally merged updated main into `feat/scheduled-cleanup`. The final merge changes no files compared with the freshly tested `3bfb6e2` tree.
+2. Fresh full `npm run check` exited 0: lint/types, 326 runtime tests, client/Worker builds, and 32 desktop/mobile Chromium cases passed (1.7 minutes). Migration 0009 applied locally and its rerun had no pending migrations. Independent cleanup probes verified fair failed-object retries, trash rotation and bounded session cleanup.
+3. Cleanup preserves active distribution-Link trash guards and exact-generation purge claims. Failed R2 deletion retains quota and its claim; successful deletion releases quota once. Ready memories have no inactivity expiry. This is local runtime verification, not a deployed cron or cloud deletion rehearsal.
+
+Exact next step: publish the focused cleanup branch/PR, verify CI, and merge if green. Continue isolated editor/sharing/moderation and guarded release preflight work. The saved continuation remains 14:59:46 Asia/Taipei with prompt `繼續執行`; the goal flag is system-managed usageLimited despite ordinary usage being allowed. Cloud resource bindings, live OAuth/direct uploads, orphan reconciliation and recovery gates remain open. No deployment occurred.
+
 # Library review corrections active checkpoint
 
 Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.
