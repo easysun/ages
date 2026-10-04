@@ -6,26 +6,34 @@ import {
   jsonBody,
   type LibraryAsset,
   mediaUrl,
+  RequestError,
 } from "./api";
+import { AssetSharing } from "./sharing";
 
 export function AssetDetails({
   asset,
   onClose,
   onSaved,
+  onTrashed,
 }: {
   asset: LibraryAsset;
   onClose: () => void;
   onSaved: (asset: LibraryAsset) => void;
+  onTrashed: (asset: LibraryAsset) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const dismissed = useRef(false);
+  const trashed = useRef(false);
+  const active = useRef(true);
   const [current, setCurrent] = useState(asset);
   const [tags, setTags] = useState(asset.tags.join("\n"));
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [trashError, setTrashError] = useState("");
   useEffect(() => {
+    active.current = true;
     dialog.current?.showModal();
     let live = true;
     api<{ asset: LibraryAsset }>(`/api/assets/${encodeURIComponent(asset.id)}`)
@@ -42,11 +50,12 @@ export function AssetDetails({
         if (live) setLoading(false);
       });
     return () => {
+      active.current = false;
       live = false;
     };
   }, [asset.id]);
   function notifyDismissal() {
-    if (dismissed.current) return;
+    if (dismissed.current || trashed.current) return;
     dismissed.current = true;
     onClose();
   }
@@ -82,6 +91,28 @@ export function AssetDetails({
       setNotice("Tags saved");
     } catch (reason) {
       setError(errorMessage(reason));
+    } finally {
+      setSaving(false);
+    }
+  }
+  async function trash() {
+    setSaving(true);
+    setTrashError("");
+    try {
+      const result = await api<{ asset: LibraryAsset }>(
+        `/api/assets/${encodeURIComponent(asset.id)}/trash`,
+        { method: "POST", ...jsonBody({}) },
+      );
+      if (!active.current || dismissed.current) return;
+      trashed.current = true;
+      dialog.current?.close();
+      onTrashed(result.asset);
+    } catch (reason) {
+      setTrashError(
+        reason instanceof RequestError && reason.code === "CONFLICT"
+          ? "Turn off active share links and remove this moment from timelines before moving this moment to Trash."
+          : errorMessage(reason),
+      );
     } finally {
       setSaving(false);
     }
@@ -192,6 +223,29 @@ export function AssetDetails({
               {saving ? "Saving…" : "Save tags"}
             </button>
           </form>
+          {!loading ? <AssetSharing assetId={asset.id} /> : null}
+          <section
+            className="trash-action"
+            aria-label="Move this moment to Trash"
+          >
+            <p className="field-help">
+              Recover this moment from Trash within 30 days. Shared moments must
+              be unlinked first.
+            </p>
+            {trashError ? (
+              <p role="alert" className="error">
+                {trashError}
+              </p>
+            ) : null}
+            <button
+              className="button secondary"
+              type="button"
+              disabled={loading || saving}
+              onClick={() => void trash()}
+            >
+              Move to Trash
+            </button>
+          </section>
         </div>
       </div>
     </dialog>

@@ -1,3 +1,27 @@
+# Library sharing and trash verified checkpoint — October 4, 2026
+
+Worktree: `/Users/bay/.codex/worktrees/library-sharing/ages`, branch `feat/library-sharing`; client sharing/Trash and approved additive owner Link `short_url` response only. No editor, cleanup/0009, purge, or deployment changes.
+
+## Latest three checkpoints
+
+1. Normally merged verified Asset Link backend `21cf917` as `b587347`; baseline npm ci and full307 runtime/30 browser check passed. Real D1 canonical short_url tests observed two RED failures, then29 Link tests passed after validating APP_ORIGIN before owner mutations and passing explicit origin to every Link payload. Exact-pinned qrcode-generator2.0.4 is the local encoder; dev-only jsqr1.4.0 independently decodes actual browser QR pixels.
+2. Actual HTTP browser RED preceded sharing/Trash controls. Implemented Asset grant create/list pagination/expiry/activation/copy/QR, separate recoverable Trash listing/restore, reference conflicts, retained tags/quota, collection refresh and late-response isolation. Successful trash exposed a real focus failure; closing the native dialog before parent card removal fixed it. The supported64-character slug exposed mobile horizontal overflow RED; wrapping labels fixed it. Final self-review added a real delayed Trash response regression: a newer dialog disappeared RED, then an active/dismissed guard preserved it GREEN on desktop/mobile. Carried independently reviewed root dialog fix `c9cdcdc` as `83a0a6d`, preserving its synchronous idempotent close and the successful-trash guard. All previous root/client/backend handoffs remain below.
+3. Fresh `AGES_E2E_PORT=8793 npm run check` exited0: lint, every TypeScript configuration,309 runtime tests in15 files, client/Worker builds and48 actual desktop/mobile browser cases passed. npm ci with committed lockfile passed; local migrations through0008 applied and rerun reported no migrations to apply. All four final synthetic sharing/Trash screenshots were visually inspected and copied into docs/screenshots. Parallel port config defaults8791 and consistently applies to server, canonical origin, cookies and request observer. Whitespace checks passed before commit.
+
+Exact remainder: commit this verified focused feature; root independently reviews the immutable SHA and integrates with its updated main/editor/cleanup branches. URL/Timeline broader owner client controls, live Google OAuth, real signed R2 browser PUT/CORS, credentialed cloud smoke and deployment remain separate gates. Existing upload transport browser scenarios are explicitly simulated. No push, PR, main merge, or deploy is authorized for this writer. Backup stash `46dcf3863fb250ae8e9ba0019b7f75c806ab2d73` preserved progress before carrying the dialog fix; its own backup can be removed after the feature commit is secured.
+
+# Library sharing and trash active checkpoint — October 4, 2026
+
+Worktree: `/Users/bay/.codex/worktrees/library-sharing/ages`, branch `feat/library-sharing`; sole writer for client sharing/trash and the explicitly approved additive owner Link `short_url` response. No editor or cleanup files are owned here.
+
+## Current three checkpoints
+
+1. Native worktree created from verified client `f507844`. Normally merged Asset Link `21cf917` as `b587347`, resolving docs conflicts with client/backend contracts and all prior handoffs retained. Lockfile npm ci passed. Baseline full check passed 307 runtime tests, lint/types/client+Worker builds, and 30 actual desktop/mobile Playwright tests.
+2. Registry/official author docs verified `qrcode-generator@2.0.4`, a zero-dependency encoder with built-in types; independent `jsqr@1.4.0` will be dev-only for actual QR image decoding. Root approved canonical `short_url` on every owner Link payload, from validated APP_ORIGIN before any mutation; no schema or destructive operation is authorized.
+3. New real D1 short_url tests observed RED: expected configured canonical URL was missing, and invalid canonical origin owner reads returned200 instead of503; 27 existing Link tests passed. The root heartbeat reset arrived with ordinary usage allowed; progress/checkouts were preserved. Beginning GREEN for this response addition, then actual browser RED tests before sharing/trash UI code.
+
+Exact remainder: complete short_url GREEN; implement standalone Asset sharing/create/manage/copy/QR and recoverable trash navigation/restore with real API browser RED/GREEN tests, races, keyboard/mobile/focus and screenshots. Full check, local migrations/rerun, whitespace, updated last3 checkpoints and focused commit required. No push, PR, deploy, purge endpoint, extra worktree, or editor/0009 modification.
+
 # Library review corrections active checkpoint
 
 Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.

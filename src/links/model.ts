@@ -72,10 +72,11 @@ export type Link = {
   created_at: string;
   updated_at: string;
 };
-export function linkPayload(link: Link) {
+export function linkPayload(link: Link, origin: string) {
   return {
     id: link.id,
     slug: link.slug,
+    short_url: new URL(`/s/${encodeURIComponent(link.slug)}`, origin).href,
     target:
       link.target_kind === "url"
         ? { kind: "url" as const, url: link.target_url }

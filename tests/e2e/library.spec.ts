@@ -123,7 +123,11 @@ test("simulated direct R2 transport recovers a failed PUT without sending binary
   const workerBodies: string[] = [];
   page.on("request", (request) => {
     if (
-      request.url().startsWith("http://127.0.0.1:8791") &&
+      request
+        .url()
+        .startsWith(
+          `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`,
+        ) &&
       request.method() !== "GET"
     )
       workerBodies.push(request.headers()["content-type"] ?? "");
