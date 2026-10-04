@@ -22,7 +22,10 @@
     "build:client": "vite build",
     "build:worker": "wrangler deploy --env \"\" --dry-run --outdir dist/worker",
     "dev:client": "vite build --watch",
-    "test:e2e": "npm run build:client && playwright test"
+    "test:e2e": "npm run build:client && playwright test",
+    "preflight": "node scripts/release-preflight.mjs",
+    "deploy:preview": "npm run preflight -- preview --deploy",
+    "deploy:production": "npm run preflight -- production --deploy"
   },
   "dependencies": {
     "aws4fetch": "1.0.20",
