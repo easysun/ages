@@ -810,6 +810,32 @@ progress::-moz-progress-bar {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+.moderation-page {
+  width: min(1100px, 90%);
+  margin: 0 auto;
+  padding: 36px 0;
+  overflow-wrap: anywhere;
+}
+.report-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+}
+.report-event {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  min-width: 0;
+}
+.report-detail {
+  white-space: pre-wrap;
+}
+.moderation-page .button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
 @media (max-width: 1050px) {
   .header-note {
     display: none;
@@ -1597,4 +1623,22 @@ progress::-moz-progress-bar {
     align-items: stretch;
     flex-direction: column;
   }
+}
+.moderation-selection {
+  border: 1px solid var(--line);
+  padding: 20px;
+  margin-top: 24px;
+  border-radius: 12px;
+}
+.moderation-selection form {
+  display: grid;
+  gap: 12px;
+}
+.moderation-selection textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 100px;
+  padding: 12px;
+  font: inherit;
+  resize: vertical;
 }

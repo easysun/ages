@@ -1,4 +1,32 @@
-# Current moderation integration checkpoint — October 4, 2026
+# Moderation console specification checkpoint — October 4, 2026
+
+## Active execution checkpoint
+
+Verified console checkpoint:
+1. Final serial AGES_E2E_PORT=8797 npm run check exited 0: lint, all TypeScript configs, 373 runtime tests, client/Worker builds, 93 browser passes, one intentional desktop-only native-touch skip. Log: /private/tmp/ages-console-check-final.log. Focused console run passed 24/24; desktop/mobile viewport screenshots inspected. Lint retains one specificity warning in scoped console CSS and the existing library useTemplate info; neither is an error.
+2. Independent read-only re-review reports no remaining findings after stale authorization fix. No Cloudflare deployment/remote migration or actual media operation occurred.
+3. All console product changes are ready to commit on feat/moderation-console against main 2021c84. Next: record commit, publish focused PR under the authorized integration scope, verify CI before merge. Earlier automatic publication review required payload-specific authorization; if rejected again, request authorization for this exact new commit.
+4. Tracking design now explicitly means a Content Graph with stable nodes, typed references and automatic backlinks, independent of distribution Links. Default-on first-party analytics/hashtags first; isolated per-user external tags and bounded manual graph separate PRs. Conversational design approval and cross-owner acceptance policy remain pending; no tracking code/spec has been created.
+
+
+October 4 follow-up checkpoint:
+1. Full check passed lint, typechecks, 373 runtime tests and both builds; browser run ended with 86 passed, 3 failed, 1 expected skip. Do not claim full success. Initial 12 console browser cases passed.
+2. Independent reviewer found stale target/queue 401/403 was ignored by generation filtering. Two regression cases added; first attempt failed on fixture missing required detail, corrected. Both true behavior RED cases then failed because Access denied was absent. Fixed implementation is now restored; serial 24-case console browser run active (session 82154, log /private/tmp/ages-console-browser-final.log).
+3. New Asset Link browser fixture lacked Origin headers; fixed in test source. Parallel test servers share .wrangler/e2e D1 and caused unreliable failures; run subsequent browser suites serially. No commit/push occurred.
+4. Tracking design approval is pending additions: default native clicks/source reports, hashtags, bidirectional links. Luna/max read-only agent revises effort/design. User has a pending question about bidirectional semantics.
+
+
+1. User approved the written implementation plan; executing natively on `feat/moderation-console` in this root worktree. State-read API real-D1 RED then GREEN 31/31. Current uncommitted console covers owner/admin navigation, queue pagination/retry, exact-target state, reasoned writes, retained write confirmation and logout/race guards.
+2. Independent review found stale 401/403 errors were ignored; two regression tests reproduced the issue, implementation fixed, and read-only re-review reports no remaining findings. Serial desktop cases pass including both revocation regressions; mobile and full validation remain pending.
+3. Product changes are uncommitted. Exact next step: finish session 82154, then full npm run check serially, inspect viewport screenshots, update evidence and commit only after success. Payload-specific 8aff931 publishing approval does not cover the new console branch.
+4. User added Ages-native tracking: default-on clicks/source reports, hashtags and content-graph bidirectional relationships, with optional per-user GA/Pixel/GTM. User-supplied reference defines stable content nodes and automatic backlinks beyond Timeline pairs. Luna/max read-only agent revises architecture; tracking design remains unapproved and no tracking code exists.
+
+1. PR #17 passed GitHub CI run `37195630496` and independent review. With explicit user authorization to modify `main`, it merged as `2021c846f34be1799b3c6879c684597308a1bc5f`. Browser proof is `/private/tmp/ages-moderation-pr-17-merged.png`. No cloud deployment occurred.
+2. The current root worktree `/Users/bay/.codex/worktrees/7026/ages` is on `feat/moderation-console`, created from merged `origin/main`. The earlier moderation worktree retains its local, uncommitted publication checkpoint; no changes were discarded.
+3. Wrote and self-reviewed `docs/superpowers/specs/2026-10-04-moderation-console-design.md`: administrator queue, reasoned block/unblock, and a minimal role-protected state read. No new dependency, role-grant API, report lifecycle, public reporter UI, or migration is proposed. Product code is unchanged; whitespace check passed. The specification and this handoff remain uncommitted.
+4. The user approved the written specification. Created and self-reviewed `docs/superpowers/plans/2026-10-04-moderation-console.md`, covering the state-read API, queue, reasoned mutations, access/race regressions, mobile/keyboard tests, and independent final review. No placeholders or whitespace errors were found. Exact next step: obtain plan review and execution-method selection (native recommended), then implement regression-first and run the full check before committing. Earlier verified backend evidence is 369 runtime tests and 69 browser passes with one expected desktop-only native-touch skip.
+
+# Current moderation integration checkpoint — historical, October 4, 2026
 
 Worktree: `/Users/bay/.codex/worktrees/content-moderation/ages`; branch: `feat/content-moderation`.
 

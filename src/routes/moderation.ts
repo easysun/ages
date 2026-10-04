@@ -95,6 +95,39 @@ administration.get("/reports", async (context) => {
     })),
   });
 });
+administration.get("/content", async (context) => {
+  const query = new URL(context.req.url).searchParams;
+  if (
+    [...query.keys()].some((key) => key !== "kind" && key !== "id") ||
+    query.getAll("kind").length !== 1 ||
+    query.getAll("id").length !== 1
+  )
+    throw new ApiError("INVALID_REQUEST");
+  const parsed = moderationSchema.shape.target.safeParse({
+    kind: query.get("kind"),
+    id: query.get("id"),
+  });
+  if (!parsed.success) throw new ApiError("INVALID_REQUEST");
+  const target = parsed.data;
+  const owner = context.get("user").id;
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(owner),
+    context.env.DB.prepare(`SELECT moderation_blocked FROM ${moderationTables[target.kind]}
+      WHERE id=? AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      target.id,
+      owner,
+    ),
+  ]);
+  if ((result[0]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const row = result[1]?.results[0] as
+    | { moderation_blocked: number }
+    | undefined;
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    moderation: { target, blocked: row.moderation_blocked === 1 },
+  });
+});
 administration.put("/content", async (context) => {
   const input = await parseJson(context, moderationSchema);
   const owner = context.get("user").id;

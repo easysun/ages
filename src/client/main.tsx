@@ -12,6 +12,7 @@ import {
   RequestError,
 } from "./api";
 import { AssetDetails } from "./details";
+import { ModerationScreen } from "./moderation";
 import { TimelineScreen } from "./timelines";
 import { type UploadJob, uploadFile } from "./upload";
 import "./styles.css";
@@ -125,6 +126,15 @@ function App() {
           >
             Timelines
           </a>
+          {profile.user.plan === "admin" ? (
+            <a
+              href="/admin/reports"
+              onClick={collectionLink}
+              aria-current={path === "/admin/reports" ? "page" : undefined}
+            >
+              Moderation
+            </a>
+          ) : null}
         </nav>
       ) : null}
       {loading ? (
@@ -145,7 +155,16 @@ function App() {
           </button>
         </main>
       ) : profile ? (
-        path === "/timelines" || path.startsWith("/timelines/") ? (
+        path === "/admin/reports" ? (
+          profile.user.plan === "admin" ? (
+            <ModerationScreen />
+          ) : (
+            <main id="main" className="loading-page">
+              <h1>Access denied</h1>
+              <p>This page requires an administrator account.</p>
+            </main>
+          )
+        ) : path === "/timelines" || path.startsWith("/timelines/") ? (
           <TimelineScreen
             id={
               path === "/timelines"

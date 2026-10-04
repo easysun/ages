@@ -6,12 +6,37 @@ export type LibraryPage = {
   next_cursor: string | null;
 };
 export type Profile = {
-  user: { id: string; display_name: string | null; email: string };
+  user: {
+    id: string;
+    display_name: string | null;
+    email: string;
+    plan: "free" | "creator" | "pro" | "admin";
+  };
   quota: {
     storage_limit_bytes: number;
     storage_used_bytes: number;
     storage_reserved_bytes: number;
   };
+};
+export type ModerationTarget = {
+  kind: "asset" | "timeline" | "link";
+  id: string;
+};
+export type ModerationState = {
+  moderation: { target: ModerationTarget; blocked: boolean };
+};
+export type ReportPage = {
+  reports: {
+    id: string;
+    target: ModerationTarget;
+    subject?: ModerationTarget;
+    category: string;
+    detail: string;
+    reporter_id: string;
+    created_at: string;
+    observed_timeline_version: number | null;
+  }[];
+  next_cursor: string | null;
 };
 export type UploadIntent = {
   asset: Omit<LibraryAsset, "tags">;
