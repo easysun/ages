@@ -18,6 +18,7 @@ export function AssetDetails({
   onSaved: (asset: LibraryAsset) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const dismissed = useRef(false);
   const [current, setCurrent] = useState(asset);
   const [tags, setTags] = useState(asset.tags.join("\n"));
   const [saving, setSaving] = useState(false);
@@ -44,6 +45,15 @@ export function AssetDetails({
       live = false;
     };
   }, [asset.id]);
+  function notifyDismissal() {
+    if (dismissed.current) return;
+    dismissed.current = true;
+    onClose();
+  }
+  function dismiss() {
+    dialog.current?.close();
+    notifyDismissal();
+  }
   async function saveTags(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     const values = tags.split("\n").filter(Boolean);
@@ -81,7 +91,11 @@ export function AssetDetails({
       ref={dialog}
       className="detail-dialog"
       aria-labelledby="detail-title"
-      onClose={onClose}
+      onClose={notifyDismissal}
+      onCancel={(event) => {
+        event.preventDefault();
+        dismiss();
+      }}
     >
       <div className="detail-header">
         <p className="eyebrow">A moment in your library</p>
@@ -89,7 +103,7 @@ export function AssetDetails({
           className="icon-button"
           type="button"
           aria-label="Close details"
-          onClick={() => dialog.current?.close()}
+          onClick={dismiss}
         >
           ×
         </button>
