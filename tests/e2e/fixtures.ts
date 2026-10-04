@@ -117,7 +117,7 @@ export async function seedLibrary(context: BrowserContext) {
     {
       name: "ages_session",
       value: token,
-      url: "http://127.0.0.1:8791",
+      url: `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`,
       httpOnly: true,
       sameSite: "Lax",
     },

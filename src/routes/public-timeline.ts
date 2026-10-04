@@ -4,6 +4,7 @@ import { appOrigin } from "../auth/config";
 import type { AppContext } from "../bindings";
 import { ApiError } from "../http/errors";
 import { streamAssetMedia } from "../media/stream";
+import { visibleTimelineSql } from "../moderation/availability";
 import type { Timeline } from "../timeline/model";
 import { renderTimeline, type ViewerItem } from "../timeline/render";
 
@@ -25,19 +26,19 @@ publicTimeline.get("/:id", async (context) => {
   const result = await db.batch([
     db
       .prepare(
-        "SELECT * FROM timelines WHERE id = ? AND visibility IN ('unlisted', 'public')",
+        `SELECT * FROM timelines t WHERE t.id = ? AND ${visibleTimelineSql}`,
       )
       .bind(id),
     db
       .prepare(`SELECT i.id, i.caption, i.event_at, a.id AS asset_id, a.kind FROM timeline_items i
       JOIN assets a ON a.id = i.asset_id AND a.owner_id = i.owner_id
       JOIN timelines t ON t.id = i.timeline_id AND t.owner_id = i.owner_id
-      WHERE t.id = ? AND t.visibility IN ('unlisted', 'public') AND a.status = 'ready' AND a.deleted_at IS NULL
+      WHERE t.id = ? AND ${visibleTimelineSql} AND a.status = 'ready' AND a.deleted_at IS NULL
       ORDER BY i.position, i.id`)
       .bind(id),
     db
       .prepare(`SELECT a.* FROM assets a JOIN timelines t ON t.cover_asset_id = a.id AND t.owner_id = a.owner_id
-      WHERE t.id = ? AND t.visibility IN ('unlisted', 'public') AND a.status = 'ready' AND a.deleted_at IS NULL`)
+      WHERE t.id = ? AND ${visibleTimelineSql} AND a.status = 'ready' AND a.deleted_at IS NULL`)
       .bind(id),
   ]);
   const timeline = result[0]?.results[0] as Timeline | undefined;
@@ -57,12 +58,15 @@ publicTimeline.get("/:id", async (context) => {
 });
 
 publicTimeline.on(["GET", "HEAD"], "/:id/media/:assetId", async (context) => {
-  const asset =
-    await context.env.DB.prepare(`SELECT a.* FROM assets a JOIN timelines t ON t.owner_id = a.owner_id
-    WHERE t.id = ? AND t.visibility IN ('unlisted', 'public') AND a.id = ? AND a.status = 'ready' AND a.deleted_at IS NULL
+  const membership = async () =>
+    context.env.DB.prepare(`SELECT a.* FROM assets a JOIN timelines t ON t.owner_id = a.owner_id
+    WHERE t.id = ? AND ${visibleTimelineSql} AND a.id = ? AND a.status = 'ready' AND a.deleted_at IS NULL
       AND (t.cover_asset_id = a.id OR EXISTS (SELECT 1 FROM timeline_items i WHERE i.timeline_id = t.id AND i.owner_id = t.owner_id AND i.asset_id = a.id))`)
       .bind(context.req.param("id"), context.req.param("assetId"))
       .first<Asset>();
+  const asset = await membership();
   if (!asset) throw new ApiError("NOT_FOUND");
-  return streamAssetMedia(context, asset);
+  return streamAssetMedia(context, asset, async () => {
+    if (!(await membership())) throw new ApiError("NOT_FOUND");
+  });
 });

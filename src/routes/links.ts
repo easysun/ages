@@ -14,6 +14,7 @@ import {
   updateLinkSchema,
 } from "../links/model";
 import { streamAssetMedia } from "../media/stream";
+import { visibleTimelineSql } from "../moderation/availability";
 
 export const links = new Hono<AppContext>();
 links.use("*", requireUser, async (context, next) => {
@@ -186,7 +187,7 @@ links.patch("/:id", async (context) => {
 export const linkResolver = new Hono<AppContext>();
 linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
   const row = await context.env.DB.prepare(
-    "SELECT * FROM distribution_links WHERE slug = ? AND active = 1",
+    "SELECT * FROM distribution_links WHERE slug = ? AND active = 1 AND moderation_blocked = 0",
   )
     .bind(context.req.param("slug"))
     .first<Link>();
@@ -203,8 +204,8 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
       const current =
         await context.env.DB.prepare(`SELECT a.*, l.expires_at AS link_expires_at FROM assets a
         JOIN distribution_links l ON l.asset_id = a.id AND l.owner_id = a.owner_id
-        WHERE l.id = ? AND l.slug = ? AND l.active = 1 AND l.target_kind = 'asset'
-          AND a.status = 'ready' AND a.deleted_at IS NULL`)
+        WHERE l.id = ? AND l.slug = ? AND l.active = 1 AND l.moderation_blocked = 0 AND l.target_kind = 'asset'
+          AND a.status = 'ready' AND a.deleted_at IS NULL AND a.moderation_blocked = 0`)
           .bind(row.id, row.slug)
           .first<Asset & { link_expires_at: string | null }>();
       const deadline =
@@ -229,7 +230,7 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
   let target = row.target_url;
   if (row.target_kind === "timeline") {
     const visible = await context.env.DB.prepare(
-      "SELECT id FROM timelines WHERE id = ? AND owner_id = ? AND visibility IN ('public', 'unlisted')",
+      `SELECT t.id FROM timelines t WHERE t.id = ? AND t.owner_id = ? AND ${visibleTimelineSql}`,
     )
       .bind(row.timeline_id, row.owner_id)
       .first();

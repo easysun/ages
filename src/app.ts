@@ -10,6 +10,7 @@ import { health } from "./routes/health";
 import { library } from "./routes/library";
 import { linkResolver, links } from "./routes/links";
 import { me } from "./routes/me";
+import { administration, reports } from "./routes/moderation";
 import { publicTimeline } from "./routes/public-timeline";
 import { timelines } from "./routes/timelines";
 import { uploads } from "./routes/uploads";
@@ -47,6 +48,8 @@ export function createApp() {
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
   app.route("/api/links", links);
+  app.route("/api/reports", reports);
+  app.route("/api/admin", administration);
   app.route("/s", linkResolver);
 
   app.route("/t", publicTimeline);

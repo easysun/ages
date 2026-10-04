@@ -19,6 +19,7 @@ export type Asset = {
   deleted_at: string | null;
   trash_generation: string | null;
   purge_claim: string | null;
+  moderation_blocked: number;
 };
 
 export function assetPayload(asset: Asset) {
@@ -28,6 +29,7 @@ export function assetPayload(asset: Asset) {
     etag: _etag,
     trash_generation: _generation,
     purge_claim: _claim,
+    moderation_blocked: _blocked,
     upload_expires_at: _expiry,
     ...payload
   } = asset;
