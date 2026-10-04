@@ -48,6 +48,113 @@ function request(
     bindings,
   );
 }
+
+describe("Administrator content-state read", () => {
+  it("reads authoritative moderation state without mutation", async () => {
+    await seedAsset();
+    await story();
+    await link();
+    await report({ kind: "timeline", timeline_id: "story" });
+    const quota = (
+      await env.DB.prepare("SELECT * FROM usage_quotas ORDER BY user_id").all()
+    ).results;
+    for (const [kind, id] of [
+      ["asset", "a"],
+      ["timeline", "story"],
+      ["link", "link_raw-media"],
+    ] as const) {
+      for (const blocked of [false, true]) {
+        if (blocked) await moderate(kind, id);
+        const before = await env.DB.prepare(
+          "SELECT count(*) AS n FROM moderation_audit",
+        ).first();
+        const response = await request(
+          `/api/admin/content?kind=${kind}&id=${id}`,
+          "GET",
+          undefined,
+          admin,
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+        expect(await response.json()).toEqual({
+          moderation: { target: { kind, id }, blocked },
+        });
+        expect(
+          await env.DB.prepare(
+            "SELECT count(*) AS n FROM moderation_audit",
+          ).first(),
+        ).toEqual(before);
+      }
+    }
+    expect(
+      (await env.DB.prepare("SELECT count(*) AS n FROM report_events").first())
+        ?.n,
+    ).toBe(1);
+    expect(
+      (
+        await env.DB.prepare(
+          "SELECT * FROM usage_quotas ORDER BY user_id",
+        ).all()
+      ).results,
+    ).toEqual(quota);
+  });
+
+  it("rejects malformed content-state queries", async () => {
+    for (const query of [
+      "",
+      "kind=asset",
+      "kind=asset&id=",
+      "id=a",
+      "kind=unknown&id=a",
+      "kind=asset&kind=link&id=a",
+      "kind=asset&id=a&id=b",
+      "kind=asset&id=a&extra=x",
+      `kind=asset&id=${"a".repeat(101)}`,
+    ]) {
+      expect(
+        (await request(`/api/admin/content?${query}`, "GET", undefined, admin))
+          .status,
+      ).toBe(400);
+    }
+    expect(
+      (
+        await request(
+          "/api/admin/content?kind=asset&id=missing",
+          "GET",
+          undefined,
+          admin,
+        )
+      ).status,
+    ).toBe(404);
+  });
+
+  it("rejects anonymous and ordinary user state reads", async () => {
+    const path = "/api/admin/content?kind=asset&id=a";
+    expect((await request(path, "GET", undefined, "")).status).toBe(401);
+    expect((await request(path)).status).toBe(403);
+  });
+
+  it("rejects revoked operator access", async () => {
+    await seedAsset();
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare(
+        "UPDATE users SET plan='free' WHERE id='operator'",
+      ).run();
+      return batch(statements);
+    });
+    expect(
+      (
+        await request(
+          "/api/admin/content?kind=asset&id=a",
+          "GET",
+          undefined,
+          admin,
+        )
+      ).status,
+    ).toBe(403);
+  });
+});
 async function seedAsset(id = "a") {
   const key = `synthetic/${id}`;
   const stamp = new Date().toISOString();
