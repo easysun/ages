@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { encodeCursor, libraryQuery } from "../assets/library";
 import { assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
@@ -31,50 +32,61 @@ administration.use("*", requireUser, async (context, next) => {
   await next();
 });
 administration.get("/reports", async (context) => {
-  const query = new URL(context.req.url).searchParams;
-  const value = query.get("limit");
-  if (
-    [...query.keys()].some((key) => key !== "limit") ||
-    query.getAll("limit").length > 1 ||
-    (value !== null && !/^[1-9]\d*$/.test(value))
-  )
-    throw new ApiError("INVALID_REQUEST");
-  const limit = value === null ? 30 : Number(value);
-  if (!Number.isSafeInteger(limit) || limit > 100)
-    throw new ApiError("INVALID_REQUEST");
   const owner = context.get("user").id;
+  const url = new URL(context.req.url);
+  if (url.searchParams.has("tag")) throw new ApiError("INVALID_REQUEST");
+  const encoded = url.searchParams.get("cursor");
+  if (encoded !== null) {
+    if (
+      !encoded.startsWith("admin-reports.") ||
+      url.searchParams.getAll("cursor").length !== 1
+    )
+      throw new ApiError("INVALID_REQUEST");
+    url.searchParams.set("cursor", encoded.slice("admin-reports.".length));
+  }
+  const { limit, cursor } = libraryQuery(url.href, owner);
   const result = await context.env.DB.batch([
     context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(owner),
-    context.env.DB.prepare(`SELECT r.*,l.target_kind AS subject_kind,l.asset_id,l.timeline_id FROM content_reports r
+    context.env.DB.prepare(`SELECT r.*,l.target_kind AS subject_kind,l.asset_id,l.timeline_id FROM report_events r
       LEFT JOIN distribution_links l ON r.target_kind='link' AND l.id=r.target_id
-      WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin') ORDER BY r.created_at DESC,r.id DESC LIMIT ?`).bind(
+      WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')
+      ${cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : ""}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT ?`).bind(
       owner,
-      limit,
+      ...(cursor ? [cursor.created_at, cursor.created_at, cursor.id] : []),
+      limit + 1,
     ),
   ]);
   if ((result[0]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
     throw new ApiError("FORBIDDEN");
+  const found = (result[1]?.results ?? []) as {
+    id: string;
+    target_kind: string;
+    target_id: string;
+    category: string;
+    detail: string;
+    reporter_id: string;
+    created_at: string;
+    observed_timeline_version: number | null;
+    subject_kind: string | null;
+    asset_id: string | null;
+    timeline_id: string | null;
+  }[];
+  const rows = found.slice(0, limit);
+  const last = rows.at(-1);
   return context.json({
-    reports: (
-      (result[1]?.results ?? []) as {
-        id: string;
-        target_kind: string;
-        target_id: string;
-        category: string;
-        detail: string;
-        reporter_id: string;
-        created_at: string;
-        subject_kind: string | null;
-        asset_id: string | null;
-        timeline_id: string | null;
-      }[]
-    ).map((row) => ({
+    next_cursor:
+      found.length > limit && last
+        ? `admin-reports.${encodeCursor({ v: 1, owner, tag: null, created_at: last.created_at, id: last.id })}`
+        : null,
+    reports: rows.map((row) => ({
       id: row.id,
       target: { kind: row.target_kind, id: row.target_id },
       category: row.category,
       detail: row.detail,
       reporter_id: row.reporter_id,
       created_at: row.created_at,
+      observed_timeline_version: row.observed_timeline_version,
       ...(row.subject_kind === "asset"
         ? { subject: { kind: "asset", id: row.asset_id } }
         : row.subject_kind === "timeline"
@@ -89,6 +101,11 @@ administration.put("/content", async (context) => {
   const table = moderationTables[input.target.kind];
   const action = `ma_${crypto.randomUUID()}`;
   const blocked = Number(input.blocked);
+  const stamp = new Date().toISOString();
+  const timelineUpdate =
+    input.target.kind === "timeline"
+      ? ", version=version+1, last_mutation_token=?, updated_at=?"
+      : "";
   const result = await context.env.DB.batch([
     context.env.DB.prepare(`INSERT INTO moderation_audit(id,moderator_id,target_kind,target_id,previous_blocked,blocked,reason,created_at)
       SELECT ?,?,?,id,moderation_blocked,?,?,? FROM ${table} WHERE id=? AND moderation_blocked != ?
@@ -98,15 +115,16 @@ administration.put("/content", async (context) => {
       input.target.kind,
       blocked,
       input.reason,
-      new Date().toISOString(),
+      stamp,
       input.target.id,
       blocked,
       owner,
     ),
-    context.env.DB.prepare(`UPDATE ${table} SET moderation_blocked=? WHERE id=?
+    context.env.DB.prepare(`UPDATE ${table} SET moderation_blocked=?${timelineUpdate} WHERE id=?
       AND EXISTS(SELECT 1 FROM moderation_audit WHERE id=? AND moderator_id=? AND target_kind=? AND target_id=?)
       AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
       blocked,
+      ...(input.target.kind === "timeline" ? [action, stamp] : []),
       input.target.id,
       action,
       owner,

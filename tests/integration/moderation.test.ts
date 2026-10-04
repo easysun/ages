@@ -2,6 +2,7 @@ import { applyD1Migrations, reset } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app";
+import { encodeCursor } from "../../src/assets/library";
 import type { Bindings } from "../../src/bindings";
 import { seedUser } from "../helpers/auth";
 
@@ -155,7 +156,7 @@ describe("Authenticated bounded content reports", () => {
       expect((await report(target)).status).toBe(201);
     const rows = (
       await env.DB.prepare(
-        "SELECT target_kind,target_id,reporter_id,category,detail FROM content_reports ORDER BY target_id",
+        "SELECT target_kind,target_id,reporter_id,category,detail FROM report_events ORDER BY target_id",
       ).all()
     ).results;
     expect(rows).toContainEqual({
@@ -216,7 +217,7 @@ describe("Authenticated bounded content reports", () => {
         /sensitive|private-story|raw-media/,
       );
     }
-    expect(await count("content_reports")).toBe(0);
+    expect(await count("report_events")).toBe(0);
   });
   it("deduplicates concurrent repeated reports while preserving their original bounded details", async () => {
     await story();
@@ -228,7 +229,7 @@ describe("Authenticated bounded content reports", () => {
     expect(responses.map((r) => r.status).sort()).toEqual([
       200, 200, 200, 200, 200, 200, 200, 201,
     ]);
-    expect(await count("content_reports")).toBe(1);
+    expect(await count("report_events")).toBe(1);
     expect(
       (
         await report(
@@ -239,9 +240,7 @@ describe("Authenticated bounded content reports", () => {
       ).status,
     ).toBe(200);
     expect(
-      await env.DB.prepare(
-        "SELECT category,detail FROM content_reports",
-      ).first(),
+      await env.DB.prepare("SELECT category,detail FROM report_events").first(),
     ).toEqual({ category: "abuse", detail: "Please review this content." });
   });
   it("validates categories, details and strict bodies without logging report details or cookie secrets", async () => {
@@ -306,7 +305,7 @@ describe("Authenticated bounded content reports", () => {
       const response = await report({ kind: "link", slug });
       expect(response.status).toBe(n < 20 ? 201 : 429);
     }
-    expect(await count("content_reports")).toBe(20);
+    expect(await count("report_events")).toBe(20);
     expect((await report({ kind: "link", slug: "subject-0" })).status).toBe(
       200,
     );
@@ -522,7 +521,7 @@ describe("Reversible administrator takedowns", () => {
     });
     expect((await request("/t/story/media/a")).status).toBe(404);
   });
-  it("preserves owner visibility/version and immutable audit identity with idempotent repeated moderation", async () => {
+  it("preserves owner visibility and immutable audit identity with idempotent repeated moderation", async () => {
     await story();
     expect((await moderate("timeline", "story")).status).toBe(200);
     expect((await moderate("timeline", "story")).status).toBe(200);
@@ -531,7 +530,7 @@ describe("Reversible administrator takedowns", () => {
       await env.DB.prepare(
         "SELECT visibility,version FROM timelines WHERE id='story'",
       ).first(),
-    ).toEqual({ visibility: "unlisted", version: 1 });
+    ).toEqual({ visibility: "unlisted", version: 2 });
     const audit = await env.DB.prepare(
       "SELECT * FROM moderation_audit",
     ).first();
@@ -596,7 +595,7 @@ it("upgrades existing content with only default moderation state and reruns with
     );
   }
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-  expect(await count("content_reports")).toBe(0);
+  expect(await count("report_events")).toBe(0);
   expect(await count("moderation_audit")).toBe(0);
   expect((await env.MEDIA.head("synthetic/a"))?.version).toBe(object?.version);
   expect((await request("/t/existing", "GET", undefined, "")).status).toBe(200);
@@ -624,7 +623,7 @@ it("caps concurrent distinct reports at the final daily slot rather than allowin
   const stamp = new Date().toISOString();
   for (let n = 0; n < 19; n++)
     await env.DB.prepare(
-      "INSERT INTO content_reports(id,reporter_id,target_kind,target_id,category,detail,created_at) VALUES(?,'reporter','timeline',?,'abuse','',?)",
+      "INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at) VALUES(?,'reporter','timeline',?,'abuse','',?)",
     )
       .bind(`old_${n}`, `old_subject_${n}`, stamp)
       .run();
@@ -637,7 +636,7 @@ it("caps concurrent distinct reports at the final daily slot rather than allowin
   expect(responses.map((response) => response.status).sort()).toEqual([
     201, 429, 429, 429, 429, 429, 429, 429,
   ]);
-  expect(await count("content_reports")).toBe(20);
+  expect(await count("report_events")).toBe(20);
 });
 
 it("rejects expired, blocked, private-target and unavailable raw grants without disclosing their subjects", async () => {
@@ -661,7 +660,7 @@ it("rejects expired, blocked, private-target and unavailable raw grants without 
   expect((await moderate("asset", "a", false)).status).toBe(200);
   expect((await moderate("link", raw)).status).toBe(200);
   expect((await report({ kind: "link", slug: "raw-media" })).status).toBe(404);
-  expect(await count("content_reports")).toBe(0);
+  expect(await count("report_events")).toBe(0);
   expect(
     await env.DB.prepare(
       "SELECT target_kind,timeline_id FROM distribution_links WHERE id=?",
@@ -686,4 +685,380 @@ it("requires a bounded nonempty moderation reason and strict target identity wit
     ).toBe(400);
   expect(await count("moderation_audit")).toBe(0);
   expect((await request("/t/story", "GET", undefined, "")).status).toBe(200);
+});
+
+async function seedReportBacklog() {
+  const rows = Array.from({ length: 105 }, (_, n) => ({
+    id: `report_${n}`,
+    created_at: `2026-10-0${1 + (n % 3)}T00:00:00.000Z`,
+  }));
+  for (const row of rows)
+    await env.DB.prepare(
+      "INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at) VALUES(?,'reporter','timeline',?,'abuse','',?)",
+    )
+      .bind(row.id, `subject_${row.id}`, row.created_at)
+      .run();
+  return rows.sort((a, b) =>
+    a.created_at === b.created_at
+      ? a.id < b.id
+        ? 1
+        : -1
+      : a.created_at < b.created_at
+        ? 1
+        : -1,
+  );
+}
+
+it("paginates an operator backlog beyond 100 using descending timestamp/id ties without repeats after a newer report arrives", async () => {
+  const expected = await seedReportBacklog();
+  const initial = await request("/api/admin/reports", "GET", undefined, admin);
+  expect((await initial.json<{ reports: unknown[] }>()).reports).toHaveLength(
+    30,
+  );
+  const response = await request(
+    "/api/admin/reports?limit=100",
+    "GET",
+    undefined,
+    admin,
+  );
+  expect(response.status).toBe(200);
+  const first = await response.json<{
+    reports: { id: string }[];
+    next_cursor: string | null;
+  }>();
+  expect(first.reports).toHaveLength(100);
+  expect(typeof first.next_cursor).toBe("string");
+  await env.DB.prepare(
+    "INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at) VALUES('newer','reporter','timeline','newer','abuse','','2026-10-04T00:00:00.000Z')",
+  ).run();
+  const next = await request(
+    `/api/admin/reports?cursor=${first.next_cursor}`,
+    "GET",
+    undefined,
+    admin,
+  );
+  expect(next.status).toBe(200);
+  const second = await next.json<{
+    reports: { id: string }[];
+    next_cursor: string | null;
+  }>();
+  expect(second.reports).toHaveLength(5);
+  expect(second.next_cursor).toBeNull();
+  const ids = [...first.reports, ...second.reports].map((row) => row.id);
+  expect(ids).toEqual(expected.map((row) => row.id));
+  expect(new Set(ids).size).toBe(105);
+});
+
+it("rejects malformed and foreign collection/operator cursors and checks the current admin role on every page", async () => {
+  await seedReportBacklog();
+  const first = await request(
+    "/api/admin/reports?limit=1",
+    "GET",
+    undefined,
+    admin,
+  );
+  const page = await first.json<{ next_cursor: string }>();
+  expect(typeof page.next_cursor).toBe("string");
+  const libraryCursor = encodeCursor({
+    v: 1,
+    owner: "operator",
+    tag: null,
+    created_at: "2026-10-01T00:00:00.000Z",
+    id: "report_1",
+  });
+  for (const query of [
+    "cursor=admin-reports.!!",
+    `cursor=${libraryCursor}`,
+    `cursor=links.${libraryCursor}`,
+    `cursor=${page.next_cursor}&cursor=${page.next_cursor}`,
+    "tag=abuse",
+    "limit=100.0",
+  ])
+    expect(
+      (await request(`/api/admin/reports?${query}`, "GET", undefined, admin))
+        .status,
+    ).toBe(400);
+  const otherAdmin = await seedUser("other_operator");
+  await env.DB.prepare(
+    "UPDATE users SET plan='admin' WHERE id='other_operator'",
+  ).run();
+  expect(
+    (
+      await request(
+        `/api/admin/reports?cursor=${page.next_cursor}`,
+        "GET",
+        undefined,
+        otherAdmin,
+      )
+    ).status,
+  ).toBe(400);
+  const batch = env.DB.batch.bind(env.DB);
+  vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+    await env.DB.prepare(
+      "UPDATE users SET plan='free' WHERE id='operator'",
+    ).run();
+    return batch(statements);
+  });
+  expect(
+    (
+      await request(
+        `/api/admin/reports?cursor=${page.next_cursor}`,
+        "GET",
+        undefined,
+        admin,
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await request(
+        `/api/admin/reports?cursor=${page.next_cursor}`,
+        "GET",
+        undefined,
+        admin,
+      )
+    ).status,
+  ).toBe(403);
+});
+
+it("reports changed Timeline snapshots immediately while deduplicating the same version for direct and Link subjects", async () => {
+  await seedAsset();
+  await story();
+  const subjectLink = await link("story-link", "timeline", "story");
+  const first = await report({ kind: "timeline", timeline_id: "story" });
+  const firstId = (await first.json<{ report: { id: string } }>()).report.id;
+  expect(
+    (await report({ kind: "timeline", timeline_id: "story" })).status,
+  ).toBe(200);
+  expect(
+    (
+      await request(
+        "/api/timelines/story/items",
+        "POST",
+        { expected_version: 1, asset_id: "a", caption: "New story content" },
+        owner,
+      )
+    ).status,
+  ).toBe(201);
+  const changed = await report({ kind: "timeline", timeline_id: "story" });
+  expect(changed.status).toBe(201);
+  expect((await changed.json<{ report: { id: string } }>()).report.id).not.toBe(
+    firstId,
+  );
+  expect((await report({ kind: "link", slug: "story-link" })).status).toBe(201);
+  expect(
+    (
+      await request(
+        "/api/timelines/story",
+        "PATCH",
+        { expected_version: 2, title: "Edited story" },
+        owner,
+      )
+    ).status,
+  ).toBe(200);
+  expect((await report({ kind: "link", slug: "story-link" })).status).toBe(201);
+  const events = (
+    await env.DB.prepare(
+      "SELECT target_kind,target_id,observed_timeline_version FROM report_events ORDER BY created_at,id",
+    ).all()
+  ).results;
+  expect(events).toHaveLength(4);
+  expect(
+    events
+      .filter((event) => event.target_kind === "timeline")
+      .map((event) => event.observed_timeline_version)
+      .sort(),
+  ).toEqual([1, 2]);
+  expect(
+    events
+      .filter((event) => event.target_kind === "link")
+      .map((event) => ({
+        id: event.target_id,
+        version: event.observed_timeline_version,
+      }))
+      .sort((a, b) => Number(a.version) - Number(b.version)),
+  ).toEqual([
+    { id: subjectLink, version: 2 },
+    { id: subjectLink, version: 3 },
+  ]);
+});
+
+it("allows a new report exactly 24 hours later while retaining both immutable-subject events", async () => {
+  const now = Date.now();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now);
+  await link("url-link", "url", "https://example.test");
+  await env.DB.prepare(
+    "UPDATE sessions SET expires_at=? WHERE user_id='reporter'",
+  )
+    .bind(new Date(now + 25 * 60 * 60 * 1000).toISOString())
+    .run();
+  expect((await report({ kind: "link", slug: "url-link" })).status).toBe(201);
+  vi.setSystemTime(now + 24 * 60 * 60 * 1000 - 1);
+  expect((await report({ kind: "link", slug: "url-link" })).status).toBe(200);
+  vi.setSystemTime(now + 24 * 60 * 60 * 1000);
+  expect((await report({ kind: "link", slug: "url-link" })).status).toBe(201);
+  expect(await count("report_events")).toBe(2);
+  expect(
+    (
+      await env.DB.prepare(
+        "SELECT observed_timeline_version FROM report_events",
+      ).all()
+    ).results,
+  ).toEqual([
+    { observed_timeline_version: null },
+    { observed_timeline_version: null },
+  ]);
+});
+
+it("captures the authoritative Timeline version inside the report transaction rather than a stale earlier lookup", async () => {
+  await story();
+  const batch = env.DB.batch.bind(env.DB);
+  vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+    expect(
+      (
+        await request(
+          "/api/timelines/story",
+          "PATCH",
+          { expected_version: 1, title: "Changed before report transaction" },
+          owner,
+        )
+      ).status,
+    ).toBe(200);
+    return batch(statements);
+  });
+  expect(
+    (await report({ kind: "timeline", timeline_id: "story" })).status,
+  ).toBe(201);
+  expect(
+    await env.DB.prepare(
+      "SELECT observed_timeline_version FROM report_events",
+    ).first("observed_timeline_version"),
+  ).toBe(2);
+});
+
+it("invalidates stale owner mutations once per Timeline block transition and preserves the token on idempotent retries", async () => {
+  await story();
+  expect((await moderate("timeline", "story")).status).toBe(200);
+  const blocked = await env.DB.prepare(
+    "SELECT version,last_mutation_token FROM timelines WHERE id='story'",
+  ).first<{ version: number; last_mutation_token: string }>();
+  expect(blocked?.version).toBe(2);
+  expect(blocked?.last_mutation_token).toBeTruthy();
+  expect(
+    (
+      await request(
+        "/api/timelines/story",
+        "PATCH",
+        { expected_version: 1, title: "Stale editor" },
+        owner,
+      )
+    ).status,
+  ).toBe(409);
+  expect((await moderate("timeline", "story")).status).toBe(200);
+  expect(
+    await env.DB.prepare(
+      "SELECT version,last_mutation_token FROM timelines WHERE id='story'",
+    ).first(),
+  ).toEqual(blocked);
+  expect((await moderate("timeline", "story", false)).status).toBe(200);
+  const restored = await env.DB.prepare(
+    "SELECT version,last_mutation_token FROM timelines WHERE id='story'",
+  ).first<{ version: number; last_mutation_token: string }>();
+  expect(restored?.version).toBe(3);
+  expect(restored?.last_mutation_token).not.toBe(blocked?.last_mutation_token);
+  expect(
+    (
+      await request(
+        "/api/timelines/story",
+        "PATCH",
+        { expected_version: 2, title: "Another stale editor" },
+        owner,
+      )
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await request(
+        "/api/timelines/story",
+        "PATCH",
+        { expected_version: 3, title: "Current editor" },
+        owner,
+      )
+    ).status,
+  ).toBe(200);
+  expect(await count("moderation_audit")).toBe(2);
+});
+
+it("backfills every original report unchanged into canonical events and freezes the archive without guessing legacy observed versions", async () => {
+  await reset();
+  await applyD1Migrations(
+    env.DB,
+    env.TEST_MIGRATIONS.filter((migration) => migration.name < "0011"),
+  );
+  owner = await seedUser();
+  reporter = await seedUser("reporter");
+  await story();
+  const now = Date.now();
+  const stamp = new Date(now).toISOString();
+  for (let n = 0; n < 25; n++)
+    await env.DB.prepare(
+      "INSERT INTO content_reports(id,reporter_id,target_kind,target_id,category,detail,created_at) VALUES(?,'reporter','timeline',?,'copyright','Original detail',?)",
+    )
+      .bind(`legacy_${n}`, n === 0 ? "story" : `legacy_target_${n}`, stamp)
+      .run();
+  const before = (
+    await env.DB.prepare("SELECT * FROM content_reports ORDER BY id").all()
+  ).results;
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  expect(
+    (await env.DB.prepare("SELECT * FROM report_events ORDER BY id").all())
+      .results,
+  ).toEqual(before.map((row) => ({ ...row, observed_timeline_version: null })));
+  expect(
+    (await env.DB.prepare("SELECT * FROM content_reports ORDER BY id").all())
+      .results,
+  ).toEqual(before);
+  for (const sql of [
+    "UPDATE content_reports SET detail='Changed'",
+    "DELETE FROM content_reports",
+    "INSERT INTO content_reports SELECT * FROM content_reports WHERE id='legacy_0'",
+  ])
+    await expect(env.DB.prepare(sql).run()).rejects.toThrow(
+      "legacy_reports_read_only",
+    );
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  expect(await count("report_events")).toBe(25);
+  expect(
+    (await report({ kind: "timeline", timeline_id: "story" })).status,
+  ).toBe(200);
+  expect(
+    (
+      await request(
+        "/api/timelines/story",
+        "PATCH",
+        { expected_version: 1, title: "Changed legacy story" },
+        owner,
+      )
+    ).status,
+  ).toBe(200);
+  expect(
+    (await report({ kind: "timeline", timeline_id: "story" })).status,
+  ).toBe(200);
+  await env.DB.prepare(
+    "UPDATE sessions SET expires_at=? WHERE user_id='reporter'",
+  )
+    .bind(new Date(now + 25 * 60 * 60 * 1000).toISOString())
+    .run();
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(now + 24 * 60 * 60 * 1000);
+  expect(
+    (await report({ kind: "timeline", timeline_id: "story" })).status,
+  ).toBe(201);
+  expect(await count("report_events")).toBe(26);
+  expect(
+    await env.DB.prepare(
+      "SELECT observed_timeline_version FROM report_events WHERE target_id='story' AND observed_timeline_version IS NOT NULL",
+    ).first("observed_timeline_version"),
+  ).toBe(2);
 });

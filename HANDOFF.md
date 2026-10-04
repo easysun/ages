@@ -1,3 +1,15 @@
+# Moderation review follow-up checkpoint — October 4, 2026
+
+This focused follow-up preserves immutable feature `777e396` and docs `86a394e`; migration 0010 is unchanged. Work remains isolated on `feat/content-moderation` with no UI edits or external side effects.
+
+## Last three follow-up checkpoints
+
+1. Root identified that limit-only report listing made rows older than 100 unreachable and lifetime target deduplication suppressed reports after Timeline additions. Verified source and approved a strict operator/collection-scoped keyset cursor using the existing parser. Two real D1 regressions observed missing `next_cursor` failures with 20 tests passing, then pagination GREEN 22 passed for 105 reports with mixed timestamp/ID ties, concurrent newer arrivals, malformed/cross-collection/cross-operator cursors and fresh role revocation in the page batch.
+2. Root approved forward-only additive migration 0011, requiring a new canonical report event table with all original report IDs/fields preserved, immutable original archive, unknown legacy versions NULL and conservative 24-hour dedupe. Added five regressions: changed Timeline/Timeline-Link snapshots, exact 24-hour retry, version derivation inside the transaction, moderation/editor CAS and archive upgrade/rerun. RED was 5 failures with 22 passing before new source/schema.
+3. Added `report_events`, copied legacy rows before read-only archive triggers, and switched reports/quota/backlog reads to canonical events. Atomic insert derives current eligible Timeline version and deduplicates the same reporter/target/snapshot within rolling 24 hours while counting actual events against 20. Direct Timeline block/unblock advances version and mutation token/timestamp exactly once; repeated state is a no-op and stale editor versions return 409. All 27 focused real D1/R2 tests pass. Fresh `AGES_E2E_PORT=8794 npm run check` exited 0: lint/all TypeScript configurations, 353 runtime tests in 17 files, 32 desktop/mobile browser cases and client/dry-run Worker builds passed. Local migration 0011 applied; rerun reported no pending migrations. Whitespace checks passed.
+
+Exact next step: commit the verified focused review fix and send its immutable SHA to root for independent review. Root must review the immutable correction before integration. No earlier moderation commit was rewritten, no table was dropped or rebuilt, and no existing report was deleted or changed. Reporter/operator UI, account provisioning policy, real operations and cloud verification remain open.
+
 # Content moderation active checkpoint — October 4, 2026
 
 Work is isolated at `/Users/bay/.codex/worktrees/content-moderation/ages` on `feat/content-moderation`. This writer owns additive migration 0010 and the moderation backend; sharing/editor writers remain independent. No push, PR, merge into main, deployment, remote migration or real cloud deletion occurred.

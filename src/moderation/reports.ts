@@ -39,39 +39,45 @@ export async function createReport(
       throw new ApiError("NOT_FOUND");
     id = subject.id;
   }
-  const eligible =
+  const subject =
     kind === "timeline"
-      ? `EXISTS(SELECT 1 FROM timelines t WHERE t.id=? AND ${visibleTimelineSql})`
-      : `EXISTS(SELECT 1 FROM distribution_links l WHERE l.id=? AND ${publicLinkSql})`;
-  const eligibilityValues = kind === "timeline" ? [id] : [id, stamp];
+      ? `SELECT t.id, t.version AS observed_timeline_version FROM timelines t WHERE t.id=? AND ${visibleTimelineSql}`
+      : `SELECT l.id, (SELECT t.version FROM timelines t WHERE t.id=l.timeline_id AND t.owner_id=l.owner_id) AS observed_timeline_version
+      FROM distribution_links l WHERE l.id=? AND ${publicLinkSql}`;
+  const subjectValues = kind === "timeline" ? [id] : [id, stamp];
   const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const duplicate = `r.reporter_id=? AND r.target_kind=? AND r.target_id=subject.id AND r.created_at>?
+    AND (r.observed_timeline_version IS NULL OR r.observed_timeline_version IS subject.observed_timeline_version)`;
+  // A serialized batch derives the current snapshot, deduplicates and counts actual events atomically.
   const result = await db.batch([
     db
-      .prepare(`INSERT INTO content_reports(id,reporter_id,target_kind,target_id,category,detail,created_at)
-      SELECT ?,?,?,?,?,?,? WHERE ${eligible}
-      AND (SELECT count(*) FROM content_reports WHERE reporter_id=? AND created_at>?) < 20
-      ON CONFLICT(reporter_id,target_kind,target_id) DO NOTHING RETURNING id`)
+      .prepare(`WITH subject AS (${subject})
+      INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at,observed_timeline_version)
+      SELECT ?,?,?,subject.id,?,?,?,subject.observed_timeline_version FROM subject
+      WHERE (SELECT count(*) FROM report_events WHERE reporter_id=? AND created_at>?) < 20
+      AND NOT EXISTS (SELECT 1 FROM report_events r WHERE ${duplicate}) RETURNING id`)
       .bind(
+        ...subjectValues,
         `rp_${crypto.randomUUID()}`,
         owner,
         kind,
-        id,
         input.category,
         input.detail,
         stamp,
-        ...eligibilityValues,
         owner,
+        cutoff,
+        owner,
+        kind,
         cutoff,
       ),
     db
-      .prepare(
-        `SELECT id FROM content_reports WHERE reporter_id=? AND target_kind=? AND target_id=? AND ${eligible}`,
-      )
-      .bind(owner, kind, id, ...eligibilityValues),
-    db.prepare(`SELECT ${eligible} AS eligible`).bind(...eligibilityValues),
+      .prepare(`WITH subject AS (${subject}) SELECT r.id FROM report_events r,subject WHERE ${duplicate}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 1`)
+      .bind(...subjectValues, owner, kind, cutoff),
+    db.prepare(`SELECT EXISTS(${subject}) AS eligible`).bind(...subjectValues),
     db
       .prepare(
-        "SELECT min(created_at) AS oldest FROM content_reports WHERE reporter_id=? AND created_at>?",
+        "SELECT min(created_at) AS oldest FROM report_events WHERE reporter_id=? AND created_at>?",
       )
       .bind(owner, cutoff),
   ]);
