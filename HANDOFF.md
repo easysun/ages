@@ -1,3 +1,12 @@
+# CI mobile page magnification checkpoint — October 4, 2026
+
+1. PR #16 (`Add responsive Timeline editor`) is open against `main`. GitHub Actions run `37189378826` failed only the mobile native-touch test's final `visualViewport.scale > 1` assertion; 342 runtime tests and the other 68 browser cases passed, with the expected desktop-only skip.
+2. Root cause investigation found that the test's pinch point lands on a Moment date `<select>` whose effective `touch-action` chain is `auto`; the viewport meta contains `width=device-width, initial-scale=1.0` with no zoom restriction. The same isolated gesture test passes on local macOS headless Chromium but CI Ubuntu does not expose a scale change from CDP's synthesized pinch. The test now checks the browser zoom-permission policy and retains the real mobile vertical-scroll, story-pan, and story-pinch checks.
+3. The targeted mobile test passes locally. A fresh full `AGES_E2E_PORT=8792 npm run check` passed lint/typechecks, client/Worker builds, 342 runtime tests, and 69 browser tests; the one skipped case is the intentional desktop variant of the native-touch test. `git diff --check` passes. The only lint output is the pre-existing informational `useTemplate` suggestion in `tests/integration/library.test.ts:259`.
+4. No Cloudflare request, live migration, secret use, or deployment occurred.
+
+Exact next step: commit and push the regression-test adjustment to `feat/timeline-editor`, wait for PR #16's GitHub Actions check to pass, then merge under the existing authorization. Continue with moderation UX and the remaining local acceptance gates; keep live cloud, recovery, and performance gates explicit.
+
 # Timeline editor integration checkpoint — October 4, 2026
 
 1. Before main integration, `AGES_E2E_PORT=8792 npm run check` passed lint/types, client and Worker builds, 237 runtime tests, and 53 browser tests; one desktop-only native-touch case is intentionally skipped because it passes on mobile. The four synthetic editor/viewer screenshots were visually inspected.

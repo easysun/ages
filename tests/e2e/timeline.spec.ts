@@ -544,15 +544,42 @@ test("mobile native touch pan and pinch navigate the story without disabling pag
   await page
     .getByRole("group", { name: "Moment 1", exact: true })
     .scrollIntoViewIfNeeded();
-  await cdp.send("Input.synthesizePinchGesture", {
-    x: 180,
-    y: 600,
-    scaleFactor: 1.5,
-    gestureSourceType: "touch",
+  // CDP's synthesized pinch changes visualViewport.scale inconsistently across
+  // headless platforms, so verify the browser policy that permits page zoom.
+  const magnificationPolicy = await page.evaluate(() => {
+    const viewport = document
+      .querySelector('meta[name="viewport"]')
+      ?.getAttribute("content");
+    const target = document.elementFromPoint(180, 600);
+    const touchActions: string[] = [];
+    for (
+      let element: Element | null = target;
+      element;
+      element = element.parentElement
+    )
+      touchActions.push(getComputedStyle(element).touchAction);
+    return {
+      viewport,
+      target: target?.tagName ?? null,
+      touchActions,
+    };
   });
-  await expect
-    .poll(() => page.evaluate(() => visualViewport?.scale ?? 1))
-    .toBeGreaterThan(1);
+  expect(magnificationPolicy.viewport).toMatch(/\bwidth=device-width\b/);
+  expect(magnificationPolicy.viewport).not.toMatch(
+    /\b(?:maximum-scale|user-scalable\s*=\s*no)\b/i,
+  );
+  expect(magnificationPolicy.target).not.toBeNull();
+  expect(magnificationPolicy.touchActions.length).toBeGreaterThan(0);
+  expect(
+    magnificationPolicy.touchActions.every((action) => {
+      const values = action.split(/\s+/);
+      return (
+        action === "auto" ||
+        action === "manipulation" ||
+        values.includes("pinch-zoom")
+      );
+    }),
+  ).toBe(true);
   const actual = await (
     await context.request.get(`/api/timelines/${id}`)
   ).json();
