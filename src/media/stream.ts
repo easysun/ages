@@ -31,6 +31,7 @@ function mediaRange(
 export async function streamAssetMedia(
   context: Context<AppContext>,
   asset: Asset,
+  recheckGrant?: () => Promise<void>,
 ) {
   context.header("Cache-Control", "private, no-store");
   context.header("X-Content-Type-Options", "nosniff");
@@ -44,6 +45,7 @@ export async function streamAssetMedia(
     head.httpMetadata?.contentType !== asset.mime_type
   )
     throw new ApiError("NOT_FOUND");
+  await recheckGrant?.();
   if (context.req.method === "HEAD") {
     context.header("Content-Type", asset.mime_type);
     context.header("Content-Length", String(asset.size_bytes));
@@ -77,6 +79,12 @@ export async function streamAssetMedia(
   ) {
     await object.body.cancel();
     throw new ApiError("NOT_FOUND");
+  }
+  try {
+    await recheckGrant?.();
+  } catch (error) {
+    await object.body.cancel();
+    throw error;
   }
   context.header("Content-Type", asset.mime_type);
   context.header("Accept-Ranges", "bytes");
