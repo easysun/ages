@@ -1,12 +1,14 @@
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
+import { requestLimits } from "./abuse/limits";
 import type { AppContext } from "./bindings";
 import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
+import { linkResolver, links } from "./routes/links";
 import { me } from "./routes/me";
 import { publicTimeline } from "./routes/public-timeline";
 import { timelines } from "./routes/timelines";
@@ -15,6 +17,7 @@ import { uploads } from "./routes/uploads";
 export function createApp() {
   const app = new Hono<AppContext>();
   app.use("*", requestContext);
+  app.use("*", requestLimits);
   app.use(
     "/api/*",
     bodyLimit({
@@ -43,6 +46,9 @@ export function createApp() {
   app.route("/api/assets", uploads);
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
+  app.route("/api/links", links);
+  app.route("/s", linkResolver);
+
   app.route("/t", publicTimeline);
   return app;
 }

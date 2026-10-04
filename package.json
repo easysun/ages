@@ -22,7 +22,10 @@
     "build:client": "vite build",
     "build:worker": "wrangler deploy --env \"\" --dry-run --outdir dist/worker",
     "dev:client": "vite build --watch",
-    "test:e2e": "npm run build:client && playwright test"
+    "test:e2e": "npm run build:client && playwright test",
+    "preflight": "node scripts/release-preflight.mjs",
+    "deploy:preview": "npm run preflight -- preview --deploy",
+    "deploy:production": "npm run preflight -- production --deploy"
   },
   "dependencies": {
     "aws4fetch": "1.0.20",
@@ -30,6 +33,7 @@
     "hono": "4.13.12",
     "image-size": "2.0.4",
     "jose": "6.2.12",
+    "qrcode-generator": "2.0.4",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "4.6.5"
@@ -42,6 +46,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
+    "jsqr": "1.4.0",
     "typescript": "6.0.3",
     "vite": "8.3.2",
     "vitest": "4.1.11",

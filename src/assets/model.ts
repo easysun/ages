@@ -17,6 +17,8 @@ export type Asset = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  trash_generation: string | null;
+  purge_claim: string | null;
 };
 
 export function assetPayload(asset: Asset) {
@@ -24,6 +26,8 @@ export function assetPayload(asset: Asset) {
     r2_key: _key,
     owner_id: _owner,
     etag: _etag,
+    trash_generation: _generation,
+    purge_claim: _claim,
     upload_expires_at: _expiry,
     ...payload
   } = asset;
