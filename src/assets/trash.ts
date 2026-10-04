@@ -18,6 +18,7 @@ export async function trashAsset(db: D1Database, id: string, owner: string) {
         WHERE id = ? AND owner_id = ? AND status = 'ready'
           AND NOT EXISTS (SELECT 1 FROM timeline_items WHERE asset_id = assets.id)
           AND NOT EXISTS (SELECT 1 FROM timelines WHERE cover_asset_id = assets.id)
+          AND NOT EXISTS (SELECT 1 FROM distribution_links WHERE asset_id = assets.id AND active = 1)
         RETURNING *`)
         .bind(now, now, crypto.randomUUID().replaceAll("-", ""), id, owner),
       db
@@ -28,7 +29,8 @@ export async function trashAsset(db: D1Database, id: string, owner: string) {
     // Existing reference triggers also protect callers which bypass the precondition.
     if (
       error instanceof Error &&
-      error.message.includes("asset_referenced_by_timeline")
+      (error.message.includes("asset_referenced_by_timeline") ||
+        error.message.includes("asset_referenced_by_link"))
     )
       throw new ApiError("CONFLICT");
     throw error;

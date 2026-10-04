@@ -1,3 +1,31 @@
+# Library review corrections active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.
+
+## Current three checkpoints
+
+1. Reproduced delayed upload completion overriding a newer exact filter, a delayed real profile200 restoring authenticated UI after successful logout/server401, and `/s` returning SPA HTML200. Corrected focus-test setup to use actual browser tag mutations, then observed RED when Escape focused no surviving control after the edited card disappeared.
+2. Refreshed the current filter with functional state updates, guarded upload state/profile callbacks after unmount and invalidated profile callbacks when logout begins, preserved completed-upload/quota-refresh-error semantics, added Worker-first `/s` routing, and restored focus to the filter when the opener is disconnected. Eight targeted desktop/375px mobile actual HTTP cases passed; only upload S3 transport is simulated, with real local R2 completion.
+3. Fresh `npm run check` exited0 on October4: lint and all TypeScript configurations passed,189/189 runtime tests passed, client and dry-run Worker builds passed,30/30 actual HTTP desktop/375px mobile Chromium cases passed in1.4minutes. Refreshed desktop and mobile Library/detail screenshots were inspected. Existing nonfatal Library formatting info and expected negative-case Worker logs remain. No backend application or schema changes were made.
+
+Exact next step: commit this verified regression slice and cherry-pick it into the preserved Timeline editor branch before resuming approved Stage06 work. Original Library application code is frozen after this verification. No push, PR, merge into main, or deployment is authorized for this writer.
+
+# React Library active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`; base: `3590b41`. Backend Library commits were cherry-picked as `fd306a2` and `5f821f2`; backend source/migrations are unchanged by the client writer. Do not deploy, push, or merge this client slice without root coordination.
+
+## Last three client checkpoints
+
+1. Exact registry versions installed: React/ReactDOM19.3.0, Vite8.3.2, React plugin6.1.1, Playwright1.63.0. Real local Wrangler HTTP fixtures seed users, hashed sessions, and PNGs into isolated `.wrangler/e2e`. Four desktop browser tests failed at missing UI before product implementation; the initial missing browser executable failure was not counted as RED.
+2. Implemented one-origin Vite/static-assets client: auth landing, ready Library/media, selection, upload/retry, tags/filter, pagination, and responsive native detail dialog. Kept Worker and browser TypeScript configurations separate. Detail response/edit race was independently reproduced with a delayed real response (expected disabled, received enabled), then fixed by waiting for authoritative metadata before editing.
+3. Pagination/filter race was independently reproduced (expected0 cards, received1), then fixed by aborting the page request when its tag changes and ignoring aborted results. Further observed-RED regressions exposed unwanted exact-tag space trimming (expected ` Coast `, received `Coast`) and completed uploads mislabeled as failed when quota refresh failed. Both were fixed. Deferred focus restoration was replaced with synchronous restoration, and keyboard/tag/quota scenarios passed six repeated desktop cases. Final `npm run check` exited0 on October4 after reset: lint and all TypeScript configs passed (existing nonfatal Library style info remains),189/189 runtime tests passed, client and dry-run Worker builds passed,22/22 actual HTTP desktop/375px mobile Chromium cases passed in1.1minutes. Final library/landing/detail screenshots were inspected.
+
+## Files and exact next step
+
+Client files are `src/client/`, `vite.config.ts`, `tsconfig.client.json`; tests are `tests/e2e/` and `playwright.config.ts`. Config changes: package/lock, Wrangler assets, separate TS includes, CI browser installation, README/implementation plan. No production auth or upload fixture backdoors exist.
+
+Next: root should review the committed client slice against the already reviewed Library API, integrate the client commit onto updated main, and handle the PR/CI flow. The client writer must not push, create a PR, or merge. Screenshots are ignored artifacts at `test-results/library-desktop.png`, `test-results/library-mobile.png`, and matching landing/details files in this worktree. No application-code edits followed final verification; only this handoff and API-response documentation wording were finalized. Live Google OAuth and R2 S3/browser/CORS signatures remain unverified cloud gates. No timeline/editor/share/delete UI is implemented.
+
 # Ages Development Handoff
 
 ## Goal and scope
@@ -40,6 +68,57 @@ The isolated writer checkout is `/Users/bay/.codex/worktrees/abuse-cleanup/ages`
 - Root must independently review/integrate this branch and rerun checks with Link/client changes. No push, PR, merge into main, remote migration, deployment or real bucket deletion was performed. The only branch merge was the authorized local integration of origin/main. Local R2 deletions used isolated synthetic test objects.
 - Report/takedown, objects without Asset rows, cloud edge abuse configuration, credentialed upload/login, named-environment cron/backlog smoke, backup/recovery and remaining client/MVP browser gates remain open. Wrangler authentication/resources are still external gates; no cloud claim is made.
 
+
+## Root Library client integration checkpoint — October 4, 2026
+
+- Link PR #9 passed updated CI and merged as `4688f75`; trash PR #8 is `a0d822c`. Root created `feat/library-client` from updated main and carried only client feature `1a8840f` and race/focus fix `6e53770` as `9fc0547` and `18d27c`, preserving backend routes, migrations, contracts and prior checkpoints.
+- Fresh combined `npm run check` passed lint/types, 293 runtime tests in 14 files, client/Worker builds and 30 actual desktop/mobile Playwright cases (1.4 minutes). Local migration/rerun reported no pending migrations. Root visually inspected generated synthetic desktop/mobile screenshots; four proof images are committed under `docs/screenshots/`. Simulated R2 PUT transport is explicitly test-only; live Google/R2/CORS and 250 MB upload remain unverified.
+- Independent Library browser review identified and the author fixed stale upload/filter, post-logout profile, disconnected modal opener focus and short-link SPA-routing defects with observed RED regressions. Root independently reran the original 189+30 suite and the fully integrated 293+30 suite. Next: push the focused client PR, verify its CI including Chromium installation, and merge.
+- Asset Links `21cf917` passed independent 307-test review and a temporary combined 0008/0009 purge-claim probe. Cleanup `9a92d03` has two independently reproduced blockers: failed-upload retry starvation and unbounded auth cleanup. The cleanup author is adding deterministic regressions and fixes before integration. Timeline editor remains an isolated writer with real API browser tests in progress. No deployment occurred; goal remains active and incomplete; continuation is 09:58:17 Asia/Taipei.
+
+
+## Root integration checkpoint — October 4, 2026, Links and trash
+
+- Trash PR #8 passed CI and merged as `a0d822c`. Root normally merged it into `feat/links` as `9b144c9`, preserving every prior checkpoint. Fresh combined check passed lint/types, 293 tests in 14 files, and the dry-run Worker build; local migration 0007 applied after 0006 and rerun reported no pending migrations.
+- URL/Timeline Link PR #9 is open at https://github.com/easysun/ages/pull/9. Independent redirect review and 27 Link tests pass. Next: push the verified updated head, confirm its CI, and merge the focused PR. Asset grants and QR remain separate.
+- Root independently verified React Library fixes at `6e53770`: full check passed 189 runtime and 30 desktop/mobile browser cases, lint/types and builds. Integrate only client feature `1a8840f` and fix `6e53770` onto updated main, preserving backend migrations/routes and rerun the complete combined suite.
+- Asset Link immutable feature `21cf917` has 307 author-verified tests; cleanup immutable `9a92d03` has 283. Independent cross-reviews are running in isolated worktrees. Timeline editor is building actual API browser regressions after safely integrating public SSR and the Library fixes. No deployment occurred; cloud bindings/login and the remaining MVP gates stay open. Same-chat continuation remains 09:58:17 Asia/Taipei.
+
+
+## Current root checkpoint — October 4, 2026, after reset
+
+- Public Timeline PR #7 passed CI and merged as `704d819`; canonical SSR/media is in main with synthetic desktop/mobile screenshot evidence under `docs/screenshots/`. Root Link branch normally integrated it as `fc511cd`; source and docs conflicts were resolved preserving all routes/contracts/checkpoints. Fresh combined check passed lint/types, 264 tests, and dry-run build.
+- Link review fix `ad1941c` is independently approved after 27 Link tests were rerun. The root `feat/links` branch is pushed and awaiting a focused URL/Timeline PR. Migration 0006 and local rerun passed. No Asset grants or QR are included in this approval.
+- Trash true-generation fix `2a91ff6` is independently reviewed by root; fresh full check passed 240 tests. Root normally merged public main into `feat/asset-trash` as `4a4b1f5`, retained all trash routes and shared media helper, and fresh combined check passed 266 tests. The branch is pushed for its focused PR; migration 0007 is additive with preserved-data backfill.
+- React Library immutable `1a8840f` passed 189 runtime and 22 browser tests but independent browser probes found stale upload-filter, post-logout profile, removed-opener focus, and missing `/s` Worker routing defects. Author is fixing all four with observed RED regressions in the original client worktree. The new editor worktree is safely paused at main integration commit `8eeddb9` until those fixes are verified and propagated.
+- Isolated next writers: `feat/abuse-cleanup` at `/Users/bay/.codex/worktrees/abuse-cleanup/ages` owns additive 0009, durable rate limits and retry-safe scheduled cleanup with purge claims; `feat/asset-links` at `/Users/bay/.codex/worktrees/asset-links/ages` owns additive 0008, a data-preserving canonical Link extension and raw Asset grants. Do not edit their checkouts. Reset schedule is verified for 09:58:17 Asia/Taipei; exact prompt remains `繼續執行`. No deployment/cloud smoke occurred; the MVP goal remains active and incomplete.
+
+## Raw Asset Link checkpoint — October 4, 2026
+
+The isolated `feat/asset-links` branch at `/Users/bay/.codex/worktrees/asset-links/ages` owns this extension. Earlier Root, public viewer, and trash checkpoints remain intact below.
+
+### Last three checkpoints
+
+1. Created the authorized branch from `fc511cd` and normally merged the verified trash branch `4a4b1f5` as `9b7e91a`. Resolved only the HANDOFF conflict by retaining both histories. Lockfile `npm ci --cache /private/tmp/ages-npm-cache --prefer-offline` completed; the combined baseline passed lint/types, 293 tests, and dry-run build.
+2. The first ten real D1/R2 Asset Link tests failed against the missing canonical schema and grant behavior before implementation. Additive migration 0008 copies old Link rows unchanged before quota/readiness guards, freezes the legacy table, and reserves every slug permanently. Runtime Link queries now use `distribution_links`; explicit owned ready Asset targets stream anonymously while owner APIs remain private. All initial 66 scoped Link/trash tests passed.
+3. Expanded coverage now passes fourteen Asset Link tests, including lowered-quota/private-Timeline backfill preservation and rerun, archive writes, cross-owner SQL/API, cross-kind quota/slug races, permanent reservations and batch rollback, HEAD/ranges, exact expiry and mid-inspection revocation, R2 loss/replacement, active expired references, deactivation, reactivation/trash races, retained tags/bytes/quota, and internal-token redaction. Fresh full `npm run check` passed lint/types, 307 tests in 15 files, and Worker dry-run build. Local migrations through 0008 applied; rerun reported no migrations to apply. Whitespace checks passed.
+
+### Decisions and exact remainder
+
+- The sole live Link entity is `distribution_links`, with exactly one URL, Timeline, or Asset target and real composite owner foreign keys. Old `links` rows remain a read-only archive; no old migration, table, or stored row was dropped, deleted, or overwritten. The slug-only reservation ledger survives Link row removal and forbids updates/deletes. All live rows, including inactive/expired Links, count toward creation quota.
+- Raw Asset grants are served directly at GET/HEAD `/s/:slug`, without owner API redirects or R2 URLs. Asset visibility stays private. The authoritative joined Link/Asset grant is checked per request and after R2 inspection; the shared streaming helper accepts an optional recheck and cancels the body on revoked grants before success headers. Already-started streams cannot retract bytes previously delivered.
+- Active Asset Link references block trash even after Link expiry until explicit deactivation. The conditional trash precondition and migration trigger enforce this transactionally; known Link reference trigger failures map to 409. Inactive Link foreign keys preserve Asset rows, allowing future purge to update state rather than physically remove records. Link deactivation/removal never deletes media or changes storage usage.
+- Root should independently review the immutable feature commit, integrate through normal review after the URL/Timeline Link PR, and rerun the combined checks/migrations. Purge migration 0009 and claim fields remain owned by the separate purge writer; none were invented or edited here. Preserve the shared helper callback and trash Link guard when integrating its changes.
+- No push, PR, deployment, live-cloud mutation, new endpoint for Link deletion, QR UI, password, or private Timeline grant was performed. Browser distribution controls, real cloud smoke, operational hardening, and the remaining editor/release gates are still open.
+
+## Reset continuation and Link checkpoint — October 4, 2026
+
+- The scheduled `繼續執行` heartbeat arrived at 04:57:03 Asia/Taipei. Usage API confirms ordinary usage allowed and the new five-hour window at 0%; reset is 09:57:17. The existing same-chat automation was updated, not duplicated, to run once at 09:58:17 with the same exact prompt. The desktop app and computer must remain running.
+- PR #6 passed CI and merged into main as `2b9870a`. Root Link work is on `feat/links`, based on `5872193`, and will integrate that main merge after committing. Original checkout changes remain preserved.
+- Link TDD observed 22 initial failing tests, then 22 passed. Account deletion releasing a slug failed its new regression before changing the Link owner FK to RESTRICT. Two further tests failed for cross-collection cursors and corrupt expiration metadata, then passed after collection prefixes and fail-closed expiry checks. Fresh full check passed lint/types, 236 tests (25 Link tests), and dry-run build. Migration 0006 applied locally; rerun reported no migrations to apply.
+- Link scope is owner-managed immutable URL/Timeline targets and slugs, active/expiry/quota checks, strict HTTP(S) destinations, and uncached anonymous 302 resolution. Private Timeline targets are rejected and current visibility is checked per request. No Asset grants, QR UI, or cloud deployment is included. Next: independent review of the immutable commit and a focused PR; integrate public SSR before claiming a working canonical viewer.
+- Independent Link review found two fail-closed redirect gaps: unsafe persisted URLs and invalid configured canonical origins. Both new real D1 regressions failed (25 existing tests passed), then passed after reusing the URL schema during resolution and existing `appOrigin()` validation. Fresh full check now passes lint/types, 238 tests (27 Link tests), and dry-run build. Review approval remains pending the immutable fix commit.
+- Public SSR is committed separately at `f0457d0` on `feat/public-timeline`, including integration merge `e519001` with the shared media helper and main `2b9870a`. Trash/restore is at `e8dc585` on `feat/asset-trash`; root review identified a potential timestamp ABA race and requested a deterministic test and true trash-generation token if confirmed (migration 0007 reserved). React Library remains an isolated writer with final browser regressions pending. Do not discard, switch, or edit their files.
 
 ## Trash generation fix checkpoint — October 4, 2026
 

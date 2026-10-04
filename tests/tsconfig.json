@@ -1,5 +1,8 @@
 {
   "extends": "../tsconfig.json",
-  "compilerOptions": { "types": ["@cloudflare/vitest-plugin/types"] },
-  "include": ["./**/*.ts", "../src/**/*.ts", "../types/worker.d.ts"]
+  "compilerOptions": {
+    "types": ["@cloudflare/vitest-plugin/types"]
+  },
+  "include": ["./**/*.ts", "../src/**/*.ts", "../types/worker.d.ts"],
+  "exclude": ["./e2e", "../src/client"]
 }
