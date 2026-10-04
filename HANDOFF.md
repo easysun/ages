@@ -2,7 +2,23 @@
 
 Worktree: `/Users/bay/.codex/worktrees/timeline-editor/ages`; branch: `feat/timeline-editor`, based on immutable client `1a8840f`. The four independently confirmed Library regressions were fixed and verified as `6e53770` in the original checkout; this branch carries that fix after merge `8eeddb9`.
 
-## Current three checkpoints
+## Current three implementation checkpoints
+
+1. Actual Timeline/public SSR base is normally merged at `7f8f2a5`. Five editor flow tests and three viewport/native touch scenarios observed missing-UI RED before implementation. Root's independently verified queued-close fix `c9cdcdc` is inherited as `6a17e3d`; original Library fixes and all editor changes are preserved.
+2. First13 actual HTTP editor cases passed desktop/mobile (one mobile-only touch scenario intentionally skipped on desktop), covering3-photo creation, independent captions/date, order, unlisted canonical sharing, fourth append, reuse across stories,100-item full reorder, real409 recovery, anchored navigation/manual resize+append/Fit, data invariance, and observer/listener cleanup. Three recovery REDs then exposed hidden picker conflicts, lost add focus, and permanent loading after failed metadata reads; six targeted desktop/mobile cases passed after correction.
+3. `AGES_E2E_PORT=8792 npm run check` exited 0: lint/types, client and Worker builds, 237 runtime tests, and 53 browser tests passed; the only skip is the desktop form of the native-touch case, which runs on mobile. The synthetic desktop/mobile editor and public-viewer screenshots were visually inspected and saved under `docs/screenshots/timeline-*.png`. This work adds no dependency, production fixture route, or backend change; direct R2 PUT transport remains simulated.
+
+Next: merge this verified editor slice with current `main` (PR #15 adds Library sharing and release preflight), preserve both sets of client controls, and rerun the complete check before publishing a focused editor PR. No deployment occurred.
+
+## Earlier implementation checkpoints
+
+1. Public SSR base merge `7f8f2a5` passed237 runtime and30 actual HTTP browser cases. Root later reported newer Link/Distribution contracts on main; this editor remains scoped to the existing actual Timeline and SSR contracts and must preserve the original Library fix.
+2. Five desktop editor scenarios observed RED at missing controls against real local D1/R2. Viewport scenarios separately observed three REDs (desktop/mobile anchored navigation and mobile native touch), with desktop touch intentionally skipped. New fixtures seed one optional fourth PNG and a100-item Timeline only in test setup; no production fixture backdoor exists.
+3. Added partially implemented `src/client/timelines.tsx` and `story-viewport.tsx`; both pass client TypeScript checks. Native navigation and responsive styles are being wired next. Editor product behavior is not yet green or verified.
+
+Exact next step: finish client navigation and semantic responsive CSS, build, run actual HTTP editor browser cases on8792, fix observed failures, then run the full check and inspect screenshots before committing. No push, PR, main merge, or deploy.
+
+## Verified base checkpoints
 
 1. Created the editor branch and normally merged `origin/main` at `2b9870a`, resolving app/README/HANDOFF conflicts by preserving Library and Timeline routes and all relevant delivery checkpoints. The actual Timeline API and migration0005 are now present; no fake viewer endpoint exists.
 2. `npm ci --prefer-offline` passed with zero audit findings. Combined baseline lint/types,211 runtime tests, and both builds passed. Browser baseline initially stopped because8791 was in use by the separate Library review; no other process was stopped or reused.
