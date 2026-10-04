@@ -1,6 +1,42 @@
+# Library review corrections active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`, original client `1a8840f`. Root reauthorized this checkout's sole writer to fix four independently confirmed review blockers; the editor worktree remains preserved at safe merge `8eeddb9`.
+
+## Current three checkpoints
+
+1. Reproduced delayed upload completion overriding a newer exact filter, a delayed real profile200 restoring authenticated UI after successful logout/server401, and `/s` returning SPA HTML200. Corrected focus-test setup to use actual browser tag mutations, then observed RED when Escape focused no surviving control after the edited card disappeared.
+2. Refreshed the current filter with functional state updates, guarded upload state/profile callbacks after unmount and invalidated profile callbacks when logout begins, preserved completed-upload/quota-refresh-error semantics, added Worker-first `/s` routing, and restored focus to the filter when the opener is disconnected. Eight targeted desktop/375px mobile actual HTTP cases passed; only upload S3 transport is simulated, with real local R2 completion.
+3. Fresh `npm run check` exited0 on October4: lint and all TypeScript configurations passed,189/189 runtime tests passed, client and dry-run Worker builds passed,30/30 actual HTTP desktop/375px mobile Chromium cases passed in1.4minutes. Refreshed desktop and mobile Library/detail screenshots were inspected. Existing nonfatal Library formatting info and expected negative-case Worker logs remain. No backend application or schema changes were made.
+
+Exact next step: commit this verified regression slice and cherry-pick it into the preserved Timeline editor branch before resuming approved Stage06 work. Original Library application code is frozen after this verification. No push, PR, merge into main, or deployment is authorized for this writer.
+
+# React Library active checkpoint
+
+Worktree: `/Users/bay/.codex/worktrees/react-library/ages`; branch: `feat/react-library`; base: `3590b41`. Backend Library commits were cherry-picked as `fd306a2` and `5f821f2`; backend source/migrations are unchanged by the client writer. Do not deploy, push, or merge this client slice without root coordination.
+
+## Last three client checkpoints
+
+1. Exact registry versions installed: React/ReactDOM19.3.0, Vite8.3.2, React plugin6.1.1, Playwright1.63.0. Real local Wrangler HTTP fixtures seed users, hashed sessions, and PNGs into isolated `.wrangler/e2e`. Four desktop browser tests failed at missing UI before product implementation; the initial missing browser executable failure was not counted as RED.
+2. Implemented one-origin Vite/static-assets client: auth landing, ready Library/media, selection, upload/retry, tags/filter, pagination, and responsive native detail dialog. Kept Worker and browser TypeScript configurations separate. Detail response/edit race was independently reproduced with a delayed real response (expected disabled, received enabled), then fixed by waiting for authoritative metadata before editing.
+3. Pagination/filter race was independently reproduced (expected0 cards, received1), then fixed by aborting the page request when its tag changes and ignoring aborted results. Further observed-RED regressions exposed unwanted exact-tag space trimming (expected ` Coast `, received `Coast`) and completed uploads mislabeled as failed when quota refresh failed. Both were fixed. Deferred focus restoration was replaced with synchronous restoration, and keyboard/tag/quota scenarios passed six repeated desktop cases. Final `npm run check` exited0 on October4 after reset: lint and all TypeScript configs passed (existing nonfatal Library style info remains),189/189 runtime tests passed, client and dry-run Worker builds passed,22/22 actual HTTP desktop/375px mobile Chromium cases passed in1.1minutes. Final library/landing/detail screenshots were inspected.
+
+## Files and exact next step
+
+Client files are `src/client/`, `vite.config.ts`, `tsconfig.client.json`; tests are `tests/e2e/` and `playwright.config.ts`. Config changes: package/lock, Wrangler assets, separate TS includes, CI browser installation, README/implementation plan. No production auth or upload fixture backdoors exist.
+
+Next: root should review the committed client slice against the already reviewed Library API, integrate the client commit onto updated main, and handle the PR/CI flow. The client writer must not push, create a PR, or merge. Screenshots are ignored artifacts at `test-results/library-desktop.png`, `test-results/library-mobile.png`, and matching landing/details files in this worktree. No application-code edits followed final verification; only this handoff and API-response documentation wording were finalized. Live Google OAuth and R2 S3/browser/CORS signatures remain unverified cloud gates. No timeline/editor/share/delete UI is implemented.
+
 # Ages Development Handoff
 
 ## Goal and scope
+
+## Root Library client integration checkpoint — October 4, 2026
+
+- Link PR #9 passed updated CI and merged as `4688f75`; trash PR #8 is `a0d822c`. Root created `feat/library-client` from updated main and carried only client feature `1a8840f` and race/focus fix `6e53770` as `9fc0547` and `18d27c`, preserving backend routes, migrations, contracts and prior checkpoints.
+- Fresh combined `npm run check` passed lint/types, 293 runtime tests in 14 files, client/Worker builds and 30 actual desktop/mobile Playwright cases (1.4 minutes). Local migration/rerun reported no pending migrations. Root visually inspected generated synthetic desktop/mobile screenshots; four proof images are committed under `docs/screenshots/`. Simulated R2 PUT transport is explicitly test-only; live Google/R2/CORS and 250 MB upload remain unverified.
+- Independent Library browser review identified and the author fixed stale upload/filter, post-logout profile, disconnected modal opener focus and short-link SPA-routing defects with observed RED regressions. Root independently reran the original 189+30 suite and the fully integrated 293+30 suite. Next: push the focused client PR, verify its CI including Chromium installation, and merge.
+- Asset Links `21cf917` passed independent 307-test review and a temporary combined 0008/0009 purge-claim probe. Cleanup `9a92d03` has two independently reproduced blockers: failed-upload retry starvation and unbounded auth cleanup. The cleanup author is adding deterministic regressions and fixes before integration. Timeline editor remains an isolated writer with real API browser tests in progress. No deployment occurred; goal remains active and incomplete; continuation is 09:58:17 Asia/Taipei.
+
 
 ## Root integration checkpoint — October 4, 2026, Links and trash
 

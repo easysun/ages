@@ -21,4 +21,5 @@ jobs:
       - run: npm ci
       - run: npm run db:migrate:local
       - run: npm run db:migrate:local
+      - run: npx playwright install --with-deps chromium
       - run: npm run check
