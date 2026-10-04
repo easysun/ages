@@ -335,6 +335,11 @@ describe("Scheduled retry-safe cleanup", () => {
     expect(Number.isFinite(reference)).toBe(true);
     vi.setSystemTime(reference);
     await env.DB.prepare(
+      "UPDATE sessions SET expires_at=? WHERE user_id='owner_a'",
+    )
+      .bind(new Date(reference + 3_600_000).toISOString())
+      .run();
+    await env.DB.prepare(
       "UPDATE assets SET upload_expires_at=? WHERE id='pending'",
     )
       .bind(new Date(reference - 1000).toISOString())
@@ -343,6 +348,7 @@ describe("Scheduled retry-safe cleanup", () => {
     expect((await row("pending"))?.status).toBe("failed");
     expect(await env.MEDIA.head(key)).not.toBeNull();
     const response = await request("/api/me");
+    expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
       quota: { storage_reserved_bytes: 0, storage_used_bytes: 0 },
     });
