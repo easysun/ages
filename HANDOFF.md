@@ -30,6 +30,14 @@ Next: root should review the committed client slice against the already reviewed
 
 ## Goal and scope
 
+## Dialog dismissal regression checkpoint — October 4, 2026
+
+- Combined scheduled-cleanup integration passed 326 runtime tests but one existing desktop tag-filter browser case failed; 29 browser cases passed. Trace confirmed native Escape restored the opener before its queued close notification, so a rapid filter Enter was redirected to the opener and reopened details. No filter request was sent; this was a client focus race, not a rate-limit rejection.
+- On separate `fix/dialog-dismissal` based on Library main `d58d92a`, two deterministic desktop/mobile regressions held the native close notification and failed against the old behavior. AssetDetails now closes during cancellation and synchronously notifies its parent exactly once. Close-button and native-close fallback use the same idempotent notification; existing removed-opener focus behavior is preserved.
+- Six focused cases passed, then fresh full check passed lint/types, 293 runtime tests, 32 desktop/mobile browser cases, and client/Worker builds. Independent read-only review approved immutable patch SHA256 `faf42e4292b351b6403366e5f3f7a4f5e86c58cfb7d662080a1f05e9b94a4898`. Next: integrate updated main, rerun combined checks, publish focused fix PR and carry the fix into isolated editor/sharing/moderation worktrees without replacing their changes.
+- Scheduled cleanup remains on root `feat/scheduled-cleanup` at `f06c9b9`, with all Asset Link and purge-claim guards preserved. Its full browser gate must rerun after this fix. Root preflight worktree is `/Users/bay/.codex/worktrees/release-preflight/ages`; no preflight production code is written yet. Continuation remains 14:59:46 Asia/Taipei; no deployment occurred.
+
+
 ## Root Library client integration checkpoint — October 4, 2026
 
 - Link PR #9 passed updated CI and merged as `4688f75`; trash PR #8 is `a0d822c`. Root created `feat/library-client` from updated main and carried only client feature `1a8840f` and race/focus fix `6e53770` as `9fc0547` and `18d27c`, preserving backend routes, migrations, contracts and prior checkpoints.
