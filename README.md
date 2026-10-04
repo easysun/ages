@@ -172,6 +172,12 @@ The Worker exports a scheduled handler, with a configured 15-minute cron. Each r
 
 Trash purge claims the exact internal deletion generation in D1 before R2 deletion. Restore rejects any claimed generation, with a database trigger also preventing bypass or claim replacement. Object deletion failure preserves the claim, tags, media metadata, and charged storage for retry; successful deletion followed by a conditional purged transition releases quota exactly once. The claim is hidden from every Asset payload. Ordinary ready memories remain durable regardless of inactivity. Scheduling and real bucket deletion have been tested only with local synthetic objects; no cloud deployment or deletion has occurred. After provisioning, verify named-environment cron configuration and backlog monitoring before enabling public traffic.
 
+## Release preflight
+
+`npm run preflight -- preview` performs read-only checks against the explicitly named Wrangler environment. Build the client first with `npm run build:client`; the preflight verifies the Worker entry point, static-asset path, required route precedence, configured and live 15-minute cleanup schedule, canonical HTTPS origin, account and resource isolation, platform secret names, and an exact match between the local and remote D1 migration ledgers. Set `CLOUDFLARE_API_TOKEN` in the process environment with read access to the selected account's D1, R2, KV, and Worker scripts. The command does not apply migrations or deploy.
+
+`npm run deploy:preview` and `npm run deploy:production` run the complete local check, repeat the remote read-only preflight, then deploy only to the selected named environment. Configure real IDs, distinct resources and origins, routes, and secret values in Cloudflare before using either command. The checked-in environment IDs are placeholders, so release commands intentionally stop until provisioning is complete. Live OAuth, browser-to-R2 CORS/signatures, large uploads, the scheduled trigger, and backup recovery still require separate cloud smoke and operations checks.
+
 ## API foundation
 
 Every API response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the error code, matched route pattern, method, status, and duration.
