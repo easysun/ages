@@ -4,7 +4,7 @@ A Living Timeline for media and memories: upload once, organize by time, tell th
 
 ## Current scope
 
-Foundation, Google authentication, direct upload, owner-scoped Asset Library and Timeline APIs, public Timeline SSR, responsive Timeline editing, reference-aware trash/restore, immutable URL/Timeline/raw Asset Links, durable request limits, scheduled cleanup, and a responsive React Library with Asset sharing and QR are implemented. Cloud release, moderation UX, long-timeline performance, and recovery gates remain open. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
+Foundation, Google authentication, direct upload, owner-scoped Asset Library and Timeline APIs, public Timeline SSR, responsive Timeline editing, reference-aware trash/restore, immutable URL/Timeline/raw Asset Links, durable request limits, scheduled cleanup, an administrator moderation console, and a responsive React Library with Asset sharing and QR are implemented. Cloud release, reporter UX, long-timeline performance, and recovery gates remain open. See the [implementation plan](docs/implementation-plan.md) for sequencing, acceptance gates, and launch requirements.
 
 ## Local development
 
@@ -192,7 +192,7 @@ Authenticated same-origin `POST /api/reports` accepts reports about public or un
 
 Migrations `0010_content_moderation.sql` and `0011_report_events.sql` add blocked flags, immutable moderation audit, and a canonical event log while preserving the original archive. `0012_report_events_append_only.sql` rejects updates and deletions to canonical `report_events` in D1 while allowing new report insertion.
 
-Moderation requires an existing database-backed `admin` account; no API grants that role. `GET /api/admin/reports` returns a bounded, keyset-paginated queue. Same-origin `PUT /api/admin/content` blocks or restores an Asset, Timeline, or Link with a required reason; state change and immutable audit are atomic. Blocked content is removed from the applicable public routes and media grants without deleting bytes or releasing quota. Reporter and operator UI, account provisioning, and cloud verification remain open.
+Moderation requires an existing database-backed `admin` account; no API grants that role. `GET /api/admin/reports` returns a bounded, keyset-paginated queue, and `GET /api/admin/content?kind=<kind>&id=<id>` reads authoritative target state. The administrator console at `/admin/reports` supports queue pagination/retry and reasoned block/unblock actions, clears sensitive data on revoked access or logout, and keeps a confirmed write visible if its subsequent state read fails. Same-origin `PUT /api/admin/content` blocks or restores an Asset, Timeline, or Link with a required reason; state change and immutable audit are atomic. Blocked content is removed from the applicable public routes and media grants without deleting bytes or releasing quota. Reporter UI, account provisioning, and cloud verification remain open.
 
 ## API foundation
 
