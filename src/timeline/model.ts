@@ -6,6 +6,7 @@ export type Timeline = {
   visibility: "private" | "unlisted" | "public";
   cover_asset_id: string | null;
   version: number;
+  moderation_blocked: number;
   last_mutation_token: string | null;
   created_at: string;
   updated_at: string;
@@ -22,7 +23,12 @@ export type TimelineItem = {
   updated_at: string;
 };
 export function timelinePayload(row: Timeline, items?: TimelineItem[]) {
-  const { owner_id: _owner, last_mutation_token: _token, ...timeline } = row;
+  const {
+    owner_id: _owner,
+    last_mutation_token: _token,
+    moderation_blocked: _blocked,
+    ...timeline
+  } = row;
   return {
     ...timeline,
     ...(items === undefined

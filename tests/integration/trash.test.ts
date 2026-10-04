@@ -605,8 +605,15 @@ describe("Internal trash token contract", () => {
     ).results;
     expect(
       after.map(
-        ({ trash_generation: _generation, purge_claim: _claim, ...asset }) =>
-          asset,
+        ({
+          trash_generation: _generation,
+          purge_claim: _claim,
+          moderation_blocked: blocked,
+          ...asset
+        }) => {
+          expect(blocked).toBe(0);
+          return asset;
+        },
       ),
     ).toEqual(before);
     const deleted = after.filter((asset) => asset.status === "deleted");

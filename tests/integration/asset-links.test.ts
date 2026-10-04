@@ -480,7 +480,9 @@ it("copies legacy Links unchanged before guards, retains accounting, and freezes
   expect(
     (await env.DB.prepare("SELECT * FROM distribution_links ORDER BY id").all())
       .results,
-  ).toEqual(before.map((r) => ({ ...r, asset_id: null })));
+  ).toEqual(
+    before.map((r) => ({ ...r, asset_id: null, moderation_blocked: 0 })),
+  );
   expect(
     await env.DB.prepare(
       "SELECT * FROM usage_quotas WHERE user_id='owner_a'",

@@ -5,7 +5,13 @@ import type { AppContext } from "../bindings";
 import { ApiError, errorResponse } from "../http/errors";
 
 // Provisional per-minute beta bounds, not pricing or entitlements.
-const limits = { public: 600, auth: 30, writes: 120, intents: 30 } as const;
+const limits = {
+  public: 600,
+  auth: 30,
+  writes: 120,
+  intents: 30,
+  reports: 10,
+} as const;
 const windowMs = 60_000;
 
 async function consume(
@@ -34,7 +40,7 @@ async function consume(
 export const requestLimits = createMiddleware<AppContext>(
   async (context, next) => {
     const protectedPath =
-      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|links)(?:\/|$)|t(?:\/|$)|s(?:\/|$))/.test(
+      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|links|reports|admin)(?:\/|$)|t(?:\/|$)|s(?:\/|$))/.test(
         context.req.path,
       );
     if (!protectedPath) return next();
@@ -55,6 +61,8 @@ export async function limitAuthenticatedWrite(context: Context<AppContext>) {
   const owner = context.get("user").id;
   const rejected = await consume(context, "writes", owner);
   if (rejected) return rejected;
+  if (context.req.path === "/api/reports")
+    return consume(context, "reports", owner);
   if (context.req.path === "/api/assets/upload-intent")
     return consume(context, "intents", owner);
   return null;

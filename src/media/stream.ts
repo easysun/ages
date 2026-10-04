@@ -37,6 +37,16 @@ export async function streamAssetMedia(
   context.header("X-Content-Type-Options", "nosniff");
   if (asset.status !== "ready" || asset.deleted_at !== null || !asset.etag)
     throw new ApiError("NOT_FOUND");
+  const recheck = async () => {
+    const available =
+      await context.env.DB.prepare(`SELECT id FROM assets WHERE id=? AND owner_id=?
+      AND status='ready' AND deleted_at IS NULL AND moderation_blocked=0`)
+        .bind(asset.id, asset.owner_id)
+        .first();
+    if (!available) throw new ApiError("NOT_FOUND");
+    await recheckGrant?.();
+  };
+  await recheck();
   const head = await context.env.MEDIA.head(asset.r2_key);
   if (
     !head ||
@@ -45,7 +55,7 @@ export async function streamAssetMedia(
     head.httpMetadata?.contentType !== asset.mime_type
   )
     throw new ApiError("NOT_FOUND");
-  await recheckGrant?.();
+  await recheck();
   if (context.req.method === "HEAD") {
     context.header("Content-Type", asset.mime_type);
     context.header("Content-Length", String(asset.size_bytes));
@@ -81,7 +91,7 @@ export async function streamAssetMedia(
     throw new ApiError("NOT_FOUND");
   }
   try {
-    await recheckGrant?.();
+    await recheck();
   } catch (error) {
     await object.body.cancel();
     throw error;

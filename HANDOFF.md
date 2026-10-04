@@ -1,20 +1,30 @@
-# CI mobile page magnification checkpoint — October 4, 2026
+# Current moderation integration checkpoint — October 4, 2026
 
-1. PR #16 (`Add responsive Timeline editor`) is open against `main`. GitHub Actions run `37189378826` failed only the mobile native-touch test's final `visualViewport.scale > 1` assertion; 342 runtime tests and the other 68 browser cases passed, with the expected desktop-only skip.
+Worktree: `/Users/bay/.codex/worktrees/content-moderation/ages`; branch: `feat/content-moderation`.
+
+1. PR #16 merged into `main` at `204391a`; moderation backend commits `777e396`, `86a394e`, and `55e0365` remain under review for a focused follow-up.
+2. Independent review found the canonical `report_events` table lacked database-level UPDATE/DELETE guards, despite the append-only contract. A real D1 regression failed because UPDATE changed all 25 seeded events.
+3. Added migration `0012_report_events_append_only.sql` and assertions for rejected updates/deletes. The focused moderation suite passes 27/27; after integrating `origin/main` `204391a`, `AGES_E2E_PORT=8795 npm run check` passed lint, all TypeScript checks, client/Worker builds, 369 runtime tests, and 69/70 Playwright cases (the expected desktop-only native-touch skip). Local migration 0012 applied and rerun reported no pending migrations. `git diff --cached --check` passed; the feature delta contains only moderation code, tests, and documentation. No cloud operations were accessed.
+
+Exact next step: commit the verified local main merge, request final independent review of the integrated moderation diff, then publish a focused PR and verify CI. Reporter/operator UI scope is awaiting the user's selection. No push, deployment, remote migration, or real media operation occurred during this integration.
+
+## Timeline editor initial CI diagnosis — historical checkpoint, October 4, 2026
+
+1. At the time of the initial CI run, PR #16 (`Add responsive Timeline editor`) was open against `main`. GitHub Actions run `37189378826` failed only the mobile native-touch test's final `visualViewport.scale > 1` assertion; 342 runtime tests and the other 68 browser cases passed, with the expected desktop-only skip.
 2. Root cause investigation found that the test's pinch point lands on a Moment date `<select>` whose effective `touch-action` chain is `auto`; the viewport meta contains `width=device-width, initial-scale=1.0` with no zoom restriction. The same isolated gesture test passes on local macOS headless Chromium but CI Ubuntu does not expose a scale change from CDP's synthesized pinch. The test now checks the browser zoom-permission policy and retains the real mobile vertical-scroll, story-pan, and story-pinch checks.
 3. The targeted mobile test passes locally. A fresh full `AGES_E2E_PORT=8792 npm run check` passed lint/typechecks, client/Worker builds, 342 runtime tests, and 69 browser tests; the one skipped case is the intentional desktop variant of the native-touch test. `git diff --check` passes. The only lint output is the pre-existing informational `useTemplate` suggestion in `tests/integration/library.test.ts:259`.
 4. No Cloudflare request, live migration, secret use, or deployment occurred.
 
-Exact next step: commit and push the regression-test adjustment to `feat/timeline-editor`, wait for PR #16's GitHub Actions check to pass, then merge under the existing authorization. Continue with moderation UX and the remaining local acceptance gates; keep live cloud, recovery, and performance gates explicit.
+This checkpoint was superseded when the regression-test adjustment passed CI and PR #16 merged into `main` as `204391a`.
 
-# Timeline editor integration checkpoint — October 4, 2026
+## Timeline editor integration — historical checkpoint, October 4, 2026
 
 1. Before main integration, `AGES_E2E_PORT=8792 npm run check` passed lint/types, client and Worker builds, 237 runtime tests, and 53 browser tests; one desktop-only native-touch case is intentionally skipped because it passes on mobile. The four synthetic editor/viewer screenshots were visually inspected.
 2. Committed the editor slice as `848ee0d`, then merged current `origin/main` at `a7da8aa`. The merge retains PR #15 sharing/Trash, PR #14 release preflight, request limits, scheduled cleanup, and the newest Library client behavior; Timeline navigation, editor styles, and test seeding are integrated alongside them.
 3. Installed the exact lockfile (`npm ci`: 115 packages, zero vulnerabilities). Two integrated `AGES_E2E_PORT=8792 npm run check` runs passed lint/types, client and Worker builds, all 342 runtime tests, and 69 of 70 desktop/mobile browser cases; the sole skipped test is the desktop variant of native touch navigation, which passes on mobile. The final run passed after scoping the visibility label CSS to `.timeline-page`.
 4. Lint reports only the existing informational `useTemplate` suggestion in `tests/integration/library.test.ts:259`. Local scheduled-worker and expected negative-case request logs appeared during tests. No cloud request, migration, secret use, or deployment occurred.
 
-Exact next step: complete whitespace/status and branch-diff review, commit the resolved merge, push the feature branch, and open a focused editor PR against `main`; verify CI before merging.
+This integration was superseded by PR #16, merged into `main` as `204391a` after CI passed.
 
 # Historical sharing and release integration checkpoint — October 4, 2026
 
@@ -22,7 +32,7 @@ Exact next step: complete whitespace/status and branch-diff review, commit the r
 2. Merged sharing commit `b6cdf9c` into `feat/sharing-integration` as `a2ccfb3`, preserving the cleanup safeguards and the AssetDetails one-shot close behavior. PR #14's guarded Cloudflare release preflight is now in this branch from `main` at `7a76f8a`; it verifies named-environment resources, the live Cron schedule, and the exact D1 ledger, then deploys only after explicit preflight.
 3. The combined post-merge `npm run check` exited 0: lint, types, client/Worker builds, 342 runtime tests, and 48 desktop/mobile Chromium cases passed. `npm run preflight -- preview` safely stopped at the missing Cloudflare `account_id` before any API request; no cloud request, migration, secret use, or deployment occurred.
 
-PR #15 subsequently passed GitHub CI and merged into main as `a7da8aa`; no cloud request or deployment occurred. Moderation `55e0365` and Timeline editor work remain independent follow-ups. The same-thread continuation is saved for 20:01:38 Asia/Taipei with prompt `繼續執行`; the goal status remains system-managed `usageLimited`.
+PR #15 subsequently passed GitHub CI and merged into main as `a7da8aa`; no cloud request or deployment occurred. The sharing and release-preflight integration is complete. The same-thread continuation was saved for 20:01:38 Asia/Taipei with prompt `繼續執行`; the goal status remains system-managed `usageLimited`.
 
 # Root scheduled cleanup verified checkpoint — October 4, 2026
 

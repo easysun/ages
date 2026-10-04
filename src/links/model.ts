@@ -68,6 +68,7 @@ export type Link = {
   timeline_id: string | null;
   asset_id: string | null;
   active: number;
+  moderation_blocked: number;
   expires_at: string | null;
   created_at: string;
   updated_at: string;

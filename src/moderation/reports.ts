@@ -1,0 +1,102 @@
+import type { Context } from "hono";
+import type { AppContext } from "../bindings";
+import { ApiError, errorResponse } from "../http/errors";
+import { type Link, linkUrlSchema } from "../links/model";
+import { publicLinkSql, visibleTimelineSql } from "./availability";
+import type { ReportInput } from "./model";
+
+export async function createReport(
+  context: Context<AppContext>,
+  input: ReportInput,
+) {
+  const db = context.env.DB;
+  const now = new Date();
+  const stamp = now.toISOString();
+  const owner = context.get("user").id;
+  const kind = input.target.kind;
+  let id: string;
+  if (input.target.kind === "timeline") {
+    const subject = await db
+      .prepare(
+        `SELECT t.id FROM timelines t WHERE t.id=? AND ${visibleTimelineSql}`,
+      )
+      .bind(input.target.timeline_id)
+      .first<{ id: string }>();
+    if (!subject) throw new ApiError("NOT_FOUND");
+    id = subject.id;
+  } else {
+    const subject = await db
+      .prepare(
+        `SELECT l.* FROM distribution_links l WHERE l.slug=? AND ${publicLinkSql}`,
+      )
+      .bind(input.target.slug, stamp)
+      .first<Link>();
+    if (
+      !subject ||
+      (subject.target_kind === "url" &&
+        !linkUrlSchema.safeParse(subject.target_url).success)
+    )
+      throw new ApiError("NOT_FOUND");
+    id = subject.id;
+  }
+  const subject =
+    kind === "timeline"
+      ? `SELECT t.id, t.version AS observed_timeline_version FROM timelines t WHERE t.id=? AND ${visibleTimelineSql}`
+      : `SELECT l.id, (SELECT t.version FROM timelines t WHERE t.id=l.timeline_id AND t.owner_id=l.owner_id) AS observed_timeline_version
+      FROM distribution_links l WHERE l.id=? AND ${publicLinkSql}`;
+  const subjectValues = kind === "timeline" ? [id] : [id, stamp];
+  const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const duplicate = `r.reporter_id=? AND r.target_kind=? AND r.target_id=subject.id AND r.created_at>?
+    AND (r.observed_timeline_version IS NULL OR r.observed_timeline_version IS subject.observed_timeline_version)`;
+  // A serialized batch derives the current snapshot, deduplicates and counts actual events atomically.
+  const result = await db.batch([
+    db
+      .prepare(`WITH subject AS (${subject})
+      INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at,observed_timeline_version)
+      SELECT ?,?,?,subject.id,?,?,?,subject.observed_timeline_version FROM subject
+      WHERE (SELECT count(*) FROM report_events WHERE reporter_id=? AND created_at>?) < 20
+      AND NOT EXISTS (SELECT 1 FROM report_events r WHERE ${duplicate}) RETURNING id`)
+      .bind(
+        ...subjectValues,
+        `rp_${crypto.randomUUID()}`,
+        owner,
+        kind,
+        input.category,
+        input.detail,
+        stamp,
+        owner,
+        cutoff,
+        owner,
+        kind,
+        cutoff,
+      ),
+    db
+      .prepare(`WITH subject AS (${subject}) SELECT r.id FROM report_events r,subject WHERE ${duplicate}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 1`)
+      .bind(...subjectValues, owner, kind, cutoff),
+    db.prepare(`SELECT EXISTS(${subject}) AS eligible`).bind(...subjectValues),
+    db
+      .prepare(
+        "SELECT min(created_at) AS oldest FROM report_events WHERE reporter_id=? AND created_at>?",
+      )
+      .bind(owner, cutoff),
+  ]);
+  const report = (result[0]?.results[0] ?? result[1]?.results[0]) as
+    | { id: string }
+    | undefined;
+  if (report)
+    return context.json(
+      { report: { id: report.id, status: "received" } },
+      result[0]?.results.length ? 201 : 200,
+    );
+  if (!(result[2]?.results[0] as { eligible: number } | undefined)?.eligible)
+    throw new ApiError("NOT_FOUND");
+  const oldest = (
+    result[3]?.results[0] as { oldest: string | null } | undefined
+  )?.oldest;
+  const retry = oldest
+    ? Date.parse(oldest) + 24 * 60 * 60 * 1000 - now.getTime()
+    : 60_000;
+  context.header("Retry-After", String(Math.max(1, Math.ceil(retry / 1000))));
+  return errorResponse(context, "RATE_LIMITED");
+}

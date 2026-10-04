@@ -186,6 +186,14 @@ Trash purge claims the exact internal deletion generation in D1 before R2 deleti
 
 `npm run deploy:preview` and `npm run deploy:production` run the complete local check, repeat the remote read-only preflight, then deploy only to the selected named environment. Configure real IDs, distinct resources and origins, routes, and secret values in Cloudflare before using either command. The checked-in environment IDs are placeholders, so release commands intentionally stop until provisioning is complete. Live OAuth, browser-to-R2 CORS/signatures, large uploads, the scheduled trigger, and backup recovery still require separate cloud smoke and operations checks.
 
+## Content reports and reversible moderation
+
+Authenticated same-origin `POST /api/reports` accepts reports about public or unlisted Timelines and active public Links; the server resolves stable targets and returns a generic 404 for private, missing, blocked, or unavailable subjects. Categories are `spam`, `abuse`, `copyright`, `illegal`, and `other`, with details capped at 1,000 characters. Reports deduplicate by reporter, target, and observed Timeline version for 24 hours. D1 enforces limits of 10 report attempts per minute and 20 distinct reports per rolling 24 hours per authenticated account.
+
+Migrations `0010_content_moderation.sql` and `0011_report_events.sql` add blocked flags, immutable moderation audit, and a canonical event log while preserving the original archive. `0012_report_events_append_only.sql` rejects updates and deletions to canonical `report_events` in D1 while allowing new report insertion.
+
+Moderation requires an existing database-backed `admin` account; no API grants that role. `GET /api/admin/reports` returns a bounded, keyset-paginated queue. Same-origin `PUT /api/admin/content` blocks or restores an Asset, Timeline, or Link with a required reason; state change and immutable audit are atomic. Blocked content is removed from the applicable public routes and media grants without deleting bytes or releasing quota. Reporter and operator UI, account provisioning, and cloud verification remain open.
+
 ## API foundation
 
 Every API response includes `X-Request-ID`; errors use the same ID in their body and structured log. IDs are generated server-side. Raw request URLs, headers, cookies, bodies, exception messages, and secrets are not written to application logs. Logs retain the error code, matched route pattern, method, status, and duration.
