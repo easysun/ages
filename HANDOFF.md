@@ -30,6 +30,15 @@ Next: root should review the committed client slice against the already reviewed
 
 ## Goal and scope
 
+## Root raw Asset integration and second reset checkpoint — October 4, 2026
+
+- The 09:58 continuation arrived; usage API confirms ordinary usage allowed, five-hour window 0%, and reset 14:58:46 Asia/Taipei. The same automation was updated and saved configuration verified for 14:59:46, exact prompt `繼續執行`. Goal tool retains its system-managed `usageLimited` status; assistant cannot resume that flag, but ordinary development is continuing under the user's heartbeat instruction.
+- Library client PR #10 passed CI and merged as `d58d92a`. Root Asset Link integration normally merged immutable `21cf917` as `8e39f6f`, then latest main as `28dce26`; source/contracts/checkpoints are preserved. Root fresh full check passed lint/types, 307 runtime tests, 30 desktop/mobile browser cases (1.5 minutes), client/Worker builds. Local migration 0008 applied and rerun had no pending migrations. Next: focused raw Asset Link PR, verify CI and merge.
+- Asset Links independently passed 307 tests plus a combined 0008/0009 purge-claim probe. Grants recheck current D1 state after R2 metadata and before returning bytes; active Asset Link references block trash until explicitly deactivated. Migration 0008 copies existing Links unchanged, retains a read-only archive and permanent slug ledger. Already delivered stream bytes cannot be retracted.
+- Cleanup fix `8de5dd6` resolves independently reproduced failed-upload retry starvation and unbounded auth cleanup. Root rereview later exposed a test-only session clock mismatch; fixture fix `56e2a1c` is verified by 19 targeted tests and author full 285 tests. Independent external probes confirm both production blockers fixed. Root integration remains pending; preserve current Link callback/trash guards and cleanup purge claims when merging.
+- Isolated writers continue Timeline editor (`timeline-editor`, browser port 8792), sharing/trash/QR UI (`library-sharing`, port 8793), and the next report/takedown slice (`content-moderation`, port 8794). Root checks use 8791. No deployment, Google/R2 cloud smoke, 250 MB upload or recovery rehearsal occurred; MVP and release gates remain incomplete.
+
+
 ## Root Library client integration checkpoint — October 4, 2026
 
 - Link PR #9 passed updated CI and merged as `4688f75`; trash PR #8 is `a0d822c`. Root created `feat/library-client` from updated main and carried only client feature `1a8840f` and race/focus fix `6e53770` as `9fc0547` and `18d27c`, preserving backend routes, migrations, contracts and prior checkpoints.
