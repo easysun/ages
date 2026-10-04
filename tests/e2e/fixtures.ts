@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import type { BrowserContext } from "@playwright/test";
 
+export const e2eOrigin = `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`;
+
 const cli = resolve("node_modules/wrangler/bin/wrangler.js");
 const persistence = resolve(".wrangler/e2e");
 const artifacts = resolve(".wrangler/e2e-fixtures");
@@ -15,6 +17,9 @@ function command(args: string[]) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+export function executeFixtureSql(sql: string) {
+  command(["d1", "execute", "DB", "--command", sql]);
 }
 function crc32(bytes: Uint8Array) {
   let crc = 0xffffffff;
@@ -123,4 +128,26 @@ export async function seedLibrary(context: BrowserContext) {
     },
   ]);
   return { owner, ids };
+}
+
+export function seedTimeline(
+  owner: string,
+  assets: string[],
+  count = 3,
+  title = "A living story",
+) {
+  const id = `tl_${randomUUID()}`;
+  const now = new Date().toISOString();
+  const itemIds = Array.from({ length: count }, () => `ti_${randomUUID()}`);
+  const sql = [
+    `INSERT INTO timelines (id,owner_id,title,created_at,updated_at) VALUES ('${id}','${owner}','${title.replaceAll("'", "''")}','${now}','${now}');`,
+    ...itemIds.map(
+      (itemId, index) =>
+        `INSERT INTO timeline_items (id,timeline_id,owner_id,asset_id,position,caption,created_at,updated_at) VALUES ('${itemId}','${id}','${owner}','${assets[index % assets.length]}',${index},'Moment ${index + 1}','${now}','${now}');`,
+    ),
+  ];
+  const path = resolve(artifacts, `${id}.sql`);
+  writeFileSync(path, sql.join("\n"));
+  command(["d1", "execute", "DB", "--file", path]);
+  return { id, itemIds };
 }

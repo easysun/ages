@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const baseURL = `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`;
+const port = process.env.AGES_E2E_PORT ?? "8791";
+const origin = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -10,7 +11,7 @@ export default defineConfig({
   retries: 0,
   timeout: 30_000,
   use: {
-    baseURL,
+    baseURL: origin,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -27,7 +28,7 @@ export default defineConfig({
   ],
   webServer: {
     command: "node tests/e2e/start-server.mjs",
-    url: `${baseURL}/health`,
+    url: `${origin}/health`,
     reuseExistingServer: false,
     timeout: 90_000,
   },

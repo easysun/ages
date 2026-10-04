@@ -1027,6 +1027,13 @@ it("backfills every original report unchanged into canonical events and freezes 
     await expect(env.DB.prepare(sql).run()).rejects.toThrow(
       "legacy_reports_read_only",
     );
+  for (const sql of [
+    "UPDATE report_events SET detail='Changed'",
+    "DELETE FROM report_events",
+  ])
+    await expect(env.DB.prepare(sql).run()).rejects.toThrow(
+      "immutable_report_event",
+    );
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
   expect(await count("report_events")).toBe(25);
   expect(
