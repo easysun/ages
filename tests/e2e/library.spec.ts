@@ -541,3 +541,37 @@ test("closing details focuses the filter when edited tags remove its opener", as
     page.getByRole("textbox", { name: "Filter by tag" }),
   ).toBeFocused();
 });
+
+test("Escape dismisses details before a queued native close notification can steal filter focus", async ({
+  page,
+  context,
+}) => {
+  await seedLibrary(context);
+  await page.goto("/library");
+  await page.getByRole("button", { name: "Open Coastal light.png" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  // Native close notifications can arrive after focus has already returned outside the dialog.
+  // Hold that notification so dismissal must happen during the Escape cancellation itself.
+  await page.evaluate(() => {
+    window.addEventListener(
+      "close",
+      (event) => event.stopImmediatePropagation(),
+      {
+        capture: true,
+        once: true,
+      },
+    );
+  });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { includeHidden: true })).toHaveCount(
+    0,
+  );
+  await page.getByRole("textbox", { name: "Filter by tag" }).fill("Coast");
+  await page.getByRole("textbox", { name: "Filter by tag" }).press("Enter");
+  await expect(
+    page.getByRole("button", { name: "Open Mountain air.png" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("textbox", { name: "Filter by tag" }),
+  ).toBeFocused();
+});
