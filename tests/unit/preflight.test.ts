@@ -261,7 +261,7 @@ describe("Release environment isolation", () => {
     tracking.env.preview.routes = [];
     expect(() =>
       validateTrackingReleaseTarget(configured(), "preview", tracking),
-    ).toThrow("tracking Worker custom-domain route");
+    ).toThrow("only the exact tracking custom-domain route");
 
     tracking.env.preview.routes = [
       { pattern: "events.tracking.test", custom_domain: true },
@@ -283,6 +283,50 @@ describe("Release environment isolation", () => {
     expect(() =>
       validateTrackingReleaseTarget(configured(), "preview", tracking),
     ).toThrow("must match the ticket database");
+  });
+  it("rejects an extra app-host route on the tracking Worker", () => {
+    const extraRoute = trackingConfigured();
+    extraRoute.env.preview.routes = [
+      { pattern: "events.tracking.test", custom_domain: true },
+      { pattern: "preview.example.test", custom_domain: true },
+    ];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", extraRoute),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+
+  it("rejects a legacy selected-environment route on the tracking Worker", () => {
+    const legacyEnvironmentRoute = trackingConfigured();
+    (legacyEnvironmentRoute.env.preview as Record<string, unknown>).route =
+      "preview.example.test/*";
+    expect(() =>
+      validateTrackingReleaseTarget(
+        configured(),
+        "preview",
+        legacyEnvironmentRoute,
+      ),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+
+  it("rejects a legacy top-level route on the tracking Worker", () => {
+    const legacyTopLevelRoute = trackingConfigured();
+    (legacyTopLevelRoute as Record<string, unknown>).route =
+      "preview.example.test/*";
+    expect(() =>
+      validateTrackingReleaseTarget(
+        configured(),
+        "preview",
+        legacyTopLevelRoute,
+      ),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+  it("rejects a tracking Worker name that matches the app Worker", () => {
+    const tracking = trackingConfigured();
+    (tracking.env.preview as Record<string, unknown>).name = "ages-preview";
+
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("different name from the application Worker");
   });
   it("rejects application bindings and assets on the tracking Worker", () => {
     const tracking = trackingConfigured();

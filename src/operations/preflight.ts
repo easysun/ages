@@ -76,7 +76,12 @@ export type ReleaseTarget = {
 function validateTrackingWorkerTarget(
   target: Pick<
     ReleaseTarget,
-    "environment" | "accountId" | "databaseId" | "appOrigin" | "trackingOrigin"
+    | "environment"
+    | "accountId"
+    | "workerName"
+    | "databaseId"
+    | "appOrigin"
+    | "trackingOrigin"
   >,
   configuration: unknown,
 ) {
@@ -87,6 +92,10 @@ function validateTrackingWorkerTarget(
     typeof workerName === "string" &&
       /^[a-z0-9][a-z0-9-]{1,62}$/.test(workerName),
     "Configure a named tracking Worker.",
+  );
+  requireValue(
+    workerName !== target.workerName,
+    "The tracking Worker must have a different name from the application Worker.",
   );
   requireValue(
     (selected.main ?? config.main) === "src/tracking/index.ts",
@@ -154,13 +163,19 @@ function validateTrackingWorkerTarget(
     "Disable workers.dev for the tracking Worker.",
   );
   const trackingHostname = new URL(target.trackingOrigin).hostname;
-  const routed = entries(selected.routes ?? config.routes).some(
-    (route) =>
-      route.custom_domain === true && route.pattern === trackingHostname,
+  const routeSources = [config, selected];
+  const hasLegacyRoute = routeSources.some((source) =>
+    Object.hasOwn(source, "route"),
   );
+  const routes = entries(selected.routes ?? config.routes);
+  const routed =
+    !hasLegacyRoute &&
+    routes.length === 1 &&
+    routes[0]?.custom_domain === true &&
+    routes[0]?.pattern === trackingHostname;
   requireValue(
     routed,
-    "The tracking origin needs an exact tracking Worker custom-domain route.",
+    "The tracking Worker must declare only the exact tracking custom-domain route.",
   );
   return { trackingWorkerName: workerName, trackingDatabaseId };
 }
