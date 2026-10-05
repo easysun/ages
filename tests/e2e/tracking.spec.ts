@@ -1,215 +1,480 @@
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+import { expect, test } from "@playwright/test";
 import {
-  type APIRequestContext,
-  type BrowserContext,
-  expect,
-  test,
-} from "@playwright/test";
-import { e2eOrigin, executeFixtureSql, seedLibrary } from "./fixtures";
+  e2eOrigin,
+  e2eTrackingOrigin,
+  seedLibrary,
+  seedProviderLink,
+} from "./fixtures";
 
-async function ownerHeaders(context: BrowserContext) {
-  const cookie = (await context.cookies()).find(
-    (entry) => entry.name === "ages_session",
-  );
-  if (!cookie) throw new Error("The browser fixture did not create a session.");
-  return { Cookie: `ages_session=${cookie.value}`, Origin: e2eOrigin };
-}
+const artifactDirectory = resolve(".wrangler/e2e-artifacts");
+mkdirSync(artifactDirectory, { recursive: true });
+const localDestination =
+  "http://127.0.0.3:8799/landing?utm_source=old&destination_secret=private#story";
 
-async function createLink(request: APIRequestContext, context: BrowserContext) {
-  const slug = `providers-${crypto.randomUUID().slice(0, 8)}`;
-  const response = await request.post(`${e2eOrigin}/api/links`, {
-    headers: await ownerHeaders(context),
-    data: { target: { kind: "url", url: "https://example.test/story" }, slug },
+type VendorOptions = {
+  destinationTarget?: string;
+  failScripts?: boolean;
+  holdScripts?: boolean;
+};
+
+async function installNetworkStubs(
+  page: import("@playwright/test").Page,
+  options: VendorOptions = {},
+) {
+  const requests: string[] = [];
+  const unexpected: string[] = [];
+  const destinationRequests: string[] = [];
+  const destinationReferrers: string[] = [];
+  const trackingCookieHeaders: string[] = [];
+  const continuationOrigins: string[] = [];
+  const vendorReferrers: string[] = [];
+  let releaseScripts = () => {};
+  const scriptsReleased = new Promise<void>((resolveScripts) => {
+    releaseScripts = resolveScripts;
   });
-  expect(response.status()).toBe(201);
-  return (await response.json()).link as { id: string; slug: string };
+
+  page.on("request", async (request) => {
+    const url = new URL(request.url());
+    const headers = await request.allHeaders();
+    if (url.origin === e2eTrackingOrigin)
+      trackingCookieHeaders.push(headers.cookie ?? "");
+    if (url.origin === e2eOrigin && url.pathname === "/s/continue")
+      continuationOrigins.push(headers.origin ?? "");
+    if (url.origin === "http://127.0.0.3:8799")
+      destinationReferrers.push(headers.referer ?? "");
+    if (
+      url.protocol === "https:" &&
+      ["www.googletagmanager.com", "connect.facebook.net"].includes(
+        url.hostname,
+      )
+    )
+      vendorReferrers.push(headers.referer ?? "");
+  });
+
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    const destination = options.destinationTarget
+      ? new URL(options.destinationTarget)
+      : null;
+    if (destination && url.origin === destination.origin) {
+      destinationRequests.push(url.href);
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><title>External fixture reached</title><h1>External fixture reached</h1>",
+      });
+      return;
+    }
+    if (url.origin === e2eOrigin && url.pathname === "/synthetic-destination") {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><title>Synthetic destination</title><h1>Synthetic destination reached</h1>",
+      });
+      return;
+    }
+    if (url.protocol !== "https:") {
+      await route.continue();
+      return;
+    }
+    const allowedScripts = new Set([
+      "https://www.googletagmanager.com/gtag/js?id=G-ABC123",
+      "https://www.googletagmanager.com/gtm.js?id=GTM-ABC123",
+      "https://connect.facebook.net/en_US/fbevents.js",
+    ]);
+    const analyticsOrigins = new Set([
+      "https://www.google-analytics.com",
+      "https://region1.google-analytics.com",
+      "https://www.facebook.com",
+    ]);
+    if (allowedScripts.has(url.href)) {
+      requests.push(url.href);
+      if (options.holdScripts) await scriptsReleased;
+      if (options.failScripts) {
+        await route.abort("failed");
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/javascript",
+        body: "window.__agesVendorStubLoaded = true;",
+      });
+      return;
+    }
+    if (analyticsOrigins.has(url.origin)) {
+      requests.push(url.href);
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+
+    unexpected.push(url.href);
+    await route.abort("blockedbyclient");
+  });
+  return {
+    requests,
+    destinationRequests,
+    destinationReferrers,
+    trackingCookieHeaders,
+    continuationOrigins,
+    vendorReferrers,
+    unexpected,
+    releaseScripts,
+  };
 }
 
-test("tracking and moderation navigation fits the mobile viewport", async ({
-  page,
-  context,
-}) => {
-  const { owner } = await seedLibrary(context);
-  executeFixtureSql(`UPDATE users SET plan='admin' WHERE id='${owner}';`);
+async function openProviderLink(
+  page: import("@playwright/test").Page,
+  route: "direct" | "gtm" = "direct",
+  options: VendorOptions = {},
+) {
+  const { owner } = await seedLibrary(page.context());
+  const link = seedProviderLink(owner, route, options.destinationTarget);
+  const vendors = await installNetworkStubs(page, options);
+  await page.goto(`${e2eOrigin}/s/${link.slug}`);
+  return { link, vendors };
+}
 
-  await page.goto("/admin/reports");
-  const nav = page.getByRole("navigation", { name: "Your collections" });
+function queueSnapshot(page: import("@playwright/test").Page) {
+  return page.evaluate(() => {
+    const runtime = window as Window & {
+      dataLayer?: unknown[];
+      fbq?: { queue?: unknown[][] };
+    };
+    const dataLayer = runtime.dataLayer ?? [];
+    const googleCalls = dataLayer.map((entry) => {
+      if (entry && typeof entry === "object" && Symbol.iterator in entry)
+        return Array.from(entry as Iterable<unknown>);
+      return entry;
+    });
+    return {
+      googleCalls,
+      pixelCalls: runtime.fbq?.queue ?? [],
+    };
+  });
+}
+
+test("account settings explain GA4 and GTM provider-side event controls", async ({
+  page,
+}) => {
+  await seedLibrary(page.context());
+  await page.goto(`${e2eOrigin}/settings/tracking`);
+
   await expect(
-    nav.getByRole("link", { name: "Tracking settings" }),
+    page.getByText(/turn off Enhanced Measurement in the property settings/i),
   ).toBeVisible();
-  await expect(nav.getByRole("link", { name: "Moderation" })).toBeVisible();
-  await expect
-    .poll(() => nav.evaluate((element) => element.scrollWidth))
-    .toBeLessThanOrEqual(await nav.evaluate((element) => element.clientWidth));
+  await expect(
+    page.getByText(/configure and publish the container so tags fire only/i),
+  ).toBeVisible();
 });
 
-test("provider settings and Link opt-outs persist across refresh", async ({
+test("direct providers strip ticket data and send one fixed event only after consent", async ({
   page,
-  context,
-  request,
-}) => {
-  await seedLibrary(context);
-  const link = await createLink(request, context);
+}, testInfo) => {
+  const { link, vendors } = await openProviderLink(page, "direct", {
+    holdScripts: true,
+    destinationTarget: localDestination,
+  });
 
-  await page.goto("/settings/tracking");
-  await page.getByLabel("Google Analytics 4 measurement ID").fill("G-ABC123");
-  await page.getByLabel("Meta Pixel ID").fill("1234567890");
-  await page.getByLabel("Google Tag Manager container ID").fill("GTM-ABC123");
-  await page.getByLabel("GA4 delivery").selectOption("gtm");
-  await page.getByRole("button", { name: "Save account providers" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Tracking providers saved" }),
-  ).toContainText("saved");
-
-  await page.reload();
-  await expect(
-    page.getByLabel("Google Analytics 4 measurement ID"),
-  ).toHaveValue("G-ABC123");
-  await expect(page.getByLabel("Meta Pixel ID")).toHaveValue("1234567890");
-  await expect(page.getByLabel("Google Tag Manager container ID")).toHaveValue(
-    "GTM-ABC123",
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  expect(new URL(page.url()).pathname).toBe("/consent");
+  expect(vendors.trackingCookieHeaders.length).toBeGreaterThan(0);
+  expect(vendors.trackingCookieHeaders.every((cookie) => cookie === "")).toBe(
+    true,
   );
-  await expect(page.getByLabel("GA4 delivery")).toHaveValue("gtm");
-  await page.screenshot({
-    path: `test-results/tracking-settings-${test.info().project.name}.png`,
-    fullPage: true,
-  });
-
-  await page.goto("/links");
-  await page.getByRole("button", { name: `Select ${link.slug}` }).click();
-  const ga4OptIn = page.getByLabel("Allow Google Analytics 4");
-  await expect(ga4OptIn).toBeChecked();
-  await ga4OptIn.uncheck();
-  await page.getByRole("button", { name: "Save provider choices" }).click();
   await expect(
-    page.getByRole("status").filter({ hasText: "Provider choices saved" }),
-  ).toContainText("saved");
-
-  await page.reload();
-  await page.getByRole("button", { name: `Select ${link.slug}` }).click();
-  await expect(page.getByLabel("Allow Google Analytics 4")).not.toBeChecked();
+    page.getByRole("heading", { name: "Before you continue" }),
+  ).toBeVisible();
+  const providers = page.getByRole("listitem");
+  await expect(providers).toHaveText(["Google Analytics 4", "Meta Pixel"]);
+  const consentCopy = await page.locator("main").innerText();
+  expect(consentCopy).not.toContain("G-ABC123");
+  expect(consentCopy).not.toContain("1234567890");
+  expect(consentCopy).not.toContain("GTM-ABC123");
   await page.screenshot({
-    path: `test-results/link-provider-choices-${test.info().project.name}.png`,
+    path: resolve(
+      artifactDirectory,
+      `tracking-consent-${testInfo.project.name}.png`,
+    ),
     fullPage: true,
   });
+  expect(vendors.requests).toEqual([]);
+  await expect(page.locator('input[name="token"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Allow optional analytics" }).click();
+  await expect.poll(() => vendors.requests.length).toBe(2);
+
+  const snapshot = await queueSnapshot(page);
+  const googleEvents = snapshot.googleCalls.filter(
+    (call) =>
+      Array.isArray(call) &&
+      call[0] === "event" &&
+      call[1] === "ages_link_click",
+  );
+  const googleConfig = snapshot.googleCalls.find(
+    (call) =>
+      Array.isArray(call) && call[0] === "config" && call[1] === "G-ABC123",
+  );
+  expect(googleEvents).toHaveLength(1);
+  expect(googleConfig).toEqual([
+    "config",
+    "G-ABC123",
+    expect.objectContaining({ send_page_view: false, page_referrer: "" }),
+  ]);
+  const googleParameters = (googleEvents[0] as unknown[])[2] as Record<
+    string,
+    string
+  >;
+  expect(googleParameters.page_location).toBeUndefined();
+  expect(googleParameters.send_to).toBeUndefined();
+  expect(googleParameters.transport_url).toBeUndefined();
+  expect(googleParameters.event_callback).toBeUndefined();
+  expect(googleParameters.event).toBeUndefined();
+  expect(googleParameters.ages_c_send_to).toBe("G-ATTACKER1");
+  expect(googleParameters.ages_c_page_location).toBe(
+    "https://attacker.example.test/ticket-secret",
+  );
+  expect(googleParameters.ages_c_transport_url).toBe(
+    "https://attacker.example.test/collect",
+  );
+  expect(googleParameters.ages_c_event_callback).toBe("continueNow");
+  expect(googleParameters.ages_c_event).toBe("attacker_route");
+  expect(googleParameters.target_kind).toBe("url");
+  expect(googleParameters.channel).toBe("Other");
+  expect(googleParameters.utm_source).toBe("ages");
+  for (const key of ["utm_medium", "utm_campaign", "utm_term", "utm_content"])
+    expect(Array.from(googleParameters[key] ?? "")).toHaveLength(100);
+  expect(Object.keys(googleParameters).length).toBeLessThanOrEqual(25);
+  for (const [key, value] of Object.entries(googleParameters)) {
+    expect(key.length).toBeLessThanOrEqual(40);
+    expect(Array.from(value).length).toBeLessThanOrEqual(100);
+  }
+  for (const [index, expected] of ["a", "b", "c", "d"].entries())
+    expect(googleParameters[`ages_c_field_${index + 1}`]).toBe(
+      expected.repeat(100),
+    );
+  expect(JSON.stringify(snapshot)).not.toContain(link.slug);
+  expect(JSON.stringify(snapshot)).not.toContain("destination_secret");
+  expect(JSON.stringify(snapshot)).not.toContain("destination.example.test");
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  expect(
+    snapshot.pixelCalls.filter((call) => call[0] === "trackCustom"),
+  ).toHaveLength(1);
+  expect(
+    snapshot.pixelCalls.some(
+      (call) => call[0] === "track" && call[1] === "PageView",
+    ),
+  ).toBe(false);
+  expect(vendors.requests).toEqual([
+    "https://www.googletagmanager.com/gtag/js?id=G-ABC123",
+    "https://connect.facebook.net/en_US/fbevents.js",
+  ]);
+  expect(vendors.unexpected).toEqual([]);
+  expect(vendors.vendorReferrers).toEqual(["", ""]);
+  vendors.releaseScripts();
+  await expect
+    .poll(() => vendors.continuationOrigins.length)
+    .toBeGreaterThan(0);
+  expect(vendors.continuationOrigins).toContain(e2eTrackingOrigin);
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  await expect(
+    page.getByRole("heading", { name: "External fixture reached" }),
+  ).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("destination_secret")).toBe(
+    "private",
+  );
+  expect(new URL(page.url()).searchParams.get("utm_source")).toBe("ages");
+  expect(vendors.destinationRequests).toHaveLength(1);
+  expect(vendors.destinationReferrers).toEqual([""]);
 });
 
-test("ordinary provider save failure keeps the editable draft", async ({
+test("GTM routing loads one container and emits one bounded dataLayer event", async ({
   page,
-  context,
 }) => {
-  await seedLibrary(context);
-  await page.route("**/api/me/tracking/providers", async (route) => {
-    if (route.request().method() === "PUT") {
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "SERVICE_UNAVAILABLE", message: "Try again later." },
-        }),
-      });
-      return;
-    }
-    await route.continue();
+  const { vendors } = await openProviderLink(page, "gtm", {
+    holdScripts: true,
+    destinationTarget: localDestination,
   });
 
-  await page.goto("/settings/tracking");
-  const ga4Id = page.getByLabel("Google Analytics 4 measurement ID");
-  await ga4Id.fill("G-KEEP123");
-  await page.getByRole("button", { name: "Save account providers" }).click();
-  await expect(page.getByRole("alert")).toContainText("could not be saved");
-  await expect(ga4Id).toHaveValue("G-KEEP123");
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  expect(new URL(page.url()).pathname).toBe("/consent");
+  await expect(page.getByRole("listitem")).toHaveText([
+    "Google Analytics 4",
+    "Meta Pixel",
+    "Google Tag Manager",
+  ]);
+  await page.getByRole("button", { name: "Allow optional analytics" }).click();
+  await expect.poll(() => vendors.requests.length).toBe(1);
+  const snapshot = await queueSnapshot(page);
+  const gtmEvents = snapshot.googleCalls.filter(
+    (call) =>
+      call &&
+      typeof call === "object" &&
+      (call as { event?: string }).event === "ages_link_click",
+  ) as Record<string, unknown>[];
+  expect(gtmEvents).toHaveLength(1);
+  expect(gtmEvents[0]).toMatchObject({
+    link_id: expect.stringMatching(/^ln_/),
+    target_kind: "url",
+    channel: "Other",
+    ages_custom: expect.arrayContaining([
+      { key: "send_to", value: "G-ATTACKER1" },
+      { key: "event", value: "attacker_route" },
+    ]),
+  });
+  expect(gtmEvents[0]?.event).toBe("ages_link_click");
+  expect(gtmEvents[0]?.page_location).toBe(`${e2eTrackingOrigin}/consent`);
+  expect(vendors.requests).toEqual([
+    "https://www.googletagmanager.com/gtm.js?id=GTM-ABC123",
+  ]);
+  expect(vendors.unexpected).toEqual([]);
+  expect(vendors.vendorReferrers).toEqual([""]);
+  vendors.releaseScripts();
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  await expect(
+    page.getByRole("heading", { name: "External fixture reached" }),
+  ).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("destination_secret")).toBe(
+    "private",
+  );
+  expect(new URL(page.url()).searchParams.get("utm_source")).toBe("ages");
+  expect(vendors.destinationRequests).toHaveLength(1);
+  expect(vendors.destinationReferrers).toEqual([""]);
 });
 
-test("delayed account 401 clears an unsaved provider draft", async ({
+test("skip and unanswered consent continue without requesting provider code", async ({
   page,
-  context,
-}) => {
-  await seedLibrary(context);
-  let started: () => void = () => {};
-  const requestStarted = new Promise<void>((resolve) => {
-    started = resolve;
+}, testInfo) => {
+  const skipped = await openProviderLink(page, "direct", {
+    destinationTarget: localDestination,
   });
-  let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  await page.screenshot({
+    path: resolve(
+      artifactDirectory,
+      `tracking-skip-${testInfo.project.name}.png`,
+    ),
+    fullPage: true,
   });
-  let rejected = false;
-  await page.route("**/api/me/tracking/providers", async (route) => {
-    if (route.request().method() === "PUT" && !rejected) {
-      rejected = true;
-      started();
-      await held;
-      await route.fulfill({
-        status: 401,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: {
-            code: "UNAUTHENTICATED",
-            message: "Authentication required.",
-          },
-        }),
-      });
-      return;
-    }
-    await route.continue();
+  await page
+    .getByRole("button", { name: "Continue without analytics" })
+    .click();
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  await expect(
+    page.getByRole("heading", { name: "External fixture reached" }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: resolve(
+      artifactDirectory,
+      `tracking-skip-destination-${testInfo.project.name}.png`,
+    ),
+    fullPage: true,
   });
+  expect(skipped.vendors.requests).toEqual([]);
+  expect(skipped.vendors.unexpected).toEqual([]);
+  expect(skipped.vendors.destinationRequests).toHaveLength(1);
+  expect(skipped.vendors.destinationReferrers).toEqual([""]);
 
-  await page.goto("/settings/tracking");
-  const ga4Id = page.getByLabel("Google Analytics 4 measurement ID");
-  await ga4Id.fill("G-STALE123");
-  await page.getByRole("button", { name: "Save account providers" }).click();
-  await requestStarted;
-  release();
-  await expect(page.getByRole("alert")).toContainText("session has ended");
-  await page.getByRole("button", { name: "Retry tracking settings" }).click();
-  await expect(ga4Id).toHaveValue("");
+  const unanswered = await openProviderLink(page, "direct", {
+    destinationTarget: localDestination,
+  });
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  await page.waitForTimeout(10_100);
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  await expect(
+    page.getByRole("heading", { name: "External fixture reached" }),
+  ).toBeVisible();
+  expect(unanswered.vendors.requests).toEqual([]);
+  expect(unanswered.vendors.unexpected).toEqual([]);
+  expect(unanswered.vendors.destinationRequests).toHaveLength(1);
+  expect(unanswered.vendors.destinationReferrers).toEqual([""]);
 });
 
-test("delayed Link provider 403 clears the unsaved opt-out draft", async ({
+test("provider script failure still submits the continuation", async ({
   page,
-  context,
-  request,
 }) => {
-  await seedLibrary(context);
-  const link = await createLink(request, context);
-  let started: () => void = () => {};
-  const requestStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  let release: () => void = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let rejected = false;
-  await page.route("**/api/links/*/tracking/providers", async (route) => {
-    if (route.request().method() === "PUT" && !rejected) {
-      rejected = true;
-      started();
-      await held;
-      await route.fulfill({
-        status: 403,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "FORBIDDEN", message: "Access denied." },
-        }),
-      });
-      return;
-    }
-    await route.continue();
+  const { vendors } = await openProviderLink(page, "direct", {
+    failScripts: true,
   });
 
-  await page.goto("/links");
-  await page.getByRole("button", { name: `Select ${link.slug}` }).click();
-  const ga4OptIn = page.getByLabel("Allow Google Analytics 4");
-  await expect(ga4OptIn).toBeChecked();
-  await ga4OptIn.uncheck();
-  await page.getByRole("button", { name: "Save provider choices" }).click();
-  await requestStarted;
-  release();
-  await expect(page.getByRole("alert")).toContainText("no longer available");
-  await expect(ga4OptIn).toHaveCount(0);
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  await page.getByRole("button", { name: "Allow optional analytics" }).click();
+  await expect(page).toHaveURL(
+    `${e2eOrigin}/synthetic-destination?destination_secret=private#story`,
+  );
+  expect(vendors.requests).toContain(
+    "https://www.googletagmanager.com/gtag/js?id=G-ABC123",
+  );
+  expect(vendors.unexpected).toEqual([]);
+});
 
-  await page.reload();
-  await page.getByRole("button", { name: `Select ${link.slug}` }).click();
-  await expect(page.getByLabel("Allow Google Analytics 4")).toBeChecked();
+test("the ordinary POST continuation works with JavaScript disabled", async ({
+  browser,
+}, testInfo) => {
+  const viewport = testInfo.project.use.viewport;
+  const context = await browser.newContext({
+    baseURL: e2eOrigin,
+    javaScriptEnabled: false,
+    ...(viewport === undefined ? {} : { viewport }),
+  });
+  try {
+    const page = await context.newPage();
+    const { owner } = await seedLibrary(context);
+    const target =
+      "http://127.0.0.3:8799/landing?destination_secret=private#story";
+    const link = seedProviderLink(owner, "direct", target);
+    const vendors = await installNetworkStubs(page, {
+      destinationTarget: target,
+    });
+    await page.goto(`${e2eOrigin}/s/${link.slug}`);
+    expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+    await page
+      .getByRole("button", { name: "Continue without analytics" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "External fixture reached" }),
+    ).toBeVisible();
+    expect(new URL(page.url()).origin).toBe("http://127.0.0.3:8799");
+    expect(new URL(page.url()).searchParams.get("destination_secret")).toBe(
+      "private",
+    );
+    expect(vendors.requests).toEqual([]);
+    expect(vendors.unexpected).toEqual([]);
+    expect(vendors.destinationRequests).toHaveLength(1);
+    expect(vendors.destinationReferrers).toEqual([""]);
+    expect(vendors.continuationOrigins).toContain(e2eTrackingOrigin);
+  } finally {
+    await context.close();
+  }
+});
+
+test("external URL continuation escapes the redirect-chain form policy without leaking referrer", async ({
+  page,
+}) => {
+  const target = localDestination;
+  const { owner } = await seedLibrary(page.context());
+  const link = seedProviderLink(owner, "direct", target);
+  const vendors = await installNetworkStubs(page, {
+    destinationTarget: target,
+  });
+
+  await page.goto(`${e2eOrigin}/s/${link.slug}`);
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  await page
+    .getByRole("button", { name: "Continue without analytics" })
+    .click();
+
+  await expect(
+    page.getByRole("heading", { name: "External fixture reached" }),
+  ).toBeVisible();
+  expect(new URL(page.url()).origin).toBe("http://127.0.0.3:8799");
+  expect(new URL(page.url()).searchParams.get("destination_secret")).toBe(
+    "private",
+  );
+  expect(new URL(page.url()).searchParams.get("utm_source")).toBe("ages");
+  expect(vendors.requests).toEqual([]);
+  expect(vendors.destinationRequests).toHaveLength(1);
+  expect(vendors.unexpected).toEqual([]);
+  expect(vendors.continuationOrigins).toContain(e2eTrackingOrigin);
+  expect(vendors.destinationReferrers).toEqual([""]);
 });

@@ -231,6 +231,17 @@ export function TrackingSettingsScreen({
           New provider IDs apply to your existing and future Links. Turn a
           provider off for an individual Link from its Links settings.
         </p>
+        <p className="field-help">
+          In GA4, turn off Enhanced Measurement in the property settings so it
+          does not send extra events. This app disables GA4's automatic page
+          view and sends the consented ages_link_click event; it cannot change
+          property settings.
+        </p>
+        <p className="field-help">
+          For GTM routes, configure and publish the container so tags fire only
+          for the consented ages_link_click event. This app cannot change
+          published container rules.
+        </p>
         {loading ? <p role="status">Loading tracking settings…</p> : null}
         {loadError ? (
           <div className="error" role="alert">

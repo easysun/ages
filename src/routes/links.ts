@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { encodeCursor, libraryQuery } from "../assets/library";
 import type { Asset } from "../assets/model";
 import { appOrigin, assertSameOrigin } from "../auth/config";
@@ -17,7 +17,13 @@ import {
 } from "../links/model";
 import { applyLinkParameters, getLinkTracking } from "../links/tracking";
 import { streamAssetMedia } from "../media/stream";
-import { visibleTimelineSql } from "../moderation/availability";
+import { publicLinkSql, visibleTimelineSql } from "../moderation/availability";
+import { appTrackingOrigin } from "../tracking/config";
+import { resolveLinkProviders } from "../tracking/providers";
+import {
+  consumeTrackingTicket,
+  createTrackingTicket,
+} from "../tracking/tickets";
 
 export const links = new Hono<AppContext>();
 links.use("*", requireUser, async (context, next) => {
@@ -239,6 +245,74 @@ links.patch("/:id", async (context) => {
 });
 
 export const linkResolver = new Hono<AppContext>();
+linkResolver.post("/continue", async (context) => {
+  if (context.req.header("Origin") !== appTrackingOrigin(context.env))
+    throw new ApiError("FORBIDDEN");
+  if (
+    context.req
+      .header("Content-Type")
+      ?.split(";", 1)[0]
+      ?.trim()
+      .toLowerCase() !== "application/x-www-form-urlencoded"
+  )
+    throw new ApiError("INVALID_REQUEST");
+
+  const body = await context.req.text();
+  if (new TextEncoder().encode(body).byteLength > 4096)
+    throw new ApiError("PAYLOAD_TOO_LARGE");
+  const fields = [...new URLSearchParams(body)];
+  if (
+    fields.length !== 1 ||
+    fields[0]?.[0] !== "token" ||
+    !/^[0-9a-f]{64}$/.test(fields[0][1])
+  )
+    throw new ApiError("INVALID_REQUEST");
+
+  const consumed = await consumeTrackingTicket(
+    context.env.DB,
+    fields[0][1],
+    new Date(),
+  );
+  if (!consumed) throw new ApiError("NOT_FOUND");
+
+  const now = new Date().toISOString();
+  const row = await context.env.DB.prepare(
+    `SELECT l.* FROM distribution_links l WHERE l.id = ? AND ${publicLinkSql}`,
+  )
+    .bind(consumed.linkId, now)
+    .first<Link>();
+  if (!row) throw new ApiError("NOT_FOUND");
+
+  const origin = appOrigin(context.env);
+  let destination: string;
+  if (row.target_kind === "url") {
+    const validated = linkUrlSchema.safeParse(row.target_url);
+    if (!validated.success) throw new ApiError("NOT_FOUND");
+    const tracking = await getLinkTracking(context.env.DB, row.id);
+    destination = applyLinkParameters(validated.data, tracking, origin);
+    if (new URL(destination).origin !== origin) {
+      context.header("Cache-Control", "no-store, max-age=0");
+      context.header("Referrer-Policy", "no-referrer");
+      context.header("X-Content-Type-Options", "nosniff");
+      context.header("X-Robots-Tag", "noindex, nofollow");
+      context.header(
+        "Content-Security-Policy",
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      );
+      return context.html(renderExternalContinuation(destination));
+    }
+  } else if (row.target_kind === "timeline") {
+    destination = new URL(
+      `/t/${encodeURIComponent(row.timeline_id ?? "")}`,
+      origin,
+    ).href;
+  } else {
+    destination = new URL(`/s/${encodeURIComponent(row.slug)}/media`, origin)
+      .href;
+  }
+  return context.redirect(destination, 302);
+});
+
 linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
   context.header("Cache-Control", "private, no-store");
   const row = await context.env.DB.prepare(
@@ -286,6 +360,40 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
       context.req.method === "GET" &&
       (response.status === 200 || response.status === 206)
     ) {
+      const providers = await resolveLinkProviders(
+        context.env.DB,
+        row.id,
+        row.owner_id,
+      );
+      if (providers.ga4 !== null || providers.meta !== null) {
+        try {
+          const trackingOrigin = appTrackingOrigin(context.env);
+          const ticket = await createTrackingTicket(
+            context.env.DB,
+            row,
+            tracking,
+            clickSource(context.req.raw, new Date(), tracking.channels),
+            providers,
+            new Date(),
+          );
+          await response.body?.cancel();
+          clearMediaResponseHeaders(context);
+          await recordLinkClick(
+            context.env.DB,
+            row,
+            clickSource(context.req.raw, new Date(), tracking.channels),
+          );
+          return context.redirect(`${trackingOrigin}/${ticket.token}`, 302);
+        } catch (error) {
+          try {
+            await response.body?.cancel();
+          } catch {
+            // Preserve the ticket, count, or availability error if cancellation fails.
+          }
+          clearMediaResponseHeaders(context);
+          throw error;
+        }
+      }
       try {
         await recordLinkClick(
           context.env.DB,
@@ -326,11 +434,74 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
     row.target_kind === "url"
       ? applyLinkParameters(destination.data, tracking, appOrigin(context.env))
       : destination.data;
-  if (context.req.method === "GET")
+  if (context.req.method === "GET") {
+    const providers = await resolveLinkProviders(
+      context.env.DB,
+      row.id,
+      row.owner_id,
+    );
+    if (providers.ga4 !== null || providers.meta !== null) {
+      const trackingOrigin = appTrackingOrigin(context.env);
+      const ticket = await createTrackingTicket(
+        context.env.DB,
+        row,
+        tracking,
+        clickSource(context.req.raw, new Date(), tracking.channels),
+        providers,
+        new Date(),
+      );
+      await recordLinkClick(
+        context.env.DB,
+        row,
+        clickSource(context.req.raw, new Date(), tracking.channels),
+      );
+      return context.redirect(`${trackingOrigin}/${ticket.token}`, 302);
+    }
     await recordLinkClick(
       context.env.DB,
       row,
       clickSource(context.req.raw, new Date(), tracking.channels),
     );
+  }
   return context.redirect(destinationUrl, 302);
 });
+
+linkResolver.on(["GET", "HEAD"], "/:slug/media", async (context) => {
+  const grant = async () =>
+    context.env.DB.prepare(`SELECT a.* FROM assets a
+      JOIN distribution_links l ON l.asset_id = a.id AND l.owner_id = a.owner_id
+      WHERE l.slug = ? AND l.target_kind = 'asset' AND ${publicLinkSql}`)
+      .bind(context.req.param("slug"), new Date().toISOString())
+      .first<Asset>();
+  const asset = await grant();
+  if (!asset) throw new ApiError("NOT_FOUND");
+  return streamAssetMedia(context, asset, async () => {
+    const current = await grant();
+    if (
+      !current ||
+      current.etag !== asset.etag ||
+      current.mime_type !== asset.mime_type ||
+      current.size_bytes !== asset.size_bytes ||
+      current.r2_key !== asset.r2_key
+    )
+      throw new ApiError("NOT_FOUND");
+  });
+});
+
+function clearMediaResponseHeaders(context: Context<AppContext>) {
+  context.header("Content-Type", undefined);
+  context.header("Content-Disposition", undefined);
+  context.header("Content-Length", undefined);
+  context.header("Content-Range", undefined);
+  context.header("Accept-Ranges", undefined);
+}
+
+function renderExternalContinuation(destination: string) {
+  const escaped = destination
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=${escaped}"><title>Continue</title></head><body><p>Continue to the requested destination: <a href="${escaped}" rel="noreferrer">Continue</a></p></body></html>`;
+}

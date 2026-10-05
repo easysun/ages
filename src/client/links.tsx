@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { googleCustomParameterName } from "../tracking/google-parameters";
 import {
   api,
   errorMessage,
@@ -275,6 +276,16 @@ function LinkProviderSettings({
         Choose which account providers may run for this Link. A GTM-routed
         provider is also disabled when Google Tag Manager is turned off here.
       </p>
+      <p className="field-help">
+        In GA4, turn off Enhanced Measurement so it does not send extra events.
+        Configure and publish GTM to fire only for the consented ages_link_click
+        event; these Link settings cannot change provider-side rules.
+      </p>
+      <p className="field-help">
+        GA4 uses the custom parameter names shown beside each Link field.
+        Register those names as event-scoped custom dimensions to report their
+        literal values.
+      </p>
       {loading ? <p role="status">Loading provider choices…</p> : null}
       {loadError ? (
         <div className="error" role="alert">
@@ -384,6 +395,10 @@ export function LinksScreen({
   const [reportRetry, setReportRetry] = useState(0);
 
   const [draft, setDraft] = useState<TrackingDraft>(emptyDraft);
+  const [googleParameterNames, setGoogleParameterNames] = useState<{
+    keys: string[];
+    names: string[];
+  }>({ keys: [], names: [] });
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState("");
   const [trackingRetry, setTrackingRetry] = useState(0);
@@ -407,6 +422,24 @@ export function LinksScreen({
   const reportGeneration = useRef(0);
   const trackingGeneration = useRef(0);
   const activeRequests = useRef(new Set<AbortController>());
+  const serializedCustomKeys = JSON.stringify(
+    draft.custom.map(({ key }) => key),
+  );
+
+  useEffect(() => {
+    let current = true;
+    const keys = JSON.parse(serializedCustomKeys) as string[];
+    void Promise.all(
+      keys.map((key) =>
+        key === "" ? Promise.resolve("") : googleCustomParameterName(key),
+      ),
+    ).then((names) => {
+      if (current) setGoogleParameterNames({ keys, names });
+    });
+    return () => {
+      current = false;
+    };
+  }, [serializedCustomKeys]);
 
   const newController = useCallback(() => {
     const controller = new AbortController();
@@ -1416,6 +1449,12 @@ export function LinksScreen({
                           }
                           disabled={trackingLoading || saving}
                         />
+                        {parameter.key !== "" &&
+                        googleParameterNames.keys[index] === parameter.key ? (
+                          <p className="field-help">
+                            GA4 parameter: {googleParameterNames.names[index]}
+                          </p>
+                        ) : null}
                       </div>
                       <div>
                         <label htmlFor={`link-custom-value-${index}`}>

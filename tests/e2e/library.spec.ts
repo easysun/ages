@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { photo, putFixture, seedLibrary } from "./fixtures";
+import { e2eOrigin, photo, putFixture, seedLibrary } from "./fixtures";
 
 test("anonymous library shows sign-in and keeps the API authenticated", async ({
   page,
@@ -122,14 +122,7 @@ test("simulated direct R2 transport recovers a failed PUT without sending binary
   await seedLibrary(context);
   const workerBodies: string[] = [];
   page.on("request", (request) => {
-    if (
-      request
-        .url()
-        .startsWith(
-          `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`,
-        ) &&
-      request.method() !== "GET"
-    )
+    if (request.url().startsWith(e2eOrigin) && request.method() !== "GET")
       workerBodies.push(request.headers()["content-type"] ?? "");
   });
   let puts = 0;

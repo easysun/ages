@@ -4,6 +4,7 @@ import {
   expect,
   test,
 } from "@playwright/test";
+import { googleCustomParameterName } from "../../src/tracking/google-parameters";
 import {
   e2eOrigin,
   executeFixtureSql,
@@ -236,6 +237,9 @@ test("configuration_and_tags_survive_refresh", async ({
   await page
     .getByRole("textbox", { name: "Custom parameter 1 value" })
     .fill("Shared by a friend");
+  await expect(
+    page.getByText("GA4 parameter: ages_c_note", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Save tracking settings" }).focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -311,6 +315,11 @@ test("custom_parameter_keys_with_equals_survive_unrelated_settings_save", async 
 
   await page.goto("/links");
   await page.getByRole("button", { name: `Select ${link.slug}` }).click();
+  await expect(
+    page.getByText(`GA4 parameter: ${await googleCustomParameterName("a=b")}`, {
+      exact: true,
+    }),
+  ).toBeVisible();
   await page.getByRole("textbox", { name: "Link tags" }).fill("Unrelated");
   await page.getByRole("button", { name: "Save tracking settings" }).click();
   await expect(
