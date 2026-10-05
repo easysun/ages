@@ -767,6 +767,99 @@ describe("Native Link analytics", () => {
     expect(stored).not.toContain("203.0.113.77");
   });
 
+  it("reads_total_and_sources_from_one_snapshot_during_a_concurrent_resolution", async () => {
+    const link = await createLink();
+    let snapshotRead!: () => void;
+    const snapshotReady = new Promise<void>((resolve) => {
+      snapshotRead = resolve;
+    });
+    let clickWritten!: () => void;
+    const clickReady = new Promise<void>((resolve) => {
+      clickWritten = resolve;
+    });
+    const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+    const queries = new WeakMap<D1PreparedStatement, string>();
+
+    function wrap(statement: D1PreparedStatement, query: string) {
+      const wrapped = new Proxy(statement, {
+        get(target, property) {
+          if (property === "bind")
+            return (...values: unknown[]) =>
+              wrap(target.bind(...values), query);
+          if (property === "all")
+            return async <T = Record<string, unknown>>() => {
+              if (query.includes("FROM link_daily_totals")) {
+                const result = await target.all<T>();
+                snapshotRead();
+                return result;
+              }
+              if (
+                query.includes("FROM link_daily_channels") ||
+                query.includes("FROM link_daily_referrers")
+              )
+                await clickReady;
+              return target.all<T>();
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      originals.set(wrapped, statement);
+      queries.set(wrapped, query);
+      return wrapped;
+    }
+
+    const database = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === "prepare")
+          return (query: string) => wrap(target.prepare(query), query);
+        if (property === "batch")
+          return async <T = unknown>(statements: D1PreparedStatement[]) => {
+            const statementQueries = statements.map((statement) =>
+              queries.get(statement),
+            );
+            const hasSnapshotQueries = [
+              "FROM link_daily_totals",
+              "FROM link_daily_channels",
+              "FROM link_daily_referrers",
+            ].every((table) =>
+              statementQueries.some((query) => query?.includes(table)),
+            );
+            const result = await target.batch<T>(
+              statements.map(
+                (statement) => originals.get(statement) ?? statement,
+              ),
+            );
+            if (hasSnapshotQueries) {
+              snapshotRead();
+              await clickReady;
+            }
+            return result;
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const day = dayInTaipei();
+    const pendingReport = app.request(
+      `${origin}/api/links/${link.id}/analytics?from=${day}&to=${day}`,
+      { headers: { Cookie: session } },
+      { ...bindings, DB: database },
+    );
+
+    await snapshotReady;
+    expect((await resolve(link.slug)).status).toBe(302);
+    clickWritten();
+
+    const response = await pendingReport;
+    expect(response.status).toBe(200);
+    const snapshot = await response.json<AnalyticsReport>();
+    expect(snapshot.total).toBe(0);
+    expect(snapshot.channels).toEqual([]);
+    expect(snapshot.referrers).toEqual([]);
+    expect(await total(link.id)).toBe(1);
+  });
+
   it("maps_local_or_private_referrer_hosts_and_userinfo_to_other", async () => {
     const link = await createLink();
     const referers = [

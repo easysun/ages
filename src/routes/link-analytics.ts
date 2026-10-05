@@ -69,6 +69,19 @@ function analyticsRange(url: URL) {
   return { from, to, first, days };
 }
 
+type DailyTotalRow = { day: string; clicks: number };
+type ChannelCountRow = {
+  bucket_kind: "configured" | "other";
+  channel_label: string | null;
+  clicks: number;
+};
+type ReferrerCountRow = {
+  bucket_kind: "host" | "other" | "direct";
+  hostname: string | null;
+  clicks: number;
+};
+type AnalyticsCountRow = DailyTotalRow | ChannelCountRow | ReferrerCountRow;
+
 linkAnalytics.get("/:id/analytics", async (context) => {
   const linkId = context.req.param("id");
   const link = await context.env.DB.prepare(
@@ -84,34 +97,39 @@ linkAnalytics.get("/:id/analytics", async (context) => {
     first,
     days: dayCount,
   } = analyticsRange(new URL(context.req.url));
-  const [totals, channels, referrers] = await Promise.all([
+  const resultSet = await context.env.DB.batch<AnalyticsCountRow>([
     context.env.DB.prepare(`SELECT day, clicks FROM link_daily_totals
-      WHERE link_id = ? AND day BETWEEN ? AND ? ORDER BY day`)
-      .bind(linkId, from, to)
-      .all<{ day: string; clicks: number }>(),
+      WHERE link_id = ? AND day BETWEEN ? AND ? ORDER BY day`).bind(
+      linkId,
+      from,
+      to,
+    ),
     context.env.DB.prepare(`SELECT bucket_kind, channel_label, sum(clicks) AS clicks
       FROM link_daily_channels WHERE link_id = ? AND day BETWEEN ? AND ?
       GROUP BY bucket_kind, channel_label
-      ORDER BY CASE bucket_kind WHEN 'configured' THEN 0 ELSE 1 END, channel_label COLLATE BINARY`)
-      .bind(linkId, from, to)
-      .all<{
-        bucket_kind: "configured" | "other";
-        channel_label: string | null;
-        clicks: number;
-      }>(),
+      ORDER BY CASE bucket_kind WHEN 'configured' THEN 0 ELSE 1 END, channel_label COLLATE BINARY`).bind(
+      linkId,
+      from,
+      to,
+    ),
     context.env.DB.prepare(`SELECT bucket_kind, hostname, sum(clicks) AS clicks
       FROM link_daily_referrers WHERE link_id = ? AND day BETWEEN ? AND ?
       GROUP BY bucket_kind, hostname
-      ORDER BY CASE bucket_kind WHEN 'host' THEN 0 WHEN 'direct' THEN 1 ELSE 2 END, hostname COLLATE BINARY`)
-      .bind(linkId, from, to)
-      .all<{
-        bucket_kind: "host" | "other" | "direct";
-        hostname: string | null;
-        clicks: number;
-      }>(),
+      ORDER BY CASE bucket_kind WHEN 'host' THEN 0 WHEN 'direct' THEN 1 ELSE 2 END, hostname COLLATE BINARY`).bind(
+      linkId,
+      from,
+      to,
+    ),
   ]);
+  const totals = resultSet[0];
+  const channels = resultSet[1];
+  const referrers = resultSet[2];
+  if (!totals || !channels || !referrers)
+    throw new Error("Link analytics batch returned incomplete results.");
   const totalsByDay = new Map(
-    totals.results.map((row) => [row.day, row.clicks]),
+    totals.results
+      .filter((row): row is DailyTotalRow => "day" in row)
+      .map((row) => [row.day, row.clicks]),
   );
   const days = Array.from({ length: dayCount }, (_, index) => {
     const day = new Date(first + index * 86_400_000).toISOString().slice(0, 10);
@@ -123,16 +141,20 @@ linkAnalytics.get("/:id/analytics", async (context) => {
     to,
     total: days.reduce((sum, row) => sum + row.clicks, 0),
     days,
-    channels: channels.results.map((row) => ({
-      kind: row.bucket_kind,
-      label: row.channel_label,
-      clicks: row.clicks,
-    })),
-    referrers: referrers.results.map((row) => ({
-      kind: row.bucket_kind,
-      hostname: row.hostname,
-      clicks: row.clicks,
-    })),
+    channels: channels.results
+      .filter((row): row is ChannelCountRow => "channel_label" in row)
+      .map((row) => ({
+        kind: row.bucket_kind,
+        label: row.channel_label,
+        clicks: row.clicks,
+      })),
+    referrers: referrers.results
+      .filter((row): row is ReferrerCountRow => "hostname" in row)
+      .map((row) => ({
+        kind: row.bucket_kind,
+        hostname: row.hostname,
+        clicks: row.clicks,
+      })),
   });
 });
 
