@@ -926,7 +926,7 @@ describe("Native Link analytics", () => {
     expect((await maximum.json<AnalyticsReport>()).days).toHaveLength(366);
   });
 
-  it("rechecks_availability_inside_atomic_increment_batch", async () => {
+  it("does_not_expose_redirect_when_availability_changes_before_count", async () => {
     const link = await createLink();
     const batch = env.DB.batch.bind(env.DB);
     vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
@@ -935,7 +935,9 @@ describe("Native Link analytics", () => {
         .run();
       return batch(statements);
     });
-    await expectError(await resolve(link.slug), 404, "NOT_FOUND");
+    const response = await resolve(link.slug);
+    await expectError(response, 404, "NOT_FOUND");
+    expect(response.headers.get("Location")).toBeNull();
     expect(await total(link.id)).toBe(0);
     for (const table of [
       "link_daily_totals",
@@ -951,37 +953,67 @@ describe("Native Link analytics", () => {
       ).toBe(0);
   });
 
-  it("returns_internal_error_when_recording_fails_and_cancels_open_media", async () => {
-    await addAsset();
-    const link = await addTargetLink(
-      { kind: "asset", asset_id: "analytics-asset" },
-      "analytics-record-failure",
+  it("does_not_expose_redirect_when_click_recording_fails", async () => {
+    const link = await createLink(
+      "https://private-destination.example.org/story?secret=1",
     );
-    const cancel = vi.fn();
-    const get = env.MEDIA.get.bind(env.MEDIA);
-    vi.spyOn(env.MEDIA, "get").mockImplementationOnce(async (key, options) => {
-      const object = await get(key, options);
-      if (!object || !("body" in object)) return object;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(new Uint8Array([1]));
-        },
-        cancel,
-      });
-      return new Proxy(object, {
-        get(target, property) {
-          if (property === "body") return body;
-          return Reflect.get(target, property, target);
-        },
-      });
-    });
     vi.spyOn(env.DB, "batch").mockRejectedValueOnce(
       new Error("synthetic analytics write failure"),
     );
-    await expectError(await resolve(link.slug), 500, "INTERNAL_ERROR");
-    expect(cancel).toHaveBeenCalledTimes(1);
-    const reportResponse = await analytics(link.id);
-    expect(reportResponse.status).toBe(200);
-    expect((await reportResponse.json<AnalyticsReport>()).total).toBe(0);
+    const response = await resolve(link.slug);
+    await expectError(response, 500, "INTERNAL_ERROR");
+    expect(response.headers.get("Location")).toBeNull();
+    expect(await total(link.id)).toBe(0);
   });
+
+  it.each([
+    { kind: "full response", range: undefined },
+    { kind: "ranged response", range: "bytes=2-5" },
+  ])(
+    "returns_internal_error_and_cancels_open_media_once_after_$kind",
+    async ({ range }) => {
+      await addAsset();
+      const link = await addTargetLink(
+        { kind: "asset", asset_id: "analytics-asset" },
+        "analytics-record-failure",
+      );
+      const cancel = vi.fn();
+      const get = env.MEDIA.get.bind(env.MEDIA);
+      vi.spyOn(env.MEDIA, "get").mockImplementationOnce(
+        async (key, options) => {
+          const object = await get(key, options);
+          if (!object || !("body" in object)) return object;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1]));
+            },
+            cancel,
+          });
+          return new Proxy(object, {
+            get(target, property) {
+              if (property === "body") return body;
+              return Reflect.get(target, property, target);
+            },
+          });
+        },
+      );
+      vi.spyOn(env.DB, "batch").mockRejectedValueOnce(
+        new Error("synthetic analytics write failure"),
+      );
+      const response = await resolve(link.slug, {
+        ...(range ? { headers: { Range: range } } : {}),
+      });
+      await expectError(response, 500, "INTERNAL_ERROR");
+      expect(response.headers.get("Content-Type")).toBe("application/json");
+      expect(response.headers.get("Content-Length")).toBeNull();
+      expect(response.headers.get("Content-Range")).toBeNull();
+      expect(response.headers.get("Accept-Ranges")).toBeNull();
+      expect(response.headers.get("Cache-Control")).toContain("no-store");
+      expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+      expect(cancel).toHaveBeenCalledTimes(1);
+      const reportResponse = await analytics(link.id);
+      expect(reportResponse.status).toBe(200);
+      expect((await reportResponse.json<AnalyticsReport>()).total).toBe(0);
+    },
+  );
 });

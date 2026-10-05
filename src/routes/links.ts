@@ -251,6 +251,9 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
         } catch {
           // Preserve the recording or availability error if stream cancellation fails.
         }
+        context.header("Content-Length", undefined);
+        context.header("Content-Range", undefined);
+        context.header("Accept-Ranges", undefined);
         throw error;
       }
     }
@@ -276,12 +279,11 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
     row.target_kind === "url"
       ? applyLinkParameters(destination.data, tracking, appOrigin(context.env))
       : destination.data;
-  const response = context.redirect(destinationUrl, 302);
   if (context.req.method === "GET")
     await recordLinkClick(
       context.env.DB,
       row,
       clickSource(context.req.raw, new Date(), tracking.channels),
     );
-  return response;
+  return context.redirect(destinationUrl, 302);
 });
