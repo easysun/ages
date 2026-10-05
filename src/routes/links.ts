@@ -11,6 +11,7 @@ import {
   createLinkSchema,
   type Link,
   linkPayload,
+  linkTrackingProvidersSchema,
   linkUrlSchema,
   updateLinkSchema,
 } from "../links/model";
@@ -161,6 +162,52 @@ links.get("/:id", async (context) => {
     .first<Link>();
   if (!row) throw new ApiError("NOT_FOUND");
   return context.json({ link: linkPayload(row, appOrigin(context.env)) });
+});
+links.get("/:id/tracking/providers", async (context) => {
+  const row = await context.env.DB.prepare(`SELECT allow_ga4, allow_meta_pixel,
+    allow_gtm FROM distribution_links WHERE id = ? AND owner_id = ?`)
+    .bind(context.req.param("id"), context.get("user").id)
+    .first<{
+      allow_ga4: number;
+      allow_meta_pixel: number;
+      allow_gtm: number;
+    }>();
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    providers: {
+      allow_ga4: row.allow_ga4 === 1,
+      allow_meta_pixel: row.allow_meta_pixel === 1,
+      allow_gtm: row.allow_gtm === 1,
+    },
+  });
+});
+links.put("/:id/tracking/providers", async (context) => {
+  const input = await parseJson(context, linkTrackingProvidersSchema);
+  const row = await context.env.DB.prepare(`UPDATE distribution_links SET
+    allow_ga4 = ?, allow_meta_pixel = ?, allow_gtm = ?, updated_at = ?
+    WHERE id = ? AND owner_id = ?
+    RETURNING allow_ga4, allow_meta_pixel, allow_gtm`)
+    .bind(
+      Number(input.allow_ga4),
+      Number(input.allow_meta_pixel),
+      Number(input.allow_gtm),
+      new Date().toISOString(),
+      context.req.param("id"),
+      context.get("user").id,
+    )
+    .first<{
+      allow_ga4: number;
+      allow_meta_pixel: number;
+      allow_gtm: number;
+    }>();
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    providers: {
+      allow_ga4: row.allow_ga4 === 1,
+      allow_meta_pixel: row.allow_meta_pixel === 1,
+      allow_gtm: row.allow_gtm === 1,
+    },
+  });
 });
 links.patch("/:id", async (context) => {
   const input = await parseJson(context, updateLinkSchema);

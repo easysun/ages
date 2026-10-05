@@ -29,6 +29,18 @@ export type LinkTrackingReport = {
     clicks: number;
   }[];
 };
+export type TrackingProviderSettings = {
+  ga4_measurement_id: string | null;
+  meta_pixel_id: string | null;
+  gtm_container_id: string | null;
+  ga4_route: "direct" | "gtm";
+  meta_route: "direct" | "gtm";
+};
+export type LinkTrackingProviders = {
+  allow_ga4: boolean;
+  allow_meta_pixel: boolean;
+  allow_gtm: boolean;
+};
 export type { LinkTracking };
 export type Profile = {
   user: {
