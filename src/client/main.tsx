@@ -12,6 +12,7 @@ import {
   RequestError,
 } from "./api";
 import { AssetDetails } from "./details";
+import { LinksScreen } from "./links";
 import { ModerationScreen } from "./moderation";
 import { TimelineScreen } from "./timelines";
 import { type UploadJob, uploadFile } from "./upload";
@@ -126,6 +127,13 @@ function App() {
           >
             Timelines
           </a>
+          <a
+            href="/links"
+            onClick={collectionLink}
+            aria-current={path === "/links" ? "page" : undefined}
+          >
+            Links
+          </a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -173,6 +181,8 @@ function App() {
             }
             navigate={navigate}
           />
+        ) : path === "/links" ? (
+          <LinksScreen authGeneration={generation} />
         ) : path === "/library" || path === "/" ? (
           <Library
             profile={profile}

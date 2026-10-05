@@ -151,3 +151,23 @@ export function seedTimeline(
   command(["d1", "execute", "DB", "--file", path]);
   return { id, itemIds };
 }
+
+export function seedTaggedLinks(
+  owner: string,
+  tag: string,
+  prefix: string,
+  count: number,
+) {
+  const createdAt = new Date().toISOString();
+  const rows = Array.from({ length: count }, (_, index) => ({
+    id: `ln_${randomUUID()}`,
+    slug: `${prefix}-${index}`,
+  }));
+  const escapedTag = tag.replaceAll("'", "''");
+  const sql = rows.flatMap(({ id, slug }) => [
+    `INSERT INTO distribution_links (id,owner_id,slug,target_kind,target_url,active,moderation_blocked,created_at,updated_at) VALUES ('${id}','${owner}','${slug}','url','https://example.org/${slug}',1,0,'${createdAt}','${createdAt}');`,
+    `INSERT INTO link_tags (link_id,owner_id,tag,position) VALUES ('${id}','${owner}','${escapedTag}',0);`,
+  ]);
+  executeFixtureSql(sql.join("\n"));
+  return rows;
+}
