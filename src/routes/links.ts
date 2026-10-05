@@ -110,9 +110,7 @@ links.post("/", async (context) => {
 });
 links.get("/", async (context) => {
   const owner = context.get("user").id;
-  // Reuse the strict owner-bound keyset contract; Links have no tag filter.
   const url = new URL(context.req.url);
-  if (url.searchParams.has("tag")) throw new ApiError("INVALID_REQUEST");
   const encoded = url.searchParams.get("cursor");
   if (encoded !== null) {
     if (!encoded.startsWith("links.")) throw new ApiError("INVALID_REQUEST");
@@ -120,17 +118,23 @@ links.get("/", async (context) => {
       throw new ApiError("INVALID_REQUEST");
     url.searchParams.set("cursor", encoded.slice(6));
   }
-  const { limit, cursor } = libraryQuery(url.href, owner);
-  const result =
-    await context.env.DB.prepare(`SELECT * FROM distribution_links WHERE owner_id = ?
-    ${cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
-    ORDER BY created_at DESC, id DESC LIMIT ?`)
-      .bind(
-        owner,
-        ...(cursor ? [cursor.created_at, cursor.created_at, cursor.id] : []),
-        limit + 1,
-      )
-      .all<Link>();
+  const { limit, tag, cursor } = libraryQuery(url.href, owner);
+  const clauses = ["owner_id = ?"];
+  const values: (string | number)[] = [owner];
+  if (tag !== null) {
+    clauses.push(
+      "EXISTS (SELECT 1 FROM link_tags t WHERE t.link_id = distribution_links.id AND t.owner_id = distribution_links.owner_id AND t.tag = ?)",
+    );
+    values.push(tag);
+  }
+  if (cursor) {
+    clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+    values.push(cursor.created_at, cursor.created_at, cursor.id);
+  }
+  const result = await context.env.DB.prepare(`SELECT * FROM distribution_links
+    WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .bind(...values, limit + 1)
+    .all<Link>();
   const rows = result.results.slice(0, limit);
   const last = rows.at(-1);
   return context.json({
@@ -140,7 +144,7 @@ links.get("/", async (context) => {
         ? `links.${encodeCursor({
             v: 1,
             owner,
-            tag: null,
+            tag,
             created_at: last.created_at,
             id: last.id,
           })}`
