@@ -1,5 +1,6 @@
 # Local configuration only. Copy to ignored .dev.vars and supply your own values.
 APP_ORIGIN=http://127.0.0.1:8787
+TRACKING_ORIGIN=http://localhost:8798
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 # Real R2 direct upload requires an isolated cloud environment and matching MEDIA binding.

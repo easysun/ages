@@ -7,7 +7,11 @@
   "workers_dev": false,
   "preview_urls": false,
   "send_metrics": false,
-  "vars": { "APP_ENV": "local" },
+  "vars": {
+    "APP_ENV": "local",
+    "APP_ORIGIN": "http://127.0.0.1:8787",
+    "TRACKING_ORIGIN": "http://localhost:8798"
+  },
   "d1_databases": [
     {
       "binding": "DB",
@@ -15,5 +19,73 @@
       "database_id": "00000000-0000-0000-0000-000000000001",
       "migrations_dir": "migrations"
     }
-  ]
+  ],
+  "env": {
+    "development": {
+      "name": "ages-tracking-development",
+      "vars": {
+        "APP_ENV": "development",
+        "APP_ORIGIN": "https://app.development.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-development.invalid"
+      },
+      "routes": [
+        {
+          "pattern": "events.tracking-development.invalid",
+          "custom_domain": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ages-development",
+          "database_id": "REPLACE_DEVELOPMENT_D1_ID",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+    "preview": {
+      "name": "ages-tracking-preview",
+      "vars": {
+        "APP_ENV": "preview",
+        "APP_ORIGIN": "https://app.preview.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-preview.invalid"
+      },
+      "routes": [
+        {
+          "pattern": "events.tracking-preview.invalid",
+          "custom_domain": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ages-preview",
+          "database_id": "REPLACE_PREVIEW_D1_ID",
+          "migrations_dir": "migrations"
+        }
+      ]
+    },
+    "production": {
+      "name": "ages-tracking-production",
+      "vars": {
+        "APP_ENV": "production",
+        "APP_ORIGIN": "https://app.production.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-production.invalid"
+      },
+      "routes": [
+        {
+          "pattern": "events.tracking-production.invalid",
+          "custom_domain": true
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "ages-production",
+          "database_id": "REPLACE_PRODUCTION_D1_ID",
+          "migrations_dir": "migrations"
+        }
+      ]
+    }
+  }
 }

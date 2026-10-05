@@ -144,13 +144,18 @@ export async function consumeTrackingTicket(
   db: Bindings["DB"],
   token: string,
   now: Date,
-): Promise<{ linkId: string } | null> {
+): Promise<{
+  linkId: string;
+  targetKind: "url" | "timeline" | "asset";
+} | null> {
   if (!tokenPattern.test(token) || !Number.isFinite(now.getTime())) return null;
   const result = await db
     .prepare(`UPDATE tracking_tickets SET consumed_at = ?
       WHERE token_hash = ? AND expires_at > ? AND consumed_at IS NULL
-      RETURNING link_id`)
+      RETURNING link_id, target_kind`)
     .bind(now.toISOString(), await hashToken(token), now.toISOString())
-    .first<{ link_id: string }>();
-  return result ? { linkId: result.link_id } : null;
+    .first<{ link_id: string; target_kind: "url" | "timeline" | "asset" }>();
+  return result
+    ? { linkId: result.link_id, targetKind: result.target_kind }
+    : null;
 }

@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app";
 import type { Bindings } from "../../src/bindings";
+import { scheduledCleanup } from "../../src/cleanup";
 import { createTrackingApp } from "../../src/tracking/index";
 import { seedUser } from "../helpers/auth";
 
@@ -184,6 +185,19 @@ async function continueTicket(
     },
     body: body ?? `token=${encodeURIComponent(token)}`,
   });
+}
+
+async function viewTicket(token: string) {
+  return trackingApp.request(
+    `${trackingOrigin}/${token}`,
+    {},
+    {
+      DB: env.DB,
+      APP_ENV: "local",
+      APP_ORIGIN: appOrigin,
+      TRACKING_ORIGIN: trackingOrigin,
+    },
+  );
 }
 
 async function seedAsset(id: string, withObject = true) {
@@ -422,6 +436,20 @@ describe("isolated provider consent flow", () => {
     expect(await linkClickCount(link.id)).toBe(1);
   });
 
+  it("does not let a query flag bypass a provider-enabled tracking ticket", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+
+    const response = await request(`/s/${link.slug}?skip_tracking=1`);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toMatch(
+      new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
+    );
+    expect(await ticketCount(link.id)).toBe(1);
+    expect(await linkClickCount(link.id)).toBe(1);
+  });
+
   it("does not count or redirect when the initial ticket write fails", async () => {
     const link = await createLink();
     await configureProvider(link.id);
@@ -458,6 +486,7 @@ describe("isolated provider consent flow", () => {
     });
     expect(settings.status).toBe(200);
     const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
 
     const response = await continueTicket(token);
 
@@ -529,6 +558,7 @@ describe("isolated provider consent flow", () => {
   it("consumes before checking live Link availability and never redirects a revoked Link", async () => {
     const link = await createLink();
     const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
     await env.DB.prepare(
       "UPDATE distribution_links SET active = 0 WHERE id = ?",
     )
@@ -548,6 +578,72 @@ describe("isolated provider consent flow", () => {
     expect(consumed?.consumed_at).not.toBeNull();
   });
 
+  it("rejects a ticket whose target kind changed after the consent view", async () => {
+    const link = await createLink();
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE tracking_tickets SET target_kind = 'asset' WHERE token_hash = ?",
+    )
+      .bind(await ticketHash(token))
+      .run();
+
+    const response = await continueTicket(token);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Location")).toBeNull();
+    expect(await linkClickCount(link.id)).toBe(0);
+  });
+
+  it("rejects a ticket that expires after its consent view", async () => {
+    const link = await createLink();
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE tracking_tickets SET expires_at = '2000-01-01T00:00:00.000Z' WHERE token_hash = ?",
+    )
+      .bind(await ticketHash(token))
+      .run();
+
+    const response = await continueTicket(token);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Location")).toBeNull();
+    expect(await linkClickCount(link.id)).toBe(0);
+  });
+
+  it("rejects a Link that expires after its ticket is viewed", async () => {
+    const link = await createLink();
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE distribution_links SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+    )
+      .bind(link.id)
+      .run();
+
+    const response = await continueTicket(token);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Location")).toBeNull();
+  });
+
+  it("rejects a moderated Link after its ticket is viewed", async () => {
+    const link = await createLink();
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE distribution_links SET moderation_blocked = 1 WHERE id = ?",
+    )
+      .bind(link.id)
+      .run();
+
+    const response = await continueTicket(token);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Location")).toBeNull();
+  });
+
   it("rechecks Timeline visibility after the visitor leaves the consent page", async () => {
     const timelineId = "tracking-story";
     await seedTimeline(timelineId);
@@ -556,6 +652,7 @@ describe("isolated provider consent flow", () => {
       timeline_id: timelineId,
     });
     const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
     await env.DB.prepare(
       "UPDATE timelines SET visibility = 'private' WHERE id = ?",
     )
@@ -567,6 +664,50 @@ describe("isolated provider consent flow", () => {
     expect(response.status).toBe(404);
     expect(response.headers.get("Location")).toBeNull();
     expect(await linkClickCount(link.id)).toBe(0);
+  });
+
+  it("rechecks an Asset Link grant after consent and before media delivery", async () => {
+    await seedAsset("revoked-tracking-media");
+    const link = await createLink({
+      kind: "asset",
+      asset_id: "revoked-tracking-media",
+    });
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    const continued = await continueTicket(token);
+    expect(continued.status).toBe(302);
+    expect(continued.headers.get("Location")).toBe(
+      `${appOrigin}/s/${link.slug}/media`,
+    );
+    await env.DB.prepare(
+      "UPDATE distribution_links SET active = 0 WHERE id = ?",
+    )
+      .bind(link.id)
+      .run();
+
+    const media = await request(`/s/${link.slug}/media`);
+
+    expect(media.status).toBe(404);
+  });
+
+  it("rejects an Asset ticket after its media grant is revoked during consent", async () => {
+    await seedAsset("revoked-before-tracking-media");
+    const link = await createLink({
+      kind: "asset",
+      asset_id: "revoked-before-tracking-media",
+    });
+    const token = await insertTicket(link);
+    expect((await viewTicket(token)).status).toBe(200);
+    await env.DB.prepare(
+      "UPDATE assets SET moderation_blocked = 1 WHERE id = ?",
+    )
+      .bind("revoked-before-tracking-media")
+      .run();
+
+    const response = await continueTicket(token);
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("Location")).toBeNull();
   });
 
   it("does not ticket or count a provider-enabled Asset Link whose R2 media is missing", async () => {
@@ -670,10 +811,81 @@ describe("isolated provider consent flow", () => {
     });
     expect(range.status).toBe(206);
     expect(await range.text()).toBe("2345");
+    const repeatedRange = await request(`/s/${link.slug}/media`, {
+      headers: { Range: "bytes=2-5" },
+    });
+    expect(repeatedRange.status).toBe(206);
+    expect(await repeatedRange.text()).toBe("2345");
     const head = await request(`/s/${link.slug}/media`, { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(await head.text()).toBe("");
+    const repeatedHead = await request(`/s/${link.slug}/media`, {
+      method: "HEAD",
+    });
+    expect(repeatedHead.status).toBe(200);
+    expect(await repeatedHead.text()).toBe("");
+    const conditional = await request(`/s/${link.slug}/media`, {
+      headers: { Range: "bytes=0-1", "If-Range": '"unknown"' },
+    });
+    expect(conditional.status).toBe(200);
+    expect(await conditional.text()).toBe("0123456789");
     expect(await ticketCount(link.id)).toBe(1);
+    expect(await linkClickCount(link.id)).toBe(1);
+  });
+
+  it("removes only a bounded batch of stale tickets and preserves live tickets and click history", async () => {
+    const link = await createLink();
+    expect((await request(`/s/${link.slug}`)).status).toBe(302);
+    const expiredTokens = Array.from({ length: 101 }, (_, index) =>
+      index.toString(16).padStart(64, "0"),
+    );
+    for (const [index, token] of expiredTokens.entries())
+      await insertTicket(
+        link,
+        token,
+        new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+      );
+    const consumed = await insertTicket(
+      link,
+      "f".repeat(64),
+      new Date(Date.now() + 300_000).toISOString(),
+    );
+    const live = await insertTicket(link, "e".repeat(64));
+    await env.DB.prepare(
+      "UPDATE tracking_tickets SET consumed_at = ? WHERE token_hash = ?",
+    )
+      .bind(new Date().toISOString(), await ticketHash(consumed))
+      .run();
+
+    await scheduledCleanup(bindings);
+    const afterFirstBatch = await ticketCount(link.id);
+    expect(afterFirstBatch).toBe(3);
+    expect(
+      await env.DB.prepare(
+        "SELECT token_hash FROM tracking_tickets WHERE token_hash = ?",
+      )
+        .bind(await ticketHash(live))
+        .first(),
+    ).not.toBeNull();
+    expect(await linkClickCount(link.id)).toBe(1);
+
+    await scheduledCleanup(bindings);
+
+    expect(await ticketCount(link.id)).toBe(1);
+    expect(
+      await env.DB.prepare(
+        "SELECT token_hash FROM tracking_tickets WHERE token_hash = ?",
+      )
+        .bind(await ticketHash(live))
+        .first(),
+    ).not.toBeNull();
+    expect(
+      await env.DB.prepare(
+        "SELECT token_hash FROM tracking_tickets WHERE token_hash = ?",
+      )
+        .bind(await ticketHash(consumed))
+        .first(),
+    ).toBeNull();
     expect(await linkClickCount(link.id)).toBe(1);
   });
 });

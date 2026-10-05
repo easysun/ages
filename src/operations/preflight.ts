@@ -23,6 +23,40 @@ const requiredSecrets = [
   "R2_ACCESS_KEY_ID",
   "R2_SECRET_ACCESS_KEY",
 ];
+const dnsName =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/;
+
+function exactHttpsOrigin(value: unknown, name: string) {
+  let url: URL | undefined;
+  try {
+    url = new URL(typeof value === "string" ? value : "");
+  } catch {}
+  requireValue(
+    url &&
+      url.protocol === "https:" &&
+      url.origin === value &&
+      url.username === "" &&
+      url.password === "",
+    `Configure an exact HTTPS ${name}.`,
+  );
+  return url;
+}
+
+function declaredDomain(value: unknown, name: string) {
+  requireValue(
+    typeof value === "string" &&
+      value === value.toLowerCase() &&
+      dnsName.test(value) &&
+      !/^\d+$/.test(value.split(".").at(-1) ?? ""),
+    `Configure ${name} as a canonical DNS domain.`,
+  );
+  return value;
+}
+
+function withinDomain(hostname: string, domain: string) {
+  return hostname === domain || hostname.endsWith(`.${domain}`);
+}
+
 export type ReleaseTarget = {
   environment: string;
   accountId: string;
@@ -30,12 +64,111 @@ export type ReleaseTarget = {
   databaseId: string;
   bucketName: string;
   namespaceId: string;
+  appOrigin: string;
+  trackingOrigin: string;
+  appRegistrableDomain: string;
+  trackingRegistrableDomain: string;
+  trackingWorkerName: string;
+  trackingDatabaseId: string;
   googleClientIdConfigured: boolean;
 };
+
+function validateTrackingWorkerTarget(
+  target: Pick<
+    ReleaseTarget,
+    "environment" | "accountId" | "databaseId" | "appOrigin" | "trackingOrigin"
+  >,
+  configuration: unknown,
+) {
+  const config = record(configuration);
+  const selected = record(record(config.env)[target.environment]);
+  const workerName = selected.name;
+  requireValue(
+    typeof workerName === "string" &&
+      /^[a-z0-9][a-z0-9-]{1,62}$/.test(workerName),
+    "Configure a named tracking Worker.",
+  );
+  requireValue(
+    (selected.main ?? config.main) === "src/tracking/index.ts",
+    "Preserve the tracking Worker entry point src/tracking/index.ts.",
+  );
+  requireValue(
+    (selected.account_id ?? config.account_id) === undefined ||
+      (selected.account_id ?? config.account_id) === target.accountId,
+    "The tracking Worker must use the application Cloudflare account.",
+  );
+  const vars = record(selected.vars);
+  const allowedVars = new Set(["APP_ENV", "APP_ORIGIN", "TRACKING_ORIGIN"]);
+  for (const source of [record(config.vars), vars])
+    requireValue(
+      Object.keys(source).every((name) => allowedVars.has(name)),
+      "The tracking Worker may contain only its origin and environment variables.",
+    );
+  requireValue(
+    vars.APP_ENV === target.environment &&
+      vars.APP_ORIGIN === target.appOrigin &&
+      vars.TRACKING_ORIGIN === target.trackingOrigin,
+    "The tracking Worker origins must match the named application environment.",
+  );
+
+  const forbiddenBindingFields = [
+    "r2_buckets",
+    "kv_namespaces",
+    "assets",
+    "services",
+    "durable_objects",
+    "queues",
+    "analytics_engine_datasets",
+    "send_email",
+    "dispatch_namespaces",
+    "hyperdrive",
+    "vectorize",
+    "ai",
+    "browser",
+    "images",
+    "pipelines",
+    "mtls_certificates",
+    "secrets_store_secrets",
+    "ratelimits",
+    "workflows",
+    "unsafe",
+  ];
+  requireValue(
+    [config, selected].every((source) =>
+      forbiddenBindingFields.every((name) => !(name in source)),
+    ),
+    "The tracking Worker must have only its ticket D1 binding and no app bindings or assets.",
+  );
+  const databases = entries(selected.d1_databases ?? config.d1_databases);
+  requireValue(
+    databases.length === 1 && databases[0]?.binding === "DB",
+    "The tracking Worker must have only its ticket D1 binding and no app bindings or assets.",
+  );
+  const trackingDatabaseId = databases[0]?.database_id;
+  requireValue(
+    trackingDatabaseId === target.databaseId,
+    "The tracking Worker D1 binding must match the ticket database.",
+  );
+  requireValue(
+    (selected.workers_dev ?? config.workers_dev) === false,
+    "Disable workers.dev for the tracking Worker.",
+  );
+  const trackingHostname = new URL(target.trackingOrigin).hostname;
+  const routed = entries(selected.routes ?? config.routes).some(
+    (route) =>
+      route.custom_domain === true && route.pattern === trackingHostname,
+  );
+  requireValue(
+    routed,
+    "The tracking origin needs an exact tracking Worker custom-domain route.",
+  );
+  return { trackingWorkerName: workerName, trackingDatabaseId };
+}
 
 export function validateReleaseTarget(
   configuration: unknown,
   environment: string,
+  trackingConfiguration: unknown,
 ): ReleaseTarget {
   requireValue(
     ["development", "preview", "production"].includes(environment),
@@ -99,14 +232,32 @@ export function validateReleaseTarget(
       `${name} belongs in platform secret storage.`,
     );
   }
-  const origin = vars.APP_ORIGIN;
-  let url: URL | undefined;
-  try {
-    url = new URL(typeof origin === "string" ? origin : "");
-  } catch {}
+  const url = exactHttpsOrigin(vars.APP_ORIGIN, "APP_ORIGIN");
+  const trackingUrl = exactHttpsOrigin(vars.TRACKING_ORIGIN, "TRACKING_ORIGIN");
+  const appRegistrableDomain = declaredDomain(
+    vars.APP_REGISTRABLE_DOMAIN,
+    "APP_REGISTRABLE_DOMAIN",
+  );
+  const trackingRegistrableDomain = declaredDomain(
+    vars.TRACKING_REGISTRABLE_DOMAIN,
+    "TRACKING_REGISTRABLE_DOMAIN",
+  );
   requireValue(
-    url && url.protocol === "https:" && url.origin === origin,
-    "Configure an exact HTTPS APP_ORIGIN.",
+    url.origin !== trackingUrl.origin,
+    "APP_ORIGIN and TRACKING_ORIGIN must use different origins.",
+  );
+  requireValue(
+    !withinDomain(appRegistrableDomain, trackingRegistrableDomain) &&
+      !withinDomain(trackingRegistrableDomain, appRegistrableDomain),
+    "Use separate registrable domains for APP and tracking.",
+  );
+  requireValue(
+    withinDomain(url.hostname, appRegistrableDomain),
+    "APP_ORIGIN must belong to APP_REGISTRABLE_DOMAIN.",
+  );
+  requireValue(
+    withinDomain(trackingUrl.hostname, trackingRegistrableDomain),
+    "TRACKING_ORIGIN must belong to TRACKING_REGISTRABLE_DOMAIN.",
   );
   const workersDev = selected.workers_dev ?? config.workers_dev;
   const routed = entries(selected.routes ?? config.routes).some(
@@ -144,7 +295,8 @@ export function validateReleaseTarget(
     const other = record(value);
     requireValue(
       other.name !== workerName &&
-        record(other.vars).APP_ORIGIN !== origin &&
+        record(other.vars).APP_ORIGIN !== url.origin &&
+        record(other.vars).TRACKING_ORIGIN !== trackingUrl.origin &&
         !entries(other.d1_databases).some(
           (row) => row.database_id === databaseId,
         ) &&
@@ -165,16 +317,24 @@ export function validateReleaseTarget(
       !entries(config.kv_namespaces).some((row) => row.id === namespaceId),
     "Environment isolation must exclude local bindings.",
   );
-  return {
+  const target = {
     environment,
     accountId,
     workerName,
     databaseId,
     bucketName,
     namespaceId,
+    appOrigin: url.origin,
+    trackingOrigin: trackingUrl.origin,
+    appRegistrableDomain,
+    trackingRegistrableDomain,
     googleClientIdConfigured:
       typeof vars.GOOGLE_CLIENT_ID === "string" &&
       vars.GOOGLE_CLIENT_ID.trim().length > 0,
+  };
+  return {
+    ...target,
+    ...validateTrackingWorkerTarget(target, trackingConfiguration),
   };
 }
 

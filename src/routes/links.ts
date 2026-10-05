@@ -281,7 +281,8 @@ linkResolver.post("/continue", async (context) => {
   )
     .bind(consumed.linkId, now)
     .first<Link>();
-  if (!row) throw new ApiError("NOT_FOUND");
+  if (!row || row.target_kind !== consumed.targetKind)
+    throw new ApiError("NOT_FOUND");
 
   const origin = appOrigin(context.env);
   let destination: string;

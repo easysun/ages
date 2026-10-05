@@ -24,7 +24,17 @@ async function main() {
     readFileSync(resolve(root, "wrangler.jsonc"), "utf8"),
   );
   if (parsed.error) throw new Error("Invalid Wrangler JSONC configuration.");
-  const target = validateReleaseTarget(parsed.config, environment);
+  const trackingParsed = ts.parseConfigFileTextToJson(
+    "wrangler.tracking.jsonc",
+    readFileSync(resolve(root, "wrangler.tracking.jsonc"), "utf8"),
+  );
+  if (trackingParsed.error)
+    throw new Error("Invalid tracking Worker Wrangler JSONC configuration.");
+  const target = validateReleaseTarget(
+    parsed.config,
+    environment,
+    trackingParsed.config,
+  );
   if (
     process.env.CLOUDFLARE_ACCOUNT_ID &&
     process.env.CLOUDFLARE_ACCOUNT_ID !== target.accountId
@@ -49,10 +59,33 @@ async function main() {
     throw new Error("Build the client before checking release resources.");
   await verifyReleaseResources(target, token, migrations);
   console.log(
-    `Preflight passed for ${environment}: isolated bindings, secret names and migration ledger verified.`,
+    `Preflight passed for ${environment}: application resources and isolated tracking Worker configuration verified.`,
+  );
+  console.log(
+    "Manual release gates remain: verify both declared registrable domains against the Public Suffix List, provision and verify DNS/TLS, test origin/cookie isolation in browsers, and observe expected provider events after consent. See docs/provider-release-gates.md.",
   );
   if (action !== "--deploy") return;
   try {
+    execFileSync(
+      process.execPath,
+      [
+        resolve(root, "node_modules/wrangler/bin/wrangler.js"),
+        "deploy",
+        "--config",
+        "wrangler.tracking.jsonc",
+        "--env",
+        environment,
+      ],
+      {
+        cwd: root,
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          CLOUDFLARE_ACCOUNT_ID: target.accountId,
+          CLOUDFLARE_ENV: environment,
+        },
+      },
+    );
     execFileSync(
       process.execPath,
       [
