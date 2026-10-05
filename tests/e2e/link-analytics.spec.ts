@@ -488,7 +488,10 @@ test("saving_a_page_two_link_keeps_it_selected_and_preserves_edits_during_refres
   await page.getByRole("button", { name: "Apply tag filter" }).click();
   await page.getByRole("button", { name: "Load more links" }).click();
   await page
-    .getByRole("button", { name: `Select ${secondPageLink.slug}` })
+    .getByRole("button", {
+      name: `Select ${secondPageLink.slug}`,
+      exact: true,
+    })
     .click();
   await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
     "Shared",
@@ -510,6 +513,7 @@ test("saving_a_page_two_link_keeps_it_selected_and_preserves_edits_during_refres
 
   const selectedLink = page.getByRole("button", {
     name: `Select ${secondPageLink.slug}`,
+    exact: true,
   });
   await expect(selectedLink).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
