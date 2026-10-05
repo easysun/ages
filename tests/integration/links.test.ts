@@ -270,7 +270,7 @@ describe("Durable owner Links", () => {
       "?limit=1&limit=2",
       "?cursor=",
       "?cursor=e30",
-      "?tag=trip",
+      "?tag=%0A",
     ])
       await error(await request(query), 400, "INVALID_REQUEST");
   });

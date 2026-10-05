@@ -1,10 +1,35 @@
 import type { assetPayload } from "../assets/model";
+import type { linkPayload } from "../links/model";
+import type { LinkTracking } from "../links/tracking";
 
 export type LibraryAsset = ReturnType<typeof assetPayload> & { tags: string[] };
 export type LibraryPage = {
   assets: LibraryAsset[];
   next_cursor: string | null;
 };
+export type OwnerLink = ReturnType<typeof linkPayload>;
+export type OwnerLinkPage = {
+  links: OwnerLink[];
+  next_cursor: string | null;
+};
+export type LinkTrackingReport = {
+  timezone: "Asia/Taipei";
+  from: string;
+  to: string;
+  total: number;
+  days: { day: string; clicks: number }[];
+  channels: {
+    kind: "configured" | "other";
+    label: string | null;
+    clicks: number;
+  }[];
+  referrers: {
+    kind: "host" | "other" | "direct";
+    hostname: string | null;
+    clicks: number;
+  }[];
+};
+export type { LinkTracking };
 export type Profile = {
   user: {
     id: string;
@@ -51,6 +76,7 @@ export class RequestError extends Error {
   constructor(
     public code: string,
     message: string,
+    public status = 0,
   ) {
     super(message);
   }
@@ -65,6 +91,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     throw new RequestError(
       payload.error?.code ?? "REQUEST_FAILED",
       payload.error?.message ?? "Please try again.",
+      response.status,
     );
   }
   return payload as T;

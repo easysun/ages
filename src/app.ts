@@ -8,6 +8,7 @@ import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
+import { linkAnalytics } from "./routes/link-analytics";
 import { linkResolver, links } from "./routes/links";
 import { me } from "./routes/me";
 import { administration, reports } from "./routes/moderation";
@@ -47,6 +48,7 @@ export function createApp() {
   app.route("/api/assets", uploads);
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
+  app.route("/api/links", linkAnalytics);
   app.route("/api/links", links);
   app.route("/api/reports", reports);
   app.route("/api/admin", administration);
