@@ -111,6 +111,14 @@ Expected: PASS; preflight rejects same-domain and stub-enabled release configs, 
 
 - [x] **Step 6: Commit the authorized-release gate** with message `feat: gate tracking tickets on live link grants`.
 
+## Final-review corrections
+
+- [ ] Strip incoming referrer metadata at both app-to-tracker redirects while preserving the consent document's exact-Origin POST policy; verify an actual referring page and local vendor fixture.
+- [ ] Activate standalone GTM consistently across resolution, tickets, consent and dispatch; cover consent/skip, HEAD, native counts and GTM opt-out.
+- [ ] Add a separate preceding `ages_provider_eligibility` dataLayer event with boolean `ages_ga4_eligible` and `ages_meta_pixel_eligible` flags true only for enabled GTM-routed providers, document trigger conditions, and exercise both providers, individual opt-outs and mixed direct/GTM routing with a faithful local container fixture.
+- [ ] Verify the derived 13,003-character escaped-JSON ticket bound against the complete current event schema, preserving all accepted literals; use the new forward-only `0016_expand_tracking_ticket_event_json.sql` migration and a real D1 max-input continuation regression. Cover distinct accepted malformed UTF-16 custom keys without GA-name collisions, retaining existing hashes for well-formed keys and using an exact encoding disjoint from valid UTF-8. Recheck future Content Graph migration numbers after this migration is committed.
+- [ ] Decode the bounded continuation form byte body explicitly, retaining content type, exact-field, token and 4 KiB checks; verify the introduced runtime warning is removed.
+
 ## Review and publication gate
 
 Human design and plan approval gates are waived by the user; independent code review remains required. Execute in isolated `feat/isolated-provider-tracking` after slice1 merge, preserving its interfaces. Independent whole-branch review checks no app-origin provider access, fixed payload/SDK metadata, direct-versus-GTM dispatch, atomic ticket replay and media continuation grants. Run full `CI=true AGES_E2E_PORT=8797 npm run check`, local migration/rerun, and whitespace checks before publication; attach a focused PR with synthetic consent screenshots and require green CI before merge. Production deployment, external DNS/TLS and real provider account validation remain separate credentialed gates.
