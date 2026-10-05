@@ -422,6 +422,168 @@ test("stale_pagination_cannot_restore_previous_tag", async ({
   );
 });
 
+test("saving_a_page_two_link_keeps_it_selected_and_preserves_edits_during_refresh", async ({
+  page,
+  context,
+  request,
+}) => {
+  const { owner } = await seedLibrary(context);
+  const rows = seedTaggedLinks(
+    owner,
+    "Shared",
+    `page-two-${crypto.randomUUID().slice(0, 6)}`,
+    31,
+  );
+  const firstPageResponse = await request.get(
+    `${e2eOrigin}/api/links?limit=30&tag=Shared`,
+    { headers: await ownerHeaders(context) },
+  );
+  expect(firstPageResponse.status()).toBe(200);
+  const firstPage = (await firstPageResponse.json()) as {
+    links: { id: string; slug: string }[];
+  };
+  const secondPageLink = rows.find(
+    (row) => !firstPage.links.some((link) => link.id === row.id),
+  );
+  if (!secondPageLink)
+    throw new Error("The fixture did not create a second Link page.");
+
+  let holdNextRefresh = false;
+  let inspected: () => void = () => {};
+  const refreshStarted = new Promise<void>((resolve) => {
+    inspected = resolve;
+  });
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/links?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      holdNextRefresh &&
+      route.request().method() === "GET" &&
+      url.searchParams.get("tag") === "Shared" &&
+      !url.searchParams.has("cursor")
+    ) {
+      holdNextRefresh = false;
+      inspected();
+      await held;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/links");
+  await page
+    .getByRole("textbox", { name: "Filter links by exact tag" })
+    .fill("Shared");
+  await page.getByRole("button", { name: "Apply tag filter" }).click();
+  await page.getByRole("button", { name: "Load more links" }).click();
+  await page
+    .getByRole("button", { name: `Select ${secondPageLink.slug}` })
+    .click();
+  await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
+    "Shared",
+  );
+
+  holdNextRefresh = true;
+  await page
+    .getByRole("textbox", { name: "Link tags" })
+    .fill("Shared\nKeep exact");
+  await page.getByRole("button", { name: "Save tracking settings" }).click();
+  await refreshStarted;
+  await expect(
+    page.getByRole("status").filter({ hasText: "Tracking settings saved" }),
+  ).toBeVisible();
+  const channels = page.getByRole("textbox", { name: "Sharing channels" });
+  await expect(channels).toBeEnabled();
+  await channels.fill("Draft while refreshing ");
+  release();
+
+  const selectedLink = page.getByRole("button", {
+    name: `Select ${secondPageLink.slug}`,
+  });
+  await expect(selectedLink).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
+    "Shared\nKeep exact",
+  );
+  await expect(channels).toHaveValue("Draft while refreshing ");
+
+  await page.getByRole("button", { name: "Save tracking settings" }).click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Tracking settings saved" }),
+  ).toBeVisible();
+  expect(await readTracking(request, context, secondPageLink.id)).toMatchObject(
+    {
+      tags: ["Shared", "Keep exact"],
+      channels: ["Draft while refreshing "],
+    },
+  );
+});
+
+test("show_all_clears_old_cursor_when_unfiltered_reload_fails", async ({
+  page,
+  context,
+}) => {
+  const { owner } = await seedLibrary(context);
+  seedTaggedLinks(
+    owner,
+    "Shared",
+    `cursor-${crypto.randomUUID().slice(0, 6)}`,
+    31,
+  );
+  let failUnfilteredReload = false;
+  let cursorRequests = 0;
+  await page.route("**/api/links?*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.has("cursor")) cursorRequests++;
+    if (
+      failUnfilteredReload &&
+      !url.searchParams.has("tag") &&
+      !url.searchParams.has("cursor")
+    ) {
+      failUnfilteredReload = false;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "INTERNAL_ERROR",
+            message: "Links could not be refreshed.",
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto("/links");
+  await page
+    .getByRole("textbox", { name: "Filter links by exact tag" })
+    .fill("Shared");
+  await page.getByRole("button", { name: "Apply tag filter" }).click();
+  await expect(
+    page.getByRole("button", { name: "Load more links" }),
+  ).toBeVisible();
+
+  failUnfilteredReload = true;
+  await page.getByRole("button", { name: "Show all links" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Links could not be refreshed.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Load more links" }),
+  ).toHaveCount(0);
+  expect(cursorRequests).toBe(0);
+
+  await page.getByRole("button", { name: "Retry links" }).click();
+  await expect(
+    page.getByRole("button", { name: /^Select cursor-/ }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Load more links" }),
+  ).toBeVisible();
+});
+
 test("logout_clears_delayed_analytics", async ({ page, context, request }) => {
   await seedLibrary(context);
   const link = await createLink(
@@ -648,4 +810,54 @@ test("confirmed_settings_write_survives_report_read_failure_and_retry", async ({
   await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
     "旅行",
   );
+});
+
+test("report_range_change_preserves_unsaved_tracking_draft", async ({
+  page,
+  context,
+  request,
+}) => {
+  await seedLibrary(context);
+  const link = await createLink(
+    request,
+    context,
+    { kind: "url", url: "https://example.org/range-draft" },
+    `range-draft-${crypto.randomUUID().slice(0, 8)}`,
+  );
+  await page.goto("/links");
+  await page.getByRole("button", { name: `Select ${link.slug}` }).click();
+  await expect(page.getByRole("textbox", { name: "Link tags" })).toBeEnabled();
+  await page.getByRole("textbox", { name: "Link tags" }).fill("未存檔 ");
+  await page
+    .getByRole("textbox", { name: "Sharing channels" })
+    .fill("Draft channel ");
+  await page.getByRole("textbox", { name: "UTM source" }).fill("draft utm");
+
+  const throughDate = new Date();
+  throughDate.setUTCDate(throughDate.getUTCDate() - 1);
+  const fromDate = new Date(throughDate);
+  fromDate.setUTCDate(fromDate.getUTCDate() - 2);
+  const from = fromDate.toISOString().slice(0, 10);
+  const to = throughDate.toISOString().slice(0, 10);
+  await page.getByLabel("From").fill(from);
+  await page.getByLabel("Through").fill(to);
+  await page.getByRole("button", { name: "Apply date range" }).click();
+  await expect(
+    page.getByRole("region", { name: "Click source report" }),
+  ).toContainText(`Showing ${from} through ${to}`);
+
+  await expect(page.getByRole("textbox", { name: "Link tags" })).toHaveValue(
+    "未存檔 ",
+  );
+  await expect(
+    page.getByRole("textbox", { name: "Sharing channels" }),
+  ).toHaveValue("Draft channel ");
+  await expect(page.getByRole("textbox", { name: "UTM source" })).toHaveValue(
+    "draft utm",
+  );
+  expect(await readTracking(request, context, link.id)).toMatchObject({
+    tags: [],
+    channels: [],
+    utm: {},
+  });
 });

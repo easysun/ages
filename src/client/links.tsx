@@ -131,6 +131,13 @@ export function LinksScreen({
 
   const mounted = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
+  const linksRef = useRef(links);
+  linksRef.current = links;
+  const selectedFilterMatch = useRef<{
+    linkId: string;
+    tag: string;
+    matches: boolean;
+  } | null>(null);
   const authGenerationRef = useRef(authGeneration);
   const requestGeneration = useRef(0);
   const listGeneration = useRef(0);
@@ -158,9 +165,11 @@ export function LinksScreen({
     for (const controller of activeRequests.current) controller.abort();
     activeRequests.current.clear();
     setLinks([]);
+    linksRef.current = [];
     setNextCursor(null);
     setSelectedId(null);
     selectedIdRef.current = null;
+    selectedFilterMatch.current = null;
     setReport(null);
     setReportLoading(false);
     setReportError("");
@@ -232,11 +241,28 @@ export function LinksScreen({
           currentRequest === requestGeneration.current &&
           authGenerationRef.current === authGeneration
         ) {
-          setLinks(page.links);
-          setNextCursor(page.next_cursor);
           const selected = selectedIdRef.current;
+          const selectedMembership = selectedFilterMatch.current;
+          const selectedStillMatches =
+            selected !== null &&
+            (listQuery.tag === "" ||
+              (selectedMembership?.linkId === selected &&
+                selectedMembership.tag === listQuery.tag &&
+                selectedMembership.matches));
+          const selectedRow =
+            selectedStillMatches && selected
+              ? linksRef.current.find((link) => link.id === selected)
+              : undefined;
+          const nextLinks =
+            selectedRow &&
+            !page.links.some((link) => link.id === selectedRow.id)
+              ? [...page.links, selectedRow]
+              : page.links;
+          linksRef.current = nextLinks;
+          setLinks(nextLinks);
+          setNextCursor(page.next_cursor);
           const nextSelected =
-            selected && page.links.some((link) => link.id === selected)
+            selected && nextLinks.some((link) => link.id === selected)
               ? selected
               : (page.links[0]?.id ?? null);
           if (selected !== nextSelected) {
@@ -248,6 +274,9 @@ export function LinksScreen({
             setDraft(emptyDraft);
             setNotice("");
             setSaving(false);
+            selectedFilterMatch.current = nextSelected
+              ? { linkId: nextSelected, tag: listQuery.tag, matches: true }
+              : null;
           }
           setSelectedId(nextSelected);
           setListLoading(false);
@@ -369,6 +398,11 @@ export function LinksScreen({
           currentRequest === requestGeneration.current &&
           authGenerationRef.current === authGeneration
         ) {
+          selectedFilterMatch.current = {
+            linkId: selectedId,
+            tag: appliedTag,
+            matches: appliedTag === "" || tracking.tags.includes(appliedTag),
+          };
           setDraft(trackingDraft(tracking));
           setTrackingLoading(false);
         }
@@ -390,6 +424,7 @@ export function LinksScreen({
       .finally(() => finishController(controller));
   }, [
     selectedId,
+    appliedTag,
     trackingRetry,
     authGeneration,
     accessError,
@@ -402,6 +437,11 @@ export function LinksScreen({
     if (linkId === selectedId) return;
     selectionGeneration.current++;
     selectedIdRef.current = linkId;
+    selectedFilterMatch.current = {
+      linkId,
+      tag: appliedTag,
+      matches: true,
+    };
     setSelectedId(linkId);
     setReport(null);
     setReportLoading(true);
@@ -421,9 +461,11 @@ export function LinksScreen({
     reportGeneration.current++;
     trackingGeneration.current++;
     setLinks([]);
+    linksRef.current = [];
     setNextCursor(null);
     setSelectedId(null);
     selectedIdRef.current = null;
+    selectedFilterMatch.current = null;
     setReport(null);
     setReportError("");
     setDraft(emptyDraft);
@@ -528,6 +570,12 @@ export function LinksScreen({
           selectedId === linkId &&
           currentSelection === selectionGeneration.current
         ) {
+          selectedFilterMatch.current = {
+            linkId,
+            tag: appliedTag,
+            matches:
+              appliedTag === "" || result.tracking.tags.includes(appliedTag),
+          };
           setDraft(trackingDraft(result.tracking));
           setReport(null);
           setReportLoading(true);
@@ -632,8 +680,12 @@ export function LinksScreen({
                       reportGeneration.current++;
                       trackingGeneration.current++;
                       setLinks([]);
+                      linksRef.current = [];
+                      setNextCursor(null);
+                      setMoreLoading(false);
                       setSelectedId(null);
                       selectedIdRef.current = null;
+                      selectedFilterMatch.current = null;
                       setReport(null);
                       setDraft(emptyDraft);
                       setNotice("");
