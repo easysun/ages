@@ -70,7 +70,9 @@ function newToken() {
 }
 
 function isProviderEnabled(providers: EnabledProviders) {
-  return providers.ga4 !== null || providers.meta !== null;
+  return (
+    providers.ga4 !== null || providers.meta !== null || providers.gtm !== null
+  );
 }
 
 export async function createTrackingTicket(

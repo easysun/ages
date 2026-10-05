@@ -67,10 +67,7 @@ export async function renderTrackingInterstitial(
   ).join("");
   const action = new URL("/s/continue", origins.appOrigin).href;
   const googleEvent = await googleEventParameters(view);
-  const usesGtm =
-    view.providers.gtm !== null &&
-    (view.providers.ga4?.route === "gtm" ||
-      view.providers.meta?.route === "gtm");
+  const usesGtm = view.providers.gtm !== null;
   const providerNames = [
     ...(view.providers.ga4 === null ? [] : ["Google Analytics 4"]),
     ...(view.providers.meta === null ? [] : ["Meta Pixel"]),
@@ -155,10 +152,13 @@ export async function renderTrackingInterstitial(
       window.fbq("trackCustom", view.event.event_name, eventData());
       loads.push(loadScript("https://connect.facebook.net/en_US/fbevents.js"));
     }
-    const usesGtm = (view.providers.ga4 && view.providers.ga4.route === "gtm") ||
-      (view.providers.meta && view.providers.meta.route === "gtm");
-    if (usesGtm && view.providers.gtm) {
+    if (view.providers.gtm) {
       window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({
+        event: "ages_provider_eligibility",
+        ages_ga4_eligible: view.providers.ga4 !== null && view.providers.ga4.route === "gtm",
+        ages_meta_pixel_eligible: view.providers.meta !== null && view.providers.meta.route === "gtm"
+      });
       window.dataLayer.push({
         event: view.event.event_name,
         link_id: view.event.link_id,

@@ -131,10 +131,22 @@ export async function seedLibrary(context: BrowserContext) {
   return { owner, ids };
 }
 
+export type ProviderFixtureOptions = {
+  ga4?: boolean;
+  meta?: boolean;
+  gtm?: boolean;
+  ga4Route?: "direct" | "gtm";
+  metaRoute?: "direct" | "gtm";
+  allowGa4?: boolean;
+  allowMeta?: boolean;
+  allowGtm?: boolean;
+};
+
 export function seedProviderLink(
   owner: string,
   route: "direct" | "gtm" = "direct",
   target = `${e2eOrigin}/synthetic-destination?destination_secret=private#story`,
+  options: ProviderFixtureOptions = {},
 ) {
   const id = `ln_${randomUUID()}`;
   const slug = `provider-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -155,9 +167,16 @@ export function seedProviderLink(
     { key: "field_4", value: "d".repeat(100) },
   ];
   const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+  const sqlValue = (value: string | null) =>
+    value === null ? "NULL" : quote(value);
+  const ga4Id = options.ga4 === false ? null : "G-ABC123";
+  const metaId = options.meta === false ? null : "1234567890";
+  const gtmId = options.gtm === false ? null : "GTM-ABC123";
+  const ga4Route = options.ga4Route ?? route;
+  const metaRoute = options.metaRoute ?? route;
   const sql = [
-    `INSERT INTO distribution_links (id,owner_id,slug,target_kind,target_url,created_at,updated_at) VALUES (${quote(id)},${quote(owner)},${quote(slug)},'url',${quote(target)},${quote(now)},${quote(now)});`,
-    `INSERT INTO tracking_provider_settings (user_id,ga4_measurement_id,meta_pixel_id,gtm_container_id,ga4_route,meta_route) VALUES (${quote(owner)},'G-ABC123','1234567890','GTM-ABC123',${quote(route)},${quote(route)}) ON CONFLICT(user_id) DO UPDATE SET ga4_measurement_id=excluded.ga4_measurement_id,meta_pixel_id=excluded.meta_pixel_id,gtm_container_id=excluded.gtm_container_id,ga4_route=excluded.ga4_route,meta_route=excluded.meta_route;`,
+    `INSERT INTO distribution_links (id,owner_id,slug,target_kind,target_url,allow_ga4,allow_meta_pixel,allow_gtm,created_at,updated_at) VALUES (${quote(id)},${quote(owner)},${quote(slug)},'url',${quote(target)},${options.allowGa4 === false ? 0 : 1},${options.allowMeta === false ? 0 : 1},${options.allowGtm === false ? 0 : 1},${quote(now)},${quote(now)});`,
+    `INSERT INTO tracking_provider_settings (user_id,ga4_measurement_id,meta_pixel_id,gtm_container_id,ga4_route,meta_route) VALUES (${quote(owner)},${sqlValue(ga4Id)},${sqlValue(metaId)},${sqlValue(gtmId)},${quote(ga4Route)},${quote(metaRoute)}) ON CONFLICT(user_id) DO UPDATE SET ga4_measurement_id=excluded.ga4_measurement_id,meta_pixel_id=excluded.meta_pixel_id,gtm_container_id=excluded.gtm_container_id,ga4_route=excluded.ga4_route,meta_route=excluded.meta_route;`,
     `INSERT INTO link_tracking_settings (link_id,owner_id,utm_source,utm_medium,utm_campaign,utm_term,utm_content,custom_json) VALUES (${quote(id)},${quote(owner)},'ages',${quote("m".repeat(100))},${quote("c".repeat(100))},${quote("t".repeat(100))},${quote("v".repeat(100))},${quote(JSON.stringify(custom))});`,
     `INSERT INTO link_channels (link_id,owner_id,channel,position) VALUES (${quote(id)},${quote(owner)},'newsletter',0);`,
   ];

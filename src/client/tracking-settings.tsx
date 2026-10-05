@@ -238,9 +238,16 @@ export function TrackingSettingsScreen({
           property settings.
         </p>
         <p className="field-help">
-          For GTM routes, configure and publish the container so tags fire only
-          for the consented ages_link_click event. This app cannot change
-          published container rules.
+          When a Link allows Google Tag Manager, its published container loads
+          only after consent and receives one ages_link_click event, even if no
+          GA4 or Meta ID is saved. Configure Ages-managed tags to fire on the
+          Custom Event ages_link_click. Require the Data Layer Variable
+          ages_ga4_eligible to equal true for GA4, or the Data Layer Variable
+          ages_meta_pixel_eligible to equal true for Meta. Each flag is true
+          only when that provider has a saved ID, the Link allows it, and its
+          route uses GTM; otherwise its flag is false. Container-owned tags may
+          use ages_link_click without these flags. Review and publish the
+          container; this app cannot change its rules.
         </p>
         {loading ? <p role="status">Loading tracking settings…</p> : null}
         {loadError ? (

@@ -112,6 +112,68 @@ async function configureProvider(linkId: string) {
   expect(settings.status).toBe(200);
 }
 
+async function configureGtmOnlyProvider(linkId: string) {
+  const owner = await request("/api/me/tracking/providers", {
+    method: "PUT",
+    headers: {
+      Cookie: session,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      ga4_measurement_id: null,
+      meta_pixel_id: null,
+      gtm_container_id: "GTM-ABC123",
+      ga4_route: "direct",
+      meta_route: "direct",
+    }),
+  });
+  expect(owner.status).toBe(200);
+
+  const settings = await request(`/api/links/${linkId}/tracking`, {
+    method: "PUT",
+    headers: {
+      Cookie: session,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ tags: [], channels: [], utm: {}, custom: [] }),
+  });
+  expect(settings.status).toBe(200);
+}
+
+async function configureMaximumLinkTracking(linkId: string) {
+  const loneSurrogate = String.fromCharCode(0xd800);
+  const quotedOrEscaped = '"\\';
+  const channel = '"\\'.repeat(32);
+  const utm = {
+    utm_source: quotedOrEscaped.repeat(50),
+    utm_medium: quotedOrEscaped.repeat(50),
+    utm_campaign: quotedOrEscaped.repeat(50),
+    utm_term: quotedOrEscaped.repeat(50),
+    utm_content: quotedOrEscaped.repeat(50),
+  };
+  const custom = Array.from({ length: 10 }, (_, index) => ({
+    key:
+      String.fromCharCode(0xd800 + index).repeat(index === 0 ? 39 : 40) +
+      (index === 0 ? '"' : ""),
+    value: index === 0 ? '"\\'.repeat(50) : loneSurrogate.repeat(100),
+  }));
+  const response = await request(`/api/links/${linkId}/tracking`, {
+    method: "PUT",
+    headers: {
+      Cookie: session,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      tags: [],
+      channels: [channel],
+      utm,
+      custom,
+    }),
+  });
+  expect(response.status).toBe(200);
+  return { channel, utm, custom };
+}
+
 async function linkClickCount(linkId: string) {
   const row = await env.DB.prepare(
     "SELECT clicks FROM link_daily_totals WHERE link_id = ?",
@@ -305,6 +367,7 @@ describe("isolated provider consent flow", () => {
     });
 
     expect(response.status).toBe(302);
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("Location")).toMatch(
       new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
     );
@@ -423,6 +486,110 @@ describe("isolated provider consent flow", () => {
     expect(await linkClickCount(link.id)).toBe(0);
   });
 
+  it("tickets a standalone GTM click while HEAD stays direct", async () => {
+    const link = await createLink();
+    await configureGtmOnlyProvider(link.id);
+
+    const head = await request(`/s/${link.slug}`, { method: "HEAD" });
+    expect(head.status).toBe(302);
+    expect(new URL(head.headers.get("Location") ?? "").origin).toBe(
+      "https://destination.example.test",
+    );
+    expect(await ticketCount(link.id)).toBe(0);
+    expect(await linkClickCount(link.id)).toBe(0);
+
+    const response = await request(`/s/${link.slug}`);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toMatch(
+      new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
+    );
+    expect(await ticketCount(link.id)).toBe(1);
+    expect(await linkClickCount(link.id)).toBe(1);
+    const token = new URL(
+      response.headers.get("Location") ?? "",
+    ).pathname.slice(1);
+    const ticket = await env.DB.prepare(
+      "SELECT providers_json FROM tracking_tickets WHERE link_id = ?",
+    )
+      .bind(link.id)
+      .first<{ providers_json: string }>();
+    expect(JSON.parse(ticket?.providers_json ?? "null")).toEqual({
+      ga4: null,
+      meta: null,
+      gtm: { id: "GTM-ABC123" },
+    });
+    const consent = await viewTicket(token);
+    expect(consent.status).toBe(200);
+    const html = await consent.text();
+    expect(html).toContain("Google Tag Manager");
+    expect(html).not.toContain("Google Analytics 4");
+    expect(html).not.toContain("Meta Pixel");
+
+    const skipped = await continueTicket(token);
+    expect(skipped.status).toBe(200);
+    expect(await ticketCount(link.id)).toBe(1);
+    expect(await linkClickCount(link.id)).toBe(1);
+  });
+
+  it("does not ticket or load standalone GTM when the Link opts out", async () => {
+    const link = await createLink();
+    await configureGtmOnlyProvider(link.id);
+    await env.DB.prepare(
+      "UPDATE distribution_links SET allow_gtm = 0 WHERE id = ?",
+    )
+      .bind(link.id)
+      .run();
+
+    const response = await request(`/s/${link.slug}`);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toBe(
+      "https://destination.example.test/private-path?destination_secret=private#story",
+    );
+    expect(await ticketCount(link.id)).toBe(0);
+    expect(await linkClickCount(link.id)).toBe(1);
+  });
+
+  it("stores and continues every accepted escaped maximum tracking value", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+    const expected = await configureMaximumLinkTracking(link.id);
+    const query = new URLSearchParams({ ages_channel: expected.channel });
+
+    const response = await request(`/s/${link.slug}?${query}`);
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("Location")).toMatch(
+      new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
+    );
+    expect(await ticketCount(link.id)).toBe(1);
+    expect(await linkClickCount(link.id)).toBe(1);
+    const ticket = await env.DB.prepare(
+      "SELECT event_json FROM tracking_tickets WHERE link_id = ?",
+    )
+      .bind(link.id)
+      .first<{ event_json: string }>();
+    expect(ticket).not.toBeNull();
+    expect(ticket?.event_json.length).toBeGreaterThan(4096);
+    expect(ticket?.event_json.length).toBeLessThanOrEqual(13_003);
+    const event = JSON.parse(ticket?.event_json ?? "null") as {
+      channel: string;
+      utm: typeof expected.utm;
+      custom: typeof expected.custom;
+    };
+    expect(event.channel).toBe(expected.channel);
+    expect(event.utm).toEqual(expected.utm);
+    expect(event.custom).toEqual(expected.custom);
+
+    const token = new URL(
+      response.headers.get("Location") ?? "",
+    ).pathname.slice(1);
+    expect((await viewTicket(token)).status).toBe(200);
+    expect((await continueTicket(token)).status).toBe(200);
+    expect(await linkClickCount(link.id)).toBe(1);
+  });
+
   it("preserves direct delivery and one native count when no provider is enabled", async () => {
     const link = await createLink();
 
@@ -443,6 +610,7 @@ describe("isolated provider consent flow", () => {
     const response = await request(`/s/${link.slug}?skip_tracking=1`);
 
     expect(response.status).toBe(302);
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("Location")).toMatch(
       new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
     );
@@ -531,6 +699,19 @@ describe("isolated provider consent flow", () => {
     ).toBe(403);
     expect(
       (
+        await request("/s/continue", {
+          method: "POST",
+          headers: {
+            Origin: trackingOrigin,
+            "Content-Type": "text/plain",
+          },
+          body: `token=${token}`,
+        })
+      ).status,
+    ).toBe(400);
+    expect((await continueTicket("g".repeat(64))).status).toBe(400);
+    expect(
+      (
         await continueTicket(
           token,
           trackingOrigin,
@@ -553,6 +734,20 @@ describe("isolated provider consent flow", () => {
       .bind(await ticketHash(token))
       .first<{ consumed_at: string | null }>();
     expect(untouched?.consumed_at).toBeNull();
+  });
+
+  it("accepts one token in a form body at the exact 4 KiB limit", async () => {
+    const link = await createLink();
+    const token = await insertTicket(link);
+    const tokenField = `token=${token}`;
+    const body = `${tokenField}${"&".repeat(4096 - tokenField.length)}`;
+    expect(new TextEncoder().encode(body).byteLength).toBe(4096);
+
+    const response = await continueTicket(token, trackingOrigin, body);
+
+    expect(response.status).toBe(200);
+    expect(await linkClickCount(link.id)).toBe(0);
+    expect((await viewTicket(token)).status).toBe(404);
   });
 
   it("consumes before checking live Link availability and never redirects a revoked Link", async () => {
@@ -740,6 +935,7 @@ describe("isolated provider consent flow", () => {
     });
 
     expect(response.status).toBe(302);
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
     expect(response.headers.get("Location")).toMatch(
       new RegExp(`^${trackingOrigin}/[0-9a-f]{64}$`),
     );

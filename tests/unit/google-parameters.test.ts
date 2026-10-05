@@ -30,5 +30,26 @@ describe("GA4 custom parameter names", () => {
     expect(first).not.toContain(firstKey);
     expect(unicode).not.toContain(unicodeKey);
     expect(first).toHaveLength(39);
+    expect(first).toBe("ages_h_e33cdf9c7f7120b98e8c78408953e07f");
+    expect(unicode).toBe("ages_h_adecaf6b5aa50fe49d052aebca196811");
+  });
+
+  it("keeps distinct accepted lone-surrogate keys distinct", async () => {
+    const firstKey = String.fromCharCode(0xd800).repeat(40);
+    const secondKey = String.fromCharCode(0xd801).repeat(40);
+    const replacementCharacterKey = "�".repeat(40);
+
+    const [first, second, replacementCharacter] = await Promise.all([
+      googleCustomParameterName(firstKey),
+      googleCustomParameterName(secondKey),
+      googleCustomParameterName(replacementCharacterKey),
+    ]);
+
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(replacementCharacter);
+    expect(second).not.toBe(replacementCharacter);
+    expect(replacementCharacter).toBe(
+      "ages_h_410f108a5ad93d71d11b22648db29799",
+    );
   });
 });

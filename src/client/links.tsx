@@ -273,13 +273,17 @@ function LinkProviderSettings({
         </div>
       </div>
       <p className="field-help">
-        Choose which account providers may run for this Link. A GTM-routed
-        provider is also disabled when Google Tag Manager is turned off here.
+        Choose which account providers may run for this Link. Turning off Google
+        Tag Manager also disables its container and any GTM-routed GA4 or Meta
+        delivery. When allowed, the container loads only after consent and
+        receives ages_link_click, including when no GA4 or Meta ID is
+        configured. Ages-managed tags should also require their matching
+        eligibility flag; container-owned tags may use ages_link_click alone.
       </p>
       <p className="field-help">
         In GA4, turn off Enhanced Measurement so it does not send extra events.
-        Configure and publish GTM to fire only for the consented ages_link_click
-        event; these Link settings cannot change provider-side rules.
+        Review and publish your GTM container; these Link settings cannot change
+        its rules.
       </p>
       <p className="field-help">
         GA4 uses the custom parameter names shown beside each Link field.

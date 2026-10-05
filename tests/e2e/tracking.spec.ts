@@ -17,6 +17,19 @@ type VendorOptions = {
   destinationTarget?: string;
   failScripts?: boolean;
   holdScripts?: boolean;
+  referringPage?: { url: string; target: string };
+};
+
+type ContainerObservation = {
+  eligibilityKeys: string[];
+  eligibilityFields: {
+    ages_ga4_eligible: boolean;
+    ages_meta_pixel_eligible: boolean;
+  } | null;
+  clickEventCount: number;
+  dispatches: string[];
+  ownerTagTriggers: string[];
+  documentReferrer: string;
 };
 
 async function installNetworkStubs(
@@ -30,6 +43,8 @@ async function installNetworkStubs(
   const trackingCookieHeaders: string[] = [];
   const continuationOrigins: string[] = [];
   const vendorReferrers: string[] = [];
+  const vendorDocumentReferrers: string[] = [];
+  const containerRuns: ContainerObservation[] = [];
   let releaseScripts = () => {};
   const scriptsReleased = new Promise<void>((resolveScripts) => {
     releaseScripts = resolveScripts;
@@ -52,9 +67,31 @@ async function installNetworkStubs(
     )
       vendorReferrers.push(headers.referer ?? "");
   });
+  page.on("console", (message) => {
+    const text = message.text();
+    const referrerPrefix = "AGES_VENDOR_REFERRER:";
+    const containerPrefix = "AGES_GTM_STUB:";
+    if (text.startsWith(referrerPrefix))
+      vendorDocumentReferrers.push(
+        JSON.parse(text.slice(referrerPrefix.length)) as string,
+      );
+    if (text.startsWith(containerPrefix))
+      containerRuns.push(
+        JSON.parse(text.slice(containerPrefix.length)) as ContainerObservation,
+      );
+  });
 
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
+    if (options.referringPage?.url === url.href) {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        headers: { "Referrer-Policy": "unsafe-url" },
+        body: `<!doctype html><title>Referring page</title><a href="${options.referringPage.target}">Open shared Link</a>`,
+      });
+      return;
+    }
     const destination = options.destinationTarget
       ? new URL(options.destinationTarget)
       : null;
@@ -99,7 +136,30 @@ async function installNetworkStubs(
       await route.fulfill({
         status: 200,
         contentType: "application/javascript",
-        body: "window.__agesVendorStubLoaded = true;",
+        body: url.href.endsWith("/gtm.js?id=GTM-ABC123")
+          ? `(() => {
+  window.__agesVendorStubLoaded = true;
+  const entries = window.dataLayer || [];
+  const records = entries.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry));
+  const eligibility = records.find((entry) => entry.event === "ages_provider_eligibility");
+  const clickEventCount = records.filter((entry) => entry.event === "ages_link_click").length;
+  const dispatches = [];
+  if (clickEventCount === 1 && eligibility && eligibility.ages_ga4_eligible === true) dispatches.push("ga4");
+  if (clickEventCount === 1 && eligibility && eligibility.ages_meta_pixel_eligible === true) dispatches.push("meta");
+  const ownerTagTriggers = clickEventCount === 1 ? ["container-owned-event-tag"] : [];
+  console.log("AGES_GTM_STUB:" + JSON.stringify({
+    eligibilityKeys: eligibility ? Object.keys(eligibility).sort() : [],
+    eligibilityFields: eligibility ? {
+      ages_ga4_eligible: eligibility.ages_ga4_eligible,
+      ages_meta_pixel_eligible: eligibility.ages_meta_pixel_eligible
+    } : null,
+    clickEventCount,
+    dispatches,
+    ownerTagTriggers,
+    documentReferrer: document.referrer
+  }));
+})();`
+          : 'window.__agesVendorStubLoaded = true; console.log("AGES_VENDOR_REFERRER:" + JSON.stringify(document.referrer));',
       });
       return;
     }
@@ -119,6 +179,8 @@ async function installNetworkStubs(
     trackingCookieHeaders,
     continuationOrigins,
     vendorReferrers,
+    vendorDocumentReferrers,
+    containerRuns,
     unexpected,
     releaseScripts,
   };
@@ -157,7 +219,7 @@ function queueSnapshot(page: import("@playwright/test").Page) {
 
 test("account settings explain GA4 and GTM provider-side event controls", async ({
   page,
-}) => {
+}, testInfo) => {
   await seedLibrary(page.context());
   await page.goto(`${e2eOrigin}/settings/tracking`);
 
@@ -165,8 +227,35 @@ test("account settings explain GA4 and GTM provider-side event controls", async 
     page.getByText(/turn off Enhanced Measurement in the property settings/i),
   ).toBeVisible();
   await expect(
-    page.getByText(/configure and publish the container so tags fire only/i),
+    page.getByText(
+      /Configure Ages-managed tags to fire on the Custom Event ages_link_click/i,
+    ),
   ).toBeVisible();
+  await expect(
+    page.getByText(
+      /Data Layer Variable ages_ga4_eligible to equal true for GA4/i,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /Data Layer Variable ages_meta_pixel_eligible to equal true for Meta/i,
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText(/flag is true only when that provider has a saved ID/i),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /Container-owned tags may use ages_link_click without these flags/i,
+    ),
+  ).toBeVisible();
+  await page.screenshot({
+    path: resolve(
+      artifactDirectory,
+      `tracking-settings-instructions-${testInfo.project.name}.png`,
+    ),
+    fullPage: true,
+  });
 });
 
 test("direct providers strip ticket data and send one fixed event only after consent", async ({
@@ -187,7 +276,11 @@ test("direct providers strip ticket data and send one fixed event only after con
     page.getByRole("heading", { name: "Before you continue" }),
   ).toBeVisible();
   const providers = page.getByRole("listitem");
-  await expect(providers).toHaveText(["Google Analytics 4", "Meta Pixel"]);
+  await expect(providers).toHaveText([
+    "Google Analytics 4",
+    "Meta Pixel",
+    "Google Tag Manager",
+  ]);
   const consentCopy = await page.locator("main").innerText();
   expect(consentCopy).not.toContain("G-ABC123");
   expect(consentCopy).not.toContain("1234567890");
@@ -202,7 +295,7 @@ test("direct providers strip ticket data and send one fixed event only after con
   expect(vendors.requests).toEqual([]);
   await expect(page.locator('input[name="token"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Allow optional analytics" }).click();
-  await expect.poll(() => vendors.requests.length).toBe(2);
+  await expect.poll(() => vendors.requests.length).toBe(3);
 
   const snapshot = await queueSnapshot(page);
   const googleEvents = snapshot.googleCalls.filter(
@@ -268,10 +361,16 @@ test("direct providers strip ticket data and send one fixed event only after con
   expect(vendors.requests).toEqual([
     "https://www.googletagmanager.com/gtag/js?id=G-ABC123",
     "https://connect.facebook.net/en_US/fbevents.js",
+    "https://www.googletagmanager.com/gtm.js?id=GTM-ABC123",
   ]);
   expect(vendors.unexpected).toEqual([]);
-  expect(vendors.vendorReferrers).toEqual(["", ""]);
+  expect(vendors.vendorReferrers).toEqual(["", "", ""]);
   vendors.releaseScripts();
+  await expect.poll(() => vendors.containerRuns.length).toBe(1);
+  expect(vendors.containerRuns[0]?.dispatches).toEqual([]);
+  expect(vendors.containerRuns[0]?.ownerTagTriggers).toEqual([
+    "container-owned-event-tag",
+  ]);
   await expect
     .poll(() => vendors.continuationOrigins.length)
     .toBeGreaterThan(0);
@@ -286,6 +385,33 @@ test("direct providers strip ticket data and send one fixed event only after con
   expect(new URL(page.url()).searchParams.get("utm_source")).toBe("ages");
   expect(vendors.destinationRequests).toHaveLength(1);
   expect(vendors.destinationReferrers).toEqual([""]);
+});
+
+test("the app-to-tracking redirect hides the referring document from provider code", async ({
+  page,
+}) => {
+  const { owner } = await seedLibrary(page.context());
+  const link = seedProviderLink(owner, "direct", localDestination);
+  const referringPage = {
+    url: `${e2eOrigin}/synthetic-referrer?private=synthetic-secret`,
+    target: `${e2eOrigin}/s/${link.slug}`,
+  };
+  const vendors = await installNetworkStubs(page, {
+    destinationTarget: localDestination,
+    referringPage,
+  });
+
+  await page.goto(referringPage.url);
+  await page.getByRole("link", { name: "Open shared Link" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Before you continue" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Allow optional analytics" }).click();
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  expect(vendors.vendorDocumentReferrers).toEqual(["", ""]);
+  expect(vendors.containerRuns).toHaveLength(1);
+  expect(vendors.containerRuns[0]?.documentReferrer).toBe("");
+  expect(vendors.unexpected).toEqual([]);
 });
 
 test("GTM routing loads one container and emits one bounded dataLayer event", async ({
@@ -312,6 +438,17 @@ test("GTM routing loads one container and emits one bounded dataLayer event", as
       typeof call === "object" &&
       (call as { event?: string }).event === "ages_link_click",
   ) as Record<string, unknown>[];
+  const eligibility = snapshot.googleCalls.find(
+    (call) =>
+      call &&
+      typeof call === "object" &&
+      (call as { event?: string }).event === "ages_provider_eligibility",
+  );
+  expect(eligibility).toEqual({
+    event: "ages_provider_eligibility",
+    ages_ga4_eligible: true,
+    ages_meta_pixel_eligible: true,
+  });
   expect(gtmEvents).toHaveLength(1);
   expect(gtmEvents[0]).toMatchObject({
     link_id: expect.stringMatching(/^ln_/),
@@ -330,6 +467,11 @@ test("GTM routing loads one container and emits one bounded dataLayer event", as
   expect(vendors.unexpected).toEqual([]);
   expect(vendors.vendorReferrers).toEqual([""]);
   vendors.releaseScripts();
+  await expect.poll(() => vendors.containerRuns.length).toBe(1);
+  expect(vendors.containerRuns[0]?.dispatches).toEqual(["ga4", "meta"]);
+  expect(vendors.containerRuns[0]?.ownerTagTriggers).toEqual([
+    "container-owned-event-tag",
+  ]);
   await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
   await expect(
     page.getByRole("heading", { name: "External fixture reached" }),
@@ -340,6 +482,183 @@ test("GTM routing loads one container and emits one bounded dataLayer event", as
   expect(new URL(page.url()).searchParams.get("utm_source")).toBe("ages");
   expect(vendors.destinationRequests).toHaveLength(1);
   expect(vendors.destinationReferrers).toEqual([""]);
+});
+
+test("standalone GTM loads and emits only after consent, while skip sends no provider request", async ({
+  page,
+}) => {
+  const { owner } = await seedLibrary(page.context());
+  const target = localDestination;
+  const link = seedProviderLink(owner, "direct", target, {
+    ga4: false,
+    meta: false,
+  });
+  const vendors = await installNetworkStubs(page, {
+    destinationTarget: target,
+    holdScripts: true,
+  });
+
+  await page.goto(`${e2eOrigin}/s/${link.slug}`);
+  expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
+  await expect(page.getByRole("listitem")).toHaveText(["Google Tag Manager"]);
+  expect(vendors.requests).toEqual([]);
+  await page.getByRole("button", { name: "Allow optional analytics" }).click();
+  await expect.poll(() => vendors.requests.length).toBe(1);
+  const snapshot = await queueSnapshot(page);
+  const clickEvents = snapshot.googleCalls.filter(
+    (call) =>
+      call &&
+      typeof call === "object" &&
+      (call as { event?: string }).event === "ages_link_click",
+  ) as Record<string, unknown>[];
+  expect(clickEvents).toHaveLength(1);
+  expect(clickEvents[0]?.ages_custom).toEqual(
+    expect.arrayContaining([{ key: "send_to", value: "G-ATTACKER1" }]),
+  );
+  expect(snapshot.googleCalls).toContainEqual({
+    event: "ages_provider_eligibility",
+    ages_ga4_eligible: false,
+    ages_meta_pixel_eligible: false,
+  });
+  expect(vendors.requests).toEqual([
+    "https://www.googletagmanager.com/gtm.js?id=GTM-ABC123",
+  ]);
+  vendors.releaseScripts();
+  await expect.poll(() => vendors.containerRuns.length).toBe(1);
+  expect(vendors.containerRuns[0]?.clickEventCount).toBe(1);
+  expect(vendors.containerRuns[0]?.dispatches).toEqual([]);
+  expect(vendors.containerRuns[0]?.ownerTagTriggers).toEqual([
+    "container-owned-event-tag",
+  ]);
+  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+
+  const skippedPage = await page.context().newPage();
+  const skippedLink = seedProviderLink(owner, "direct", target, {
+    ga4: false,
+    meta: false,
+  });
+  const skipped = await installNetworkStubs(skippedPage, {
+    destinationTarget: target,
+  });
+  await skippedPage.goto(`${e2eOrigin}/s/${skippedLink.slug}`);
+  await skippedPage
+    .getByRole("button", { name: "Continue without analytics" })
+    .click();
+  await expect(skippedPage).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  expect(skipped.requests).toEqual([]);
+  expect(skipped.containerRuns).toEqual([]);
+  await skippedPage.close();
+});
+
+test("GTM provider tags follow bounded per-Link eligibility in mixed routes", async ({
+  page,
+}) => {
+  const { owner } = await seedLibrary(page.context());
+  const scenarios = [
+    {
+      name: "both providers routed through GTM",
+      route: "gtm" as const,
+      options: {},
+      eligible: { ga4: true, meta: true },
+      dispatches: ["ga4", "meta"],
+      directGa4: false,
+    },
+    {
+      name: "GA4 opted out for this Link",
+      route: "gtm" as const,
+      options: { allowGa4: false },
+      eligible: { ga4: false, meta: true },
+      dispatches: ["meta"],
+      directGa4: false,
+    },
+    {
+      name: "Meta opted out for this Link",
+      route: "gtm" as const,
+      options: { allowMeta: false },
+      eligible: { ga4: true, meta: false },
+      dispatches: ["ga4"],
+      directGa4: false,
+    },
+    {
+      name: "direct GA4 and GTM Meta",
+      route: "direct" as const,
+      options: { metaRoute: "gtm" as const },
+      eligible: { ga4: false, meta: true },
+      dispatches: ["meta"],
+      directGa4: true,
+    },
+  ];
+
+  for (const [index, scenario] of scenarios.entries()) {
+    const scenarioPage = index === 0 ? page : await page.context().newPage();
+    const link = seedProviderLink(
+      owner,
+      scenario.route,
+      localDestination,
+      scenario.options,
+    );
+    const vendors = await installNetworkStubs(scenarioPage, {
+      destinationTarget: localDestination,
+      holdScripts: true,
+    });
+
+    await scenarioPage.goto(`${e2eOrigin}/s/${link.slug}`);
+    expect(vendors.requests).toEqual([]);
+    await scenarioPage
+      .getByRole("button", { name: "Allow optional analytics" })
+      .click();
+    await expect
+      .poll(() => vendors.requests.length)
+      .toBe(scenario.directGa4 ? 2 : 1);
+
+    const snapshot = await queueSnapshot(scenarioPage);
+    const eligibility = snapshot.googleCalls.find(
+      (call) =>
+        call &&
+        typeof call === "object" &&
+        (call as { event?: string }).event === "ages_provider_eligibility",
+    );
+    expect(eligibility).toEqual({
+      event: "ages_provider_eligibility",
+      ages_ga4_eligible: scenario.eligible.ga4,
+      ages_meta_pixel_eligible: scenario.eligible.meta,
+    });
+    const clickEvents = snapshot.googleCalls.filter(
+      (call) =>
+        call &&
+        typeof call === "object" &&
+        (call as { event?: string }).event === "ages_link_click",
+    ) as Record<string, unknown>[];
+    expect(clickEvents).toHaveLength(1);
+    expect(clickEvents[0]?.ages_custom).toEqual(
+      expect.arrayContaining([{ key: "event", value: "attacker_route" }]),
+    );
+    expect(Object.keys(eligibility as Record<string, unknown>).sort()).toEqual([
+      "ages_ga4_eligible",
+      "ages_meta_pixel_eligible",
+      "event",
+    ]);
+    const directEvents = snapshot.googleCalls.filter(
+      (call) =>
+        Array.isArray(call) &&
+        call[0] === "event" &&
+        call[1] === "ages_link_click",
+    );
+    expect(directEvents).toHaveLength(scenario.directGa4 ? 1 : 0);
+
+    vendors.releaseScripts();
+    await expect.poll(() => vendors.containerRuns.length).toBe(1);
+    expect(vendors.containerRuns[0]?.eligibilityFields).toEqual({
+      ages_ga4_eligible: scenario.eligible.ga4,
+      ages_meta_pixel_eligible: scenario.eligible.meta,
+    });
+    expect(vendors.containerRuns[0]?.dispatches).toEqual(scenario.dispatches);
+    expect(vendors.containerRuns[0]?.ownerTagTriggers).toEqual([
+      "container-owned-event-tag",
+    ]);
+    await expect(scenarioPage).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+    if (scenarioPage !== page) await scenarioPage.close();
+  }
 });
 
 test("skip and unanswered consent continue without requesting provider code", async ({

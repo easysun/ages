@@ -257,9 +257,16 @@ linkResolver.post("/continue", async (context) => {
   )
     throw new ApiError("INVALID_REQUEST");
 
-  const body = await context.req.text();
-  if (new TextEncoder().encode(body).byteLength > 4096)
-    throw new ApiError("PAYLOAD_TOO_LARGE");
+  const bodyBytes = await context.req.arrayBuffer();
+  if (bodyBytes.byteLength > 4096) throw new ApiError("PAYLOAD_TOO_LARGE");
+  let body: string;
+  try {
+    body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
+      bodyBytes,
+    );
+  } catch {
+    throw new ApiError("INVALID_REQUEST");
+  }
   const fields = [...new URLSearchParams(body)];
   if (
     fields.length !== 1 ||
@@ -366,7 +373,11 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
         row.id,
         row.owner_id,
       );
-      if (providers.ga4 !== null || providers.meta !== null) {
+      if (
+        providers.ga4 !== null ||
+        providers.meta !== null ||
+        providers.gtm !== null
+      ) {
         try {
           const trackingOrigin = appTrackingOrigin(context.env);
           const ticket = await createTrackingTicket(
@@ -384,6 +395,7 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
             row,
             clickSource(context.req.raw, new Date(), tracking.channels),
           );
+          context.header("Referrer-Policy", "no-referrer");
           return context.redirect(`${trackingOrigin}/${ticket.token}`, 302);
         } catch (error) {
           try {
@@ -441,7 +453,11 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
       row.id,
       row.owner_id,
     );
-    if (providers.ga4 !== null || providers.meta !== null) {
+    if (
+      providers.ga4 !== null ||
+      providers.meta !== null ||
+      providers.gtm !== null
+    ) {
       const trackingOrigin = appTrackingOrigin(context.env);
       const ticket = await createTrackingTicket(
         context.env.DB,
@@ -456,6 +472,7 @@ linkResolver.on(["GET", "HEAD"], "/:slug", async (context) => {
         row,
         clickSource(context.req.raw, new Date(), tracking.channels),
       );
+      context.header("Referrer-Policy", "no-referrer");
       return context.redirect(`${trackingOrigin}/${ticket.token}`, 302);
     }
     await recordLinkClick(

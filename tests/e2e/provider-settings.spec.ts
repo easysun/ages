@@ -76,9 +76,17 @@ test("provider settings and Link opt-outs persist across refresh", async ({
 
   await page.goto("/links");
   await page.getByRole("button", { name: `Select ${link.slug}` }).click();
+  await expect(
+    page.getByText(
+      /Turning off Google Tag Manager also disables its container and any GTM-routed/i,
+    ),
+  ).toBeVisible();
   const ga4OptIn = page.getByLabel("Allow Google Analytics 4");
   await expect(ga4OptIn).toBeChecked();
   await ga4OptIn.uncheck();
+  const gtmOptIn = page.getByLabel("Allow Google Tag Manager");
+  await expect(gtmOptIn).toBeChecked();
+  await gtmOptIn.uncheck();
   await page.getByRole("button", { name: "Save provider choices" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "Provider choices saved" }),
@@ -87,10 +95,12 @@ test("provider settings and Link opt-outs persist across refresh", async ({
   await page.reload();
   await page.getByRole("button", { name: `Select ${link.slug}` }).click();
   await expect(page.getByLabel("Allow Google Analytics 4")).not.toBeChecked();
-  await page.screenshot({
-    path: `test-results/link-provider-choices-${test.info().project.name}.png`,
-    fullPage: true,
-  });
+  await expect(page.getByLabel("Allow Google Tag Manager")).not.toBeChecked();
+  await page
+    .getByRole("region", { name: "Link tracking providers" })
+    .screenshot({
+      path: `test-results/link-provider-choices-${test.info().project.name}.png`,
+    });
 });
 
 test("ordinary provider save failure keeps the editable draft", async ({
