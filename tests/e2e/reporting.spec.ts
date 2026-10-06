@@ -20,6 +20,8 @@ async function selectCategory(page: Page, category = "spam") {
   await page.getByLabel("Category", { exact: true }).selectOption(category);
 }
 
+type ErrorBodyFormat = "json" | "empty" | "html" | "null";
+
 test("timeline footer opens the report form and shows a neutral receipt", async ({
   page,
   context,
@@ -234,10 +236,20 @@ test("401 clears report text while retryable failures keep it", async ({
 }) => {
   const { id } = await visibleTimeline(context);
   let status = 401;
+  let errorBodyFormat: ErrorBodyFormat = "json";
   let reportPosts = 0;
   await page.route("**/api/reports", async (route) => {
     reportPosts++;
     if (status === 0) return route.abort("failed");
+    if (errorBodyFormat === "empty") return route.fulfill({ status, body: "" });
+    if (errorBodyFormat === "html")
+      return route.fulfill({
+        status,
+        contentType: "text/html",
+        body: "<!doctype html><title>Access denied</title>",
+      });
+    if (errorBodyFormat === "null")
+      return route.fulfill({ status, json: null });
     const code =
       status === 401
         ? "UNAUTHENTICATED"
@@ -251,15 +263,33 @@ test("401 clears report text while retryable failures keep it", async ({
       json: { error: { code, message: "Please try again." } },
     });
   });
-  for (const failure of [401, 403, 429, 503, 0]) {
-    status = failure;
+  const failures: { status: number; format: ErrorBodyFormat }[] = [
+    { status: 401, format: "json" },
+    { status: 403, format: "json" },
+    { status: 401, format: "empty" },
+    { status: 403, format: "empty" },
+    { status: 401, format: "html" },
+    { status: 403, format: "html" },
+    { status: 401, format: "null" },
+    { status: 403, format: "null" },
+    { status: 429, format: "json" },
+    { status: 503, format: "json" },
+    { status: 0, format: "json" },
+  ];
+  for (const failure of failures) {
+    status = failure.status;
+    errorBodyFormat = failure.format;
     await page.goto(`/report?kind=timeline&timeline_id=${id}`);
     await selectCategory(page);
+    const linkDraft = `${e2eOrigin}/s/report-draft-123?retry=${failure.status}#private`;
+    await page
+      .getByLabel("Ages Link URL or slug", { exact: true })
+      .fill(linkDraft);
     await page
       .getByLabel("Report details (optional)", { exact: true })
       .fill("Sensitive draft");
     await page.getByRole("button", { name: "Submit report" }).click();
-    if (failure === 401 || failure === 403) {
+    if (failure.status === 401 || failure.status === 403) {
       await expect(
         page.getByRole("link", { name: "Continue with Google", exact: true }),
       ).toBeVisible();
@@ -267,6 +297,9 @@ test("401 clears report text while retryable failures keep it", async ({
       await expect(
         page.getByLabel("Report details (optional)", { exact: true }),
       ).toHaveCount(0);
+      await expect(
+        page.getByLabel("Ages Link URL or slug", { exact: true }),
+      ).toHaveValue("");
       await expect(page).toHaveURL(
         `${e2eOrigin}/report?kind=timeline&timeline_id=${id}`,
       );
@@ -278,6 +311,9 @@ test("401 clears report text while retryable failures keep it", async ({
       await expect(
         page.getByLabel("Report details (optional)", { exact: true }),
       ).toHaveValue("Sensitive draft");
+      await expect(
+        page.getByLabel("Ages Link URL or slug", { exact: true }),
+      ).toHaveValue(linkDraft);
     }
     const requestsAtResponse = reportPosts;
     await page.waitForTimeout(250);
@@ -300,14 +336,26 @@ test("target switches, logout and stale authorization cannot restore report deta
   const { owner, id } = await visibleTimeline(context);
   const { slug } = seedProviderLink(owner);
   let status = 200;
+  let errorBodyFormat: ErrorBodyFormat = "json";
   let gate = responseGate();
   let started = responseGate();
   await page.route("**/api/reports", async (route) => {
     const requestGate = gate;
     const requestStarted = started;
     const requestStatus = status;
+    const requestBodyFormat = errorBodyFormat;
     requestStarted.release();
     await requestGate.promise;
+    if (requestStatus !== 200 && requestBodyFormat === "empty")
+      return route.fulfill({ status: requestStatus, body: "" });
+    if (requestStatus !== 200 && requestBodyFormat === "html")
+      return route.fulfill({
+        status: requestStatus,
+        contentType: "text/html",
+        body: "<!doctype html><title>Access denied</title>",
+      });
+    if (requestStatus !== 200 && requestBodyFormat === "null")
+      return route.fulfill({ status: requestStatus, json: null });
     const body =
       requestStatus === 200
         ? { report: { id: "rp_delayed", status: "received" } }
@@ -357,8 +405,13 @@ test("target switches, logout and stale authorization cannot restore report deta
     }),
   ).toHaveCount(0);
 
-  for (const authorizationStatus of [401, 403]) {
+  for (const authorizationFailure of [
+    { status: 401, format: "empty" as const },
+    { status: 403, format: "html" as const },
+  ]) {
+    const authorizationStatus = authorizationFailure.status;
     status = authorizationStatus;
+    errorBodyFormat = authorizationFailure.format;
     gate = responseGate();
     started = responseGate();
     await page.goto(`/report?kind=timeline&timeline_id=${id}`);
