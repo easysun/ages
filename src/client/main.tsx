@@ -14,6 +14,7 @@ import {
 import { AssetDetails } from "./details";
 import { LinksScreen } from "./links";
 import { ModerationScreen } from "./moderation";
+import { ReporterScreen } from "./reporter";
 import { TimelineScreen } from "./timelines";
 import { TrackingSettingsScreen } from "./tracking-settings";
 import { type UploadJob, uploadFile } from "./upload";
@@ -37,6 +38,7 @@ function App() {
   const [error, setError] = useState("");
   const [profileRequest, setProfileRequest] = useState({ path: "/api/me" });
   const authGeneration = useRef(0);
+  const [authGenerationRevision, setAuthGenerationRevision] = useState(0);
   const [path, setPath] = useState(window.location.pathname);
   useEffect(() => {
     const popped = () => setPath(window.location.pathname);
@@ -79,6 +81,7 @@ function App() {
   }, [profileRequest]);
   async function logout() {
     authGeneration.current++;
+    setAuthGenerationRevision(authGeneration.current);
     try {
       const response = await fetch("/auth/logout", {
         method: "POST",
@@ -90,7 +93,7 @@ function App() {
       setError("Sign out could not be completed. Please try again.");
     }
   }
-  const generation = authGeneration.current;
+  const generation = authGenerationRevision;
   return (
     <>
       <a className="skip-link" href="#main">
@@ -171,7 +174,9 @@ function App() {
           </button>
         </main>
       ) : profile ? (
-        path === "/admin/reports" ? (
+        path === "/report" ? (
+          <ReporterScreen authenticated authGeneration={generation} />
+        ) : path === "/admin/reports" ? (
           profile.user.plan === "admin" ? (
             <ModerationScreen />
           ) : (
@@ -208,6 +213,8 @@ function App() {
             </a>
           </main>
         )
+      ) : path === "/report" ? (
+        <ReporterScreen authenticated={false} authGeneration={generation} />
       ) : (
         <Landing />
       )}
@@ -233,6 +240,9 @@ function Landing() {
         <p className="privacy-copy">
           Your library starts private. Your memories stay yours.
         </p>
+        <a className="landing-report-link" href="/report">
+          Report an Ages Link
+        </a>
       </div>
       <div className="landing-art" aria-hidden="true">
         <div className="paper paper-one">

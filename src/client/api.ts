@@ -75,6 +75,18 @@ export type ReportPage = {
   }[];
   next_cursor: string | null;
 };
+export type ReportTarget =
+  | { kind: "timeline"; timeline_id: string }
+  | { kind: "link"; slug: string };
+export type ReportCategory =
+  | "spam"
+  | "abuse"
+  | "copyright"
+  | "illegal"
+  | "other";
+export type ReportReceipt = {
+  report: { id: string; status: "received" };
+};
 export type UploadIntent = {
   asset: Omit<LibraryAsset, "tags">;
   upload: {

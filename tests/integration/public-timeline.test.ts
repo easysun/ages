@@ -100,7 +100,9 @@ async function item(
 async function unavailable(response: Response) {
   expect(response.status).toBe(404);
   expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-  expect(await response.text()).not.toMatch(
+  const body = await response.text();
+  expect(body).not.toMatch(/Report this Timeline|Report an Ages Link|\/report/);
+  expect(body).not.toMatch(
     /A secret|synthetic|originals|r2_key|owner_a|og:image|og:title/,
   );
 }
@@ -160,6 +162,21 @@ describe("Canonical public timeline SSR", () => {
       expect(await response.text()).toContain(
         `<meta name="robots" content="${robots}">`,
       );
+    },
+  );
+
+  it.each(["unlisted", "public"] as const)(
+    "offers both reporting links for a visible %s timeline with an encoded identifier",
+    async (visibility) => {
+      const id = "story&memory";
+      await timeline(id, visibility);
+      const response = await request(`/t/${encodeURIComponent(id)}`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain(
+        `href="/report?kind=timeline&amp;timeline_id=${encodeURIComponent(id)}">Report this Timeline</a>`,
+      );
+      expect(html).toContain('href="/report">Report an Ages Link</a>');
     },
   );
 

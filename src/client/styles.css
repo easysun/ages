@@ -2216,3 +2216,140 @@ progress::-moz-progress-bar {
     padding: 16px;
   }
 }
+.landing-report-link {
+  display: inline-block;
+  color: var(--green);
+  font-size: 13px;
+  text-underline-offset: 4px;
+}
+.reporter-page {
+  width: min(640px, calc(100% - 40px));
+  min-width: 0;
+  margin: 0 auto;
+  padding: 56px 0 72px;
+  display: grid;
+  gap: 24px;
+}
+.reporter-intro,
+.reporter-link-form,
+.reporter-target,
+.reporter-auth,
+.reporter-form {
+  min-width: 0;
+}
+.reporter-intro h1 {
+  margin: 12px 0;
+  font: 400 clamp(36px, 6vw, 52px) / 1.1 var(--serif);
+  letter-spacing: -1.3px;
+  overflow-wrap: anywhere;
+}
+#main .reporter-intro > p:last-child,
+#main .reporter-auth > p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.reporter-link-form,
+.reporter-target,
+.reporter-auth,
+.reporter-form {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+.reporter-link-form,
+.reporter-form {
+  display: grid;
+  gap: 12px;
+}
+#main .reporter-page label,
+#main .reporter-target h2,
+#main .reporter-auth h2 {
+  font-size: 14px;
+  font-weight: 700;
+}
+.reporter-page input,
+.reporter-page select,
+.reporter-page textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #adb7a9;
+  border-radius: 5px;
+  color: var(--ink);
+  background: #fffefb;
+  font: inherit;
+}
+.reporter-page textarea {
+  min-height: 132px;
+  resize: vertical;
+}
+.reporter-link-row {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  min-width: 0;
+}
+.reporter-link-row input {
+  flex: 1 1 auto;
+}
+#main .reporter-link-row .button {
+  flex: 0 0 auto;
+  white-space: normal;
+}
+.reporter-help {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+#main .reporter-target h2,
+#main .reporter-auth h2 {
+  margin-bottom: 10px;
+}
+#main .reporter-target p {
+  overflow-wrap: anywhere;
+}
+#main .reporter-auth > p {
+  margin-bottom: 18px;
+}
+#main .reporter-auth .button {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.reporter-message {
+  color: var(--green);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.reporter-message.error {
+  color: #873b31;
+}
+#main .reporter-form > .button {
+  justify-self: start;
+  margin-top: 4px;
+}
+@media (max-width: 650px) {
+  .reporter-page {
+    width: calc(100% - 32px);
+    padding: 38px 0 52px;
+    gap: 18px;
+  }
+  .reporter-link-form,
+  .reporter-target,
+  .reporter-auth,
+  .reporter-form {
+    padding: 18px;
+  }
+  .reporter-link-row {
+    flex-direction: column;
+  }
+  #main .reporter-link-row .button,
+  #main .reporter-form > .button,
+  #main .reporter-auth .button {
+    width: 100%;
+  }
+}

@@ -32,6 +32,11 @@ export function renderTimeline(
 ) {
   const path = `/t/${encodeURIComponent(timeline.id)}`;
   const canonical = `${origin}${path}`;
+  const reportQuery = new URLSearchParams({
+    kind: "timeline",
+    timeline_id: timeline.id,
+  });
+  const reportPath = `/report?${reportQuery.toString()}`;
   const mediaUrl = (id: string) => `${path}/media/${encodeURIComponent(id)}`;
   const robots =
     timeline.visibility === "unlisted" ? "noindex, nofollow" : "index, follow";
@@ -85,7 +90,7 @@ figure audio{width:100%; display:block}figcaption{padding:1.25rem; overflow-wrap
 ${cover ? html`<div class="cover">${displayMedia(cover.id, cover.kind, timeline.title)}</div>` : null}</header>
 <main aria-label="Timeline moments">
 ${items.length ? html`<ol>${items.map((item) => html`<li><figure>${displayMedia(item.asset_id, item.kind, item.caption)}<figcaption>${eventLabel(item.event_at)}${item.caption ? html`<p class="caption">${item.caption}</p>` : null}</figcaption></figure></li>`)}</ol>` : html`<p>This story is waiting for its first moment.</p>`}
-</main><footer>A story to keep adding to.</footer>
+</main><footer><p>A story to keep adding to.</p><nav aria-label="Reporting"><a href="${reportPath}">Report this Timeline</a> <a href="/report">Report an Ages Link</a></nav></footer>
 </body>
 </html>`;
 }
