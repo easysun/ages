@@ -2,7 +2,9 @@ import type { Context } from "hono";
 import type { AppContext, Bindings } from "../bindings";
 import { ApiError } from "../http/errors";
 
-export function appOrigin(bindings: Bindings): string {
+export function appOrigin(
+  bindings: Pick<Bindings, "APP_ENV" | "APP_ORIGIN">,
+): string {
   let url: URL;
   try {
     url = new URL(bindings.APP_ORIGIN ?? "");

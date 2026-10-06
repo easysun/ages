@@ -5,11 +5,13 @@ import {
   useRef,
   useState,
 } from "react";
+import { googleCustomParameterName } from "../tracking/google-parameters";
 import {
   api,
   errorMessage,
   jsonBody,
   type LinkTracking,
+  type LinkTrackingProviders,
   type LinkTrackingReport,
   type OwnerLink,
   type OwnerLinkPage,
@@ -91,6 +93,281 @@ function isAuthorizationFailure(reason: unknown): reason is RequestError {
   );
 }
 
+const enabledLinkProviders: LinkTrackingProviders = {
+  allow_ga4: true,
+  allow_meta_pixel: true,
+  allow_gtm: true,
+};
+
+function LinkProviderSettings({
+  linkId,
+  linkSlug,
+  authGeneration,
+  onAuthorizationFailure,
+}: {
+  linkId: string;
+  linkSlug: string;
+  authGeneration: number;
+  onAuthorizationFailure: (reason: unknown) => boolean;
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(enabledLinkProviders);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [retry, setRetry] = useState(0);
+  const mounted = useRef(false);
+  const authGenerationRef = useRef(authGeneration);
+  const requestGeneration = useRef(0);
+  const activeRequests = useRef(new Set<AbortController>());
+
+  const newController = useCallback(() => {
+    const controller = new AbortController();
+    activeRequests.current.add(controller);
+    return controller;
+  }, []);
+
+  const finishController = useCallback((controller: AbortController) => {
+    activeRequests.current.delete(controller);
+  }, []);
+
+  const clearDraft = useCallback(() => {
+    requestGeneration.current++;
+    for (const controller of activeRequests.current) controller.abort();
+    activeRequests.current.clear();
+    setDraft({ ...enabledLinkProviders });
+    setLoading(false);
+    setSaving(false);
+    setLoadError("");
+    setSaveError("");
+    setNotice("");
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      requestGeneration.current++;
+      for (const controller of activeRequests.current) controller.abort();
+      activeRequests.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (authGenerationRef.current !== authGeneration) {
+      authGenerationRef.current = authGeneration;
+      clearDraft();
+    }
+  }, [authGeneration, clearDraft]);
+
+  // Retry state intentionally triggers a fresh provider settings read.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retry intentionally triggers a fresh provider read.
+  useEffect(() => {
+    const currentRequest = ++requestGeneration.current;
+    const controller = newController();
+    setLoading(true);
+    setLoadError("");
+    api<{ providers: LinkTrackingProviders }>(
+      `/api/links/${encodeURIComponent(linkId)}/tracking/providers`,
+      { signal: controller.signal },
+    )
+      .then(({ providers }) => {
+        if (
+          !controller.signal.aborted &&
+          mounted.current &&
+          currentRequest === requestGeneration.current &&
+          authGenerationRef.current === authGeneration
+        ) {
+          setDraft(providers);
+          setLoading(false);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (
+          controller.signal.aborted ||
+          !mounted.current ||
+          currentRequest !== requestGeneration.current ||
+          authGenerationRef.current !== authGeneration
+        )
+          return;
+        if (onAuthorizationFailure(reason)) {
+          clearDraft();
+          return;
+        }
+        setLoadError(errorMessage(reason));
+        setLoading(false);
+      })
+      .finally(() => finishController(controller));
+  }, [
+    linkId,
+    authGeneration,
+    retry,
+    newController,
+    finishController,
+    clearDraft,
+    onAuthorizationFailure,
+  ]);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (loading || saving || loadError) return;
+    const currentRequest = requestGeneration.current;
+    const controller = newController();
+    setSaving(true);
+    setSaveError("");
+    setNotice("");
+    try {
+      const result = await api<{ providers: LinkTrackingProviders }>(
+        `/api/links/${encodeURIComponent(linkId)}/tracking/providers`,
+        {
+          method: "PUT",
+          ...jsonBody(draft),
+          signal: controller.signal,
+        },
+      );
+      if (
+        !controller.signal.aborted &&
+        mounted.current &&
+        currentRequest === requestGeneration.current &&
+        authGenerationRef.current === authGeneration
+      ) {
+        setDraft(result.providers);
+        setNotice(`Provider choices saved for ${linkSlug}.`);
+      }
+    } catch (reason) {
+      if (
+        controller.signal.aborted ||
+        !mounted.current ||
+        currentRequest !== requestGeneration.current ||
+        authGenerationRef.current !== authGeneration
+      )
+        return;
+      if (onAuthorizationFailure(reason)) {
+        clearDraft();
+        return;
+      }
+      setSaveError(
+        `Provider choices could not be saved. ${errorMessage(reason)}`,
+      );
+    } finally {
+      finishController(controller);
+      if (
+        mounted.current &&
+        currentRequest === requestGeneration.current &&
+        authGenerationRef.current === authGeneration
+      )
+        setSaving(false);
+    }
+  }
+
+  return (
+    <section
+      className="tracking-settings-card link-provider-settings-card"
+      aria-label="Link tracking providers"
+    >
+      <div className="tracking-settings-heading">
+        <div>
+          <p className="eyebrow">Privacy choices</p>
+          <h2>Tracking providers</h2>
+        </div>
+      </div>
+      <p className="field-help">
+        Choose which account providers may run for this Link. Turning off Google
+        Tag Manager also disables its container and any GTM-routed GA4 or Meta
+        delivery. When allowed, the container loads only after consent and
+        receives ages_link_click, including when no GA4 or Meta ID is
+        configured. Ages-managed tags should also require their matching
+        eligibility flag; container-owned tags may use ages_link_click alone.
+      </p>
+      <p className="field-help">
+        In GA4, turn off Enhanced Measurement so it does not send extra events.
+        Review and publish your GTM container; these Link settings cannot change
+        its rules.
+      </p>
+      <p className="field-help">
+        GA4 uses the custom parameter names shown beside each Link field.
+        Register those names as event-scoped custom dimensions to report their
+        literal values.
+      </p>
+      {loading ? <p role="status">Loading provider choices…</p> : null}
+      {loadError ? (
+        <div className="error" role="alert">
+          Provider choices could not be loaded. {loadError}
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => setRetry((current) => current + 1)}
+          >
+            Retry provider choices
+          </button>
+        </div>
+      ) : null}
+      {saveError ? (
+        <p className="error" role="alert">
+          {saveError}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="link-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+      <form className="link-provider-form" onSubmit={save}>
+        <label>
+          <input
+            type="checkbox"
+            checked={draft.allow_ga4}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                allow_ga4: event.target.checked,
+              }))
+            }
+            disabled={loading || saving || Boolean(loadError)}
+          />
+          Allow Google Analytics 4
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={draft.allow_meta_pixel}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                allow_meta_pixel: event.target.checked,
+              }))
+            }
+            disabled={loading || saving || Boolean(loadError)}
+          />
+          Allow Meta Pixel
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={draft.allow_gtm}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                allow_gtm: event.target.checked,
+              }))
+            }
+            disabled={loading || saving || Boolean(loadError)}
+          />
+          Allow Google Tag Manager
+        </label>
+        <button
+          className="button secondary"
+          type="submit"
+          disabled={loading || saving || Boolean(loadError)}
+        >
+          {saving ? "Saving provider choices…" : "Save provider choices"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
 export function LinksScreen({
   authGeneration,
 }: {
@@ -122,6 +399,10 @@ export function LinksScreen({
   const [reportRetry, setReportRetry] = useState(0);
 
   const [draft, setDraft] = useState<TrackingDraft>(emptyDraft);
+  const [googleParameterNames, setGoogleParameterNames] = useState<{
+    keys: string[];
+    names: string[];
+  }>({ keys: [], names: [] });
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState("");
   const [trackingRetry, setTrackingRetry] = useState(0);
@@ -145,6 +426,24 @@ export function LinksScreen({
   const reportGeneration = useRef(0);
   const trackingGeneration = useRef(0);
   const activeRequests = useRef(new Set<AbortController>());
+  const serializedCustomKeys = JSON.stringify(
+    draft.custom.map(({ key }) => key),
+  );
+
+  useEffect(() => {
+    let current = true;
+    const keys = JSON.parse(serializedCustomKeys) as string[];
+    void Promise.all(
+      keys.map((key) =>
+        key === "" ? Promise.resolve("") : googleCustomParameterName(key),
+      ),
+    ).then((names) => {
+      if (current) setGoogleParameterNames({ keys, names });
+    });
+    return () => {
+      current = false;
+    };
+  }, [serializedCustomKeys]);
 
   const newController = useCallback(() => {
     const controller = new AbortController();
@@ -840,6 +1139,14 @@ export function LinksScreen({
               ) : null}
             </section>
 
+            <LinkProviderSettings
+              key={selectedLink.id}
+              linkId={selectedLink.id}
+              linkSlug={selectedLink.slug}
+              authGeneration={authGeneration}
+              onAuthorizationFailure={clearForAuthorizationFailure}
+            />
+
             <section
               className="click-report-card"
               aria-label="Click source report"
@@ -1146,6 +1453,12 @@ export function LinksScreen({
                           }
                           disabled={trackingLoading || saving}
                         />
+                        {parameter.key !== "" &&
+                        googleParameterNames.keys[index] === parameter.key ? (
+                          <p className="field-help">
+                            GA4 parameter: {googleParameterNames.names[index]}
+                          </p>
+                        ) : null}
                       </div>
                       <div>
                         <label htmlFor={`link-custom-value-${index}`}>

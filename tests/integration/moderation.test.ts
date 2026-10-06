@@ -697,7 +697,13 @@ it("upgrades existing content with only default moderation state and reruns with
       .results;
     expect(after).toEqual(
       index < 3
-        ? before[index]?.map((row) => ({ ...row, moderation_blocked: 0 }))
+        ? before[index]?.map((row) => ({
+            ...row,
+            moderation_blocked: 0,
+            ...(table === "distribution_links"
+              ? { allow_ga4: 1, allow_meta_pixel: 1, allow_gtm: 1 }
+              : {}),
+          }))
         : before[index],
     );
   }

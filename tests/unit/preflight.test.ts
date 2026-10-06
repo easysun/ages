@@ -34,6 +34,9 @@ function configured() {
         vars: {
           APP_ENV: "preview",
           APP_ORIGIN: "https://preview.example.test",
+          TRACKING_ORIGIN: "https://events.tracking.test",
+          APP_REGISTRABLE_DOMAIN: "example.test",
+          TRACKING_REGISTRABLE_DOMAIN: "tracking.test",
           R2_ACCOUNT_ID: account,
           R2_BUCKET_NAME: "ages-preview-media",
           GOOGLE_CLIENT_ID: "synthetic-client",
@@ -60,6 +63,33 @@ function configured() {
     },
   };
 }
+function trackingConfigured() {
+  return {
+    main: "src/tracking/index.ts",
+    workers_dev: false,
+    vars: { APP_ENV: "local" },
+    env: {
+      preview: {
+        name: "ages-tracking-preview",
+        vars: {
+          APP_ENV: "preview",
+          APP_ORIGIN: "https://preview.example.test",
+          TRACKING_ORIGIN: "https://events.tracking.test",
+        },
+        routes: [{ pattern: "events.tracking.test", custom_domain: true }],
+        d1_databases: [{ binding: "DB", database_id: database }],
+      },
+    },
+  };
+}
+function releaseTarget(configuration = configured(), environment = "preview") {
+  return validateReleaseTarget(
+    configuration,
+    environment,
+    trackingConfigured(),
+  );
+}
+const validateTrackingReleaseTarget = validateReleaseTarget;
 const migrations = ["0001_initial.sql", "0002_auth.sql"];
 function responses(overrides: Record<string, unknown> = {}) {
   const seen: string[] = [];
@@ -113,12 +143,10 @@ function responses(overrides: Record<string, unknown> = {}) {
 
 describe("Release environment isolation", () => {
   it("requires an explicit named environment and never releases the local default", () => {
-    expect(() => validateReleaseTarget(configured(), "local")).toThrow(
+    expect(() => releaseTarget(configured(), "local")).toThrow(
       "named environment",
     );
-    expect(validateReleaseTarget(configured(), "preview").databaseId).toBe(
-      database,
-    );
+    expect(releaseTarget(configured(), "preview").databaseId).toBe(database);
   });
   it("rejects placeholders and a preview binding that points at production", () => {
     const config = configured();
@@ -126,35 +154,27 @@ describe("Release environment isolation", () => {
     const [production] = config.env.production.d1_databases;
     if (!preview || !production) throw new Error("Missing fixture binding");
     preview.database_id = "REPLACE_PREVIEW_D1_ID";
-    expect(() => validateReleaseTarget(config, "preview")).toThrow("DB");
+    expect(() => releaseTarget(config, "preview")).toThrow("DB");
     preview.database_id = production.database_id;
-    expect(() => validateReleaseTarget(config, "preview")).toThrow("isolation");
+    expect(() => releaseTarget(config, "preview")).toThrow("isolation");
   });
   it("requires canonical HTTPS routing, direct-upload configuration and Worker route precedence", () => {
     const config = configured();
     config.env.preview.vars.APP_ORIGIN = "http://preview.example.test";
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "APP_ORIGIN",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("APP_ORIGIN");
     config.env.preview.vars.APP_ORIGIN = "https://preview.example.test";
     config.env.preview.vars.R2_BUCKET_NAME = "different-bucket";
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "R2_BUCKET_NAME",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("R2_BUCKET_NAME");
     config.env.preview.vars.R2_BUCKET_NAME = "ages-preview-media";
     config.assets.run_worker_first = ["/api/*"];
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "Worker route",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("Worker route");
   });
   it("never accepts credential values in committed configuration", () => {
     const config = configured();
     Object.assign(config.env.preview.vars, {
       GOOGLE_CLIENT_SECRET: "synthetic-sensitive-value",
     });
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "secret storage",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("secret storage");
   });
   it("binds every environment to the declared account and exact application entry points", () => {
     const config = configured();
@@ -162,33 +182,168 @@ describe("Release environment isolation", () => {
     const previewVars = preview.vars as Record<string, string>;
     preview.account_id = "d".repeat(32);
     previewVars.R2_ACCOUNT_ID = "d".repeat(32);
-    expect(() => validateReleaseTarget(config, "preview")).toThrow("account");
+    expect(() => releaseTarget(config, "preview")).toThrow("account");
     delete preview.account_id;
     previewVars.R2_ACCOUNT_ID = account;
     config.main = "src/other.ts";
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "Worker entry",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("Worker entry");
     config.main = "src/index.ts";
     config.assets.directory = "./public";
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "assets directory",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("assets directory");
   });
   it("requires the deployed scheduled cleanup cadence", () => {
     const config = configured();
     config.triggers.crons = ["0 0 * * *"];
-    expect(() => validateReleaseTarget(config, "preview")).toThrow(
-      "15-minute cleanup",
-    );
+    expect(() => releaseTarget(config, "preview")).toThrow("15-minute cleanup");
   });
   it("checks the inherited custom-domain route used by Wrangler environments", () => {
     const config = configured();
     (config as Record<string, unknown>).routes = config.env.preview.routes;
     delete (config.env.preview as Record<string, unknown>).routes;
-    expect(validateReleaseTarget(config, "preview").workerName).toBe(
-      "ages-preview",
+    expect(releaseTarget(config, "preview").workerName).toBe("ages-preview");
+  });
+  it("rejects matching or nested registrable-domain declarations", () => {
+    const config = configured();
+    config.env.preview.vars.TRACKING_REGISTRABLE_DOMAIN = "example.test";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "separate registrable domains",
     );
+
+    config.env.preview.vars.TRACKING_REGISTRABLE_DOMAIN = "events.example.test";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "separate registrable domains",
+    );
+
+    config.env.preview.vars.APP_REGISTRABLE_DOMAIN = "sub.tracking.test";
+    config.env.preview.vars.TRACKING_REGISTRABLE_DOMAIN = "tracking.test";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "separate registrable domains",
+    );
+  });
+  it("rejects origins outside their declared domains or with the same origin", () => {
+    const config = configured();
+    config.env.preview.vars.APP_ORIGIN = "https://outside.example.net";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "APP_ORIGIN must belong to APP_REGISTRABLE_DOMAIN",
+    );
+
+    config.env.preview.vars.APP_ORIGIN = "https://preview.example.test";
+    config.env.preview.vars.TRACKING_ORIGIN =
+      "https://outside.tracking-example.test";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "TRACKING_ORIGIN must belong to TRACKING_REGISTRABLE_DOMAIN",
+    );
+
+    config.env.preview.vars.TRACKING_ORIGIN =
+      config.env.preview.vars.APP_ORIGIN;
+    expect(() => releaseTarget(config, "preview")).toThrow("different origins");
+  });
+  it("requires an explicit HTTPS tracking origin and both domain declarations", () => {
+    const config = configured();
+    config.env.preview.vars.TRACKING_ORIGIN = "http://events.tracking.test";
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "exact HTTPS TRACKING_ORIGIN",
+    );
+
+    config.env.preview.vars.TRACKING_ORIGIN = "https://events.tracking.test";
+    delete (config.env.preview.vars as Record<string, string>)
+      .TRACKING_REGISTRABLE_DOMAIN;
+    expect(() => releaseTarget(config, "preview")).toThrow(
+      "TRACKING_REGISTRABLE_DOMAIN",
+    );
+  });
+  it("requires a dedicated tracking Worker route and its single ticket D1 binding", () => {
+    const tracking = trackingConfigured();
+    expect(
+      validateTrackingReleaseTarget(configured(), "preview", tracking)
+        .trackingWorkerName,
+    ).toBe("ages-tracking-preview");
+    tracking.env.preview.routes = [];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("only the exact tracking custom-domain route");
+
+    tracking.env.preview.routes = [
+      { pattern: "events.tracking.test", custom_domain: true },
+    ];
+    tracking.env.preview.d1_databases = [
+      { binding: "DB", database_id: database },
+      {
+        binding: "OTHER_DB",
+        database_id: "33333333-3333-4333-8333-333333333333",
+      },
+    ];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("only its ticket D1 binding");
+
+    tracking.env.preview.d1_databases = [
+      { binding: "DB", database_id: "44444444-4444-4444-8444-444444444444" },
+    ];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("must match the ticket database");
+  });
+  it("rejects an extra app-host route on the tracking Worker", () => {
+    const extraRoute = trackingConfigured();
+    extraRoute.env.preview.routes = [
+      { pattern: "events.tracking.test", custom_domain: true },
+      { pattern: "preview.example.test", custom_domain: true },
+    ];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", extraRoute),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+
+  it("rejects a legacy selected-environment route on the tracking Worker", () => {
+    const legacyEnvironmentRoute = trackingConfigured();
+    (legacyEnvironmentRoute.env.preview as Record<string, unknown>).route =
+      "preview.example.test/*";
+    expect(() =>
+      validateTrackingReleaseTarget(
+        configured(),
+        "preview",
+        legacyEnvironmentRoute,
+      ),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+
+  it("rejects a legacy top-level route on the tracking Worker", () => {
+    const legacyTopLevelRoute = trackingConfigured();
+    (legacyTopLevelRoute as Record<string, unknown>).route =
+      "preview.example.test/*";
+    expect(() =>
+      validateTrackingReleaseTarget(
+        configured(),
+        "preview",
+        legacyTopLevelRoute,
+      ),
+    ).toThrow("only the exact tracking custom-domain route");
+  });
+  it("rejects a tracking Worker name that matches the app Worker", () => {
+    const tracking = trackingConfigured();
+    (tracking.env.preview as Record<string, unknown>).name = "ages-preview";
+
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("different name from the application Worker");
+  });
+  it("rejects application bindings and assets on the tracking Worker", () => {
+    const tracking = trackingConfigured();
+    (tracking.env.preview as Record<string, unknown>).r2_buckets = [
+      { binding: "MEDIA", bucket_name: "ages-preview-media" },
+    ];
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("only its ticket D1 binding");
+
+    delete (tracking.env.preview as Record<string, unknown>).r2_buckets;
+    (tracking as Record<string, unknown>).assets = {
+      directory: "./dist/client",
+    };
+    expect(() =>
+      validateTrackingReleaseTarget(configured(), "preview", tracking),
+    ).toThrow("only its ticket D1 binding");
   });
 });
 
@@ -197,7 +352,7 @@ describe("Read-only release resource verification", () => {
     const { fetcher } = responses();
     await expect(
       verifyReleaseResources(
-        validateReleaseTarget(configured(), "preview"),
+        releaseTarget(configured(), "preview"),
         "   ",
         migrations,
         fetcher,
@@ -208,7 +363,7 @@ describe("Read-only release resource verification", () => {
   it("verifies actual bindings, secret names and the complete migration ledger", async () => {
     const { fetcher, seen } = responses();
     await verifyReleaseResources(
-      validateReleaseTarget(configured(), "preview"),
+      releaseTarget(configured(), "preview"),
       "synthetic-token",
       migrations,
       fetcher,
@@ -281,7 +436,7 @@ describe("Read-only release resource verification", () => {
       return Response.json({ success: true, result: { uuid: database } });
     });
     await verifyReleaseResources(
-      validateReleaseTarget(configured(), "preview"),
+      releaseTarget(configured(), "preview"),
       "synthetic-token",
       migrations,
       fetcher,
@@ -302,7 +457,7 @@ describe("Read-only release resource verification", () => {
       });
       await expect(
         verifyReleaseResources(
-          validateReleaseTarget(configured(), "preview"),
+          releaseTarget(configured(), "preview"),
           "synthetic-token",
           migrations,
           fetcher,
@@ -317,7 +472,7 @@ describe("Read-only release resource verification", () => {
     });
     await expect(
       verifyReleaseResources(
-        validateReleaseTarget(configured(), "preview"),
+        releaseTarget(configured(), "preview"),
         "synthetic-token",
         migrations,
         fetcher,
@@ -340,7 +495,7 @@ describe("Read-only release resource verification", () => {
     });
     await expect(
       verifyReleaseResources(
-        validateReleaseTarget(configured(), "preview"),
+        releaseTarget(configured(), "preview"),
         "synthetic-token",
         migrations,
         fetcher,
@@ -354,7 +509,7 @@ describe("Read-only release resource verification", () => {
     });
     try {
       await verifyReleaseResources(
-        validateReleaseTarget(configured(), "preview"),
+        releaseTarget(configured(), "preview"),
         "synthetic-token",
         migrations,
         fetcher,

@@ -27,6 +27,13 @@ export function createApp() {
       onError: (context) => errorResponse(context, "PAYLOAD_TOO_LARGE"),
     }),
   );
+  app.use(
+    "/s/continue",
+    bodyLimit({
+      maxSize: 4096,
+      onError: (context) => errorResponse(context, "PAYLOAD_TOO_LARGE"),
+    }),
+  );
   app.onError((error, context) => {
     let code = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
     if (error instanceof HTTPException && error.status === 400) {

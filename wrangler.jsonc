@@ -40,7 +40,18 @@
   "env": {
     "development": {
       "name": "ages-development",
-      "vars": { "APP_ENV": "development" },
+      "vars": {
+        "APP_ENV": "development",
+        "APP_ORIGIN": "https://app.development.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-development.invalid",
+        "APP_REGISTRABLE_DOMAIN": "development.invalid",
+        "TRACKING_REGISTRABLE_DOMAIN": "tracking-development.invalid",
+        "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
+        "R2_BUCKET_NAME": "REPLACE_DEVELOPMENT_R2_BUCKET"
+      },
+      "routes": [
+        { "pattern": "app.development.invalid", "custom_domain": true }
+      ],
       "d1_databases": [
         {
           "binding": "DB",
@@ -58,7 +69,16 @@
     },
     "preview": {
       "name": "ages-preview",
-      "vars": { "APP_ENV": "preview" },
+      "vars": {
+        "APP_ENV": "preview",
+        "APP_ORIGIN": "https://app.preview.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-preview.invalid",
+        "APP_REGISTRABLE_DOMAIN": "preview.invalid",
+        "TRACKING_REGISTRABLE_DOMAIN": "tracking-preview.invalid",
+        "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
+        "R2_BUCKET_NAME": "REPLACE_PREVIEW_R2_BUCKET"
+      },
+      "routes": [{ "pattern": "app.preview.invalid", "custom_domain": true }],
       "d1_databases": [
         {
           "binding": "DB",
@@ -76,7 +96,18 @@
     },
     "production": {
       "name": "ages-production",
-      "vars": { "APP_ENV": "production" },
+      "vars": {
+        "APP_ENV": "production",
+        "APP_ORIGIN": "https://app.production.invalid",
+        "TRACKING_ORIGIN": "https://events.tracking-production.invalid",
+        "APP_REGISTRABLE_DOMAIN": "production.invalid",
+        "TRACKING_REGISTRABLE_DOMAIN": "tracking-production.invalid",
+        "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
+        "R2_BUCKET_NAME": "REPLACE_PRODUCTION_R2_BUCKET"
+      },
+      "routes": [
+        { "pattern": "app.production.invalid", "custom_domain": true }
+      ],
       "d1_databases": [
         {
           "binding": "DB",

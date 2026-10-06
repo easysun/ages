@@ -5,6 +5,7 @@ export type AppEnvironment = "local" | "development" | "preview" | "production";
 export type Bindings = Omit<WorkerBindings, "APP_ENV"> & {
   APP_ENV: AppEnvironment;
   APP_ORIGIN?: string;
+  TRACKING_ORIGIN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   R2_ACCOUNT_ID?: string;

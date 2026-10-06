@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import jsQR from "jsqr";
-import { executeFixtureSql, seedLibrary } from "./fixtures";
+import { e2eOrigin, executeFixtureSql, seedLibrary } from "./fixtures";
 
-const origin = `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8791"}`;
+const origin = e2eOrigin;
 
 test("private Asset sharing creates, copies and independently decodes a QR; grants and trash remain recoverable", async ({
   page,

@@ -15,6 +15,7 @@ import { AssetDetails } from "./details";
 import { LinksScreen } from "./links";
 import { ModerationScreen } from "./moderation";
 import { TimelineScreen } from "./timelines";
+import { TrackingSettingsScreen } from "./tracking-settings";
 import { type UploadJob, uploadFile } from "./upload";
 import "./styles.css";
 
@@ -134,6 +135,13 @@ function App() {
           >
             Links
           </a>
+          <a
+            href="/settings/tracking"
+            onClick={collectionLink}
+            aria-current={path === "/settings/tracking" ? "page" : undefined}
+          >
+            Tracking settings
+          </a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -183,6 +191,8 @@ function App() {
           />
         ) : path === "/links" ? (
           <LinksScreen authGeneration={generation} />
+        ) : path === "/settings/tracking" ? (
+          <TrackingSettingsScreen authGeneration={generation} />
         ) : path === "/library" || path === "/" ? (
           <Library
             profile={profile}

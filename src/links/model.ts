@@ -59,6 +59,12 @@ export const updateLinkSchema = z
   .refine(
     (value) => value.active !== undefined || value.expires_at !== undefined,
   );
+export const linkTrackingProvidersSchema = z.strictObject({
+  allow_ga4: z.boolean(),
+  allow_meta_pixel: z.boolean(),
+  allow_gtm: z.boolean(),
+});
+export type LinkTrackingProviders = z.infer<typeof linkTrackingProvidersSchema>;
 export type Link = {
   id: string;
   owner_id: string;
@@ -68,6 +74,9 @@ export type Link = {
   timeline_id: string | null;
   asset_id: string | null;
   active: number;
+  allow_ga4: number;
+  allow_meta_pixel: number;
+  allow_gtm: number;
   moderation_blocked: number;
   expires_at: string | null;
   created_at: string;

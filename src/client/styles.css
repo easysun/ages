@@ -2115,3 +2115,104 @@ progress::-moz-progress-bar {
   font: inherit;
   resize: vertical;
 }
+.tracking-provider-page {
+  width: min(900px, 90%);
+  margin: 0 auto;
+  padding: 44px 0 72px;
+}
+.tracking-provider-intro {
+  max-width: 760px;
+  margin-bottom: 30px;
+}
+.tracking-provider-intro h1 {
+  margin: 10px 0 14px;
+  font: 700 clamp(34px, 5vw, 54px) / 1.08 var(--serif);
+  overflow-wrap: anywhere;
+}
+.tracking-provider-page .tracking-provider-intro > p:last-child {
+  color: var(--muted);
+  line-height: 1.65;
+}
+.tracking-provider-card {
+  min-width: 0;
+  padding: 24px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.tracking-provider-card h2 {
+  font: 700 24px / 1.25 var(--serif);
+}
+.tracking-provider-card > .field-help {
+  margin: 14px 0 20px;
+  line-height: 1.6;
+}
+.tracking-provider-form {
+  display: grid;
+  gap: 10px;
+}
+.tracking-provider-page .tracking-provider-form > label,
+.tracking-provider-page .tracking-provider-routes legend {
+  font-size: 13px;
+  font-weight: 700;
+}
+.tracking-provider-form input:not([type="checkbox"]),
+.tracking-provider-form select {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #adb7a9;
+  border-radius: 5px;
+  color: var(--ink);
+  background: #fffefb;
+  font: inherit;
+}
+.tracking-provider-routes {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  margin: 10px 0 6px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.tracking-provider-page .tracking-provider-routes legend {
+  padding: 0 5px;
+}
+.tracking-provider-routes .field-help {
+  margin-top: 2px;
+  line-height: 1.55;
+}
+.link-provider-form {
+  display: grid;
+  gap: 12px;
+}
+.link-provider-settings-card .link-provider-form label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+}
+.link-provider-settings-card .link-provider-form input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--green);
+}
+.link-provider-settings-card .link-provider-form .button {
+  justify-self: start;
+  margin-top: 4px;
+}
+@media (max-width: 650px) {
+  .client-nav {
+    flex-wrap: wrap;
+    gap: 8px 18px;
+  }
+  .tracking-provider-page {
+    padding-top: 30px;
+  }
+  .tracking-provider-card {
+    padding: 16px;
+  }
+}
