@@ -7,14 +7,15 @@ const text = z.string().refine((value) =>
     return code >= 32 ? code !== 127 : code === 9 || code === 10 || code === 13;
   }),
 );
+export const reportTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("timeline"), timeline_id: id }),
+  z.strictObject({
+    kind: z.literal("link"),
+    slug: z.string().regex(/^[a-z0-9-]{3,64}$/),
+  }),
+]);
 export const reportSchema = z.strictObject({
-  target: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("timeline"), timeline_id: id }),
-    z.strictObject({
-      kind: z.literal("link"),
-      slug: z.string().regex(/^[a-z0-9-]{3,64}$/),
-    }),
-  ]),
+  target: reportTargetSchema,
   category: z.enum(["spam", "abuse", "copyright", "illegal", "other"]),
   detail: text.pipe(z.string().max(1000)).default(""),
 });
@@ -24,6 +25,7 @@ export const moderationSchema = z.strictObject({
   reason: text.pipe(z.string().trim().min(1).max(500)),
 });
 export type ReportInput = z.infer<typeof reportSchema>;
+export type ReportTarget = z.infer<typeof reportTargetSchema>;
 export type ModerationInput = z.infer<typeof moderationSchema>;
 export const moderationTables = {
   asset: "assets",
