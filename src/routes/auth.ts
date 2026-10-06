@@ -86,6 +86,16 @@ function reportTargetLocation(target: ReportTarget) {
   return `/report?${params.toString()}`;
 }
 
+function assertUnambiguousCallbackQuery(params: URLSearchParams) {
+  const seen = new Set<string>();
+  for (const key of params.keys()) {
+    if (key === "next" || seen.has(key)) {
+      throw new ApiError("INVALID_REQUEST");
+    }
+    seen.add(key);
+  }
+}
+
 auth.get("/google", async (context) => {
   const reportTarget = reportTargetFromUrl(new URL(context.req.url));
   const config = oauthConfig(context.env);
@@ -129,10 +139,11 @@ auth.get("/google", async (context) => {
 });
 
 auth.get("/google/callback", async (context) => {
-  const state = context.req.query("state");
   const cookie = cookiePolicy(context.env, "oauth");
   const browser = getCookie(context, cookie.name);
   deleteCookie(context, cookie.name, cookie.options);
+  assertUnambiguousCallbackQuery(new URL(context.req.url).searchParams);
+  const state = context.req.query("state");
   if (!isToken(state) || !isToken(browser))
     throw new ApiError("INVALID_REQUEST");
   // DELETE RETURNING consumes exactly once, including simultaneous callbacks.

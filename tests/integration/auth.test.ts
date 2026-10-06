@@ -124,9 +124,14 @@ async function start(config = bindings, query = "") {
 async function callback(
   attempt: Awaited<ReturnType<typeof start>>,
   session = "",
+  extraQuery = "",
 ) {
+  const query = new URLSearchParams({
+    state: attempt.state,
+    code: attempt.nonce,
+  }).toString();
   return request(
-    `/auth/google/callback?${new URLSearchParams({ state: attempt.state, code: attempt.nonce })}`,
+    `/auth/google/callback?${query}${extraQuery ? `&${extraQuery}` : ""}`,
     {
       headers: { Cookie: `${attempt.cookie}${session ? `; ${session}` : ""}` },
     },
@@ -359,8 +364,94 @@ describe("Google OAuth browser flow", () => {
       },
     );
     expect(denied.status).toBe(400);
+    expect(await count("oauth_attempts")).toBe(0);
     expect((await callback(attempt)).status).toBe(400);
     expect(exchanges).toHaveLength(0);
+  });
+
+  it.each([
+    {
+      label: "identical state values",
+      extraQuery: (attempt: Awaited<ReturnType<typeof start>>) =>
+        `state=${attempt.state}`,
+    },
+    {
+      label: "different state values",
+      extraQuery: () => `state=${"z".repeat(43)}`,
+    },
+    {
+      label: "identical code values",
+      extraQuery: (attempt: Awaited<ReturnType<typeof start>>) =>
+        `code=${attempt.nonce}`,
+    },
+    {
+      label: "different code values",
+      extraQuery: () => "code=another-code",
+    },
+    {
+      label: "identical provider metadata values",
+      extraQuery: () => "scope=openid&scope=openid",
+    },
+  ])(
+    "rejects duplicate callback $label before consuming the attempt",
+    async ({ extraQuery }) => {
+      const attempt = await start();
+      const response = await callback(attempt, "", extraQuery(attempt));
+
+      expect(response.status).toBe(400);
+      expect(
+        response.headers
+          .getSetCookie()
+          .some(
+            (value) =>
+              value.startsWith("ages_oauth=;") && value.includes("Max-Age=0"),
+          ),
+      ).toBe(true);
+      expect(await count("oauth_attempts")).toBe(1);
+      expect(await count("sessions")).toBe(0);
+      expect(await count("report_events")).toBe(0);
+      expect(exchanges).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["an absolute next URL", "next=https%3A%2F%2Fattacker.test"],
+    ["an empty next value", "next="],
+  ])(
+    "rejects %s before consuming the OAuth attempt",
+    async (_description, extraQuery) => {
+      const attempt = await start();
+      const response = await callback(attempt, "", extraQuery);
+
+      expect(response.status).toBe(400);
+      expect(
+        response.headers
+          .getSetCookie()
+          .some(
+            (value) =>
+              value.startsWith("ages_oauth=;") && value.includes("Max-Age=0"),
+          ),
+      ).toBe(true);
+      expect(await count("oauth_attempts")).toBe(1);
+      expect(await count("sessions")).toBe(0);
+      expect(await count("report_events")).toBe(0);
+      expect(exchanges).toHaveLength(0);
+    },
+  );
+
+  it("allows unique provider metadata without using it as a redirect", async () => {
+    const attempt = await start();
+    const response = await callback(
+      attempt,
+      "",
+      "scope=openid&authuser=0&prompt=consent",
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/");
+    expect(await count("oauth_attempts")).toBe(0);
+    expect(await count("sessions")).toBe(1);
+    expect(exchanges).toHaveLength(1);
   });
 
   it("permits only one of two simultaneous callbacks and rejects later replay", async () => {
