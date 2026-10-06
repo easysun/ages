@@ -105,11 +105,11 @@ git commit -m "feat: preserve report targets through sign-in"
 - `renderTimeline` adds `Report this Timeline` (`/report?kind=timeline&timeline_id=<id>`) and `Report an Ages Link` (`/report`) anchors to its footer. `App` routes `/report` for both signed-in and anonymous visitors and adds a `Report an Ages Link` entry to the public landing page.
 - Form values are exactly the existing category enum and optional detail capped at 1000. Target may remain in the report URL; category and detail never enter the URL or browser storage.
 
-- [ ] **Step 1: Add a failing SSR affordance regression**
+- [x] **Step 1: Add a failing SSR affordance regression**
 
 In `tests/integration/public-timeline.test.ts`, assert that both public and unlisted Timeline HTML contain the correctly encoded `Report this Timeline` and `/report` companion links, and that the private/missing response still contains neither report affordance nor Timeline content.
 
-- [ ] **Step 2: Add the reporting browser cases before implementing the client**
+- [x] **Step 2: Add the reporting browser cases before implementing the client**
 
 Create `tests/e2e/reporting.spec.ts` with these behavior tests:
 
@@ -130,23 +130,23 @@ npm run test:e2e -- tests/e2e/reporting.spec.ts --project=desktop
 
 Expected: the SSR assertions fail because the links are absent; the browser cases fail because `/report` currently renders the landing page or has no report form.
 
-- [ ] **Step 3: Define the browser API types and reporter component**
+- [x] **Step 3: Define the browser API types and reporter component**
 
 Add the exact target/category/receipt types to `src/client/api.ts`. In `src/client/reporter.tsx`, parse the query using the target-specific key pair, and parse pasted Link input only as specified above. When a visitor selects a target, replace the URL with its canonical `/report` form so refresh retains the target. Show only the target kind and identifier; do not fetch or render content.
 
-- [ ] **Step 4: Implement authentication, form, and feedback behavior**
+- [x] **Step 4: Implement authentication, form, and feedback behavior**
 
 Render a sign-in action before category/detail for anonymous visitors. Build its URL from the validated target using only `report_kind` and `report_value`. For authenticated visitors, render a labeled native category select, optional labeled textarea with `maxLength={1000}` and live count, and a submit button. Use the existing `api`/`jsonBody` helper. Treat 200 and 201 identically; use generic 404 copy; on 401/403 clear category/detail and switch to the sign-in state; keep the draft for 429, 5xx, and network errors; never automatically retry. Announce confirmation/errors with `role="status"` or `role="alert"`. Clear form text on logout, auth-generation changes, target changes and unmount; invalidate pending results. Apply authorization-error clearing before ordinary stale-response generation checks. Prevent concurrent duplicate submissions. Do not persist form text.
 
-- [ ] **Step 5: Mount the report route and add server-rendered entry links**
+- [x] **Step 5: Mount the report route and add server-rendered entry links**
 
 In `src/client/main.tsx`, mount `ReporterScreen` on `/report` for either session state and add the companion link to the anonymous landing page. In `src/timeline/render.ts`, add the two accessible footer links while retaining the existing canonical URL, robots metadata, and escaped Timeline content. Keep all changes in the existing client routing and Timeline renderer; do not modify `/s/:slug` resolution or raw Asset streams.
 
-- [ ] **Step 6: Add responsive reporter styling**
+- [x] **Step 6: Add responsive reporter styling**
 
 Add focused rules in `src/client/styles.css` for a readable narrow form, full-width controls where needed, wrapping identifiers, and visible focus. Reuse the existing color and spacing variables. Do not change administrator or owner-control styles.
 
-- [ ] **Step 7: Run focused integration and browser tests**
+- [x] **Step 7: Run focused integration and browser tests**
 
 Run:
 
@@ -157,7 +157,7 @@ npm run test:e2e -- tests/e2e/reporting.spec.ts
 
 Expected: PASS in desktop and mobile projects. The existing API tests continue to pin categories, detail bounds, privacy-preserving 404, deduplication, and rate limits; existing Link tests continue to pin 302 and raw-media semantics.
 
-- [ ] **Step 8: Run `npm run check`, then commit the reporter surfaces**
+- [x] **Step 8: Run `npm run check`, then commit the reporter surfaces**
 
 ```bash
 git add src/client/reporter.tsx src/client/api.ts src/client/main.tsx src/client/styles.css src/timeline/render.ts tests/integration/public-timeline.test.ts tests/e2e/reporting.spec.ts
@@ -166,8 +166,8 @@ git commit -m "feat: add visitor content reporting"
 
 ## Final verification and review gate
 
-- [ ] Confirm the final HEAD has a passing `npm run check` from the last task; run it if subsequent code changed. Expected: client and Worker builds, Biome lint, all typechecks, Vitest unit/integration tests, and Playwright desktop/mobile suites pass.
-- [ ] Run `git diff --check`. Expected: no whitespace errors.
-- [ ] Review the complete branch diff for accidental changes to `src/routes/links.ts`, `src/moderation/reports.ts`, `src/routes/moderation.ts`, `src/client/moderation.tsx`, owner Link controls, or unrelated in-progress work. Confirm the migration is additive and forward-only.
+- [x] Confirm the final HEAD has a passing `npm run check` from the last task; run it if subsequent code changed. Expected: client and Worker builds, Biome lint, all typechecks, Vitest unit/integration tests, and Playwright desktop/mobile suites pass.
+- [x] Run `git diff --check`. Expected: no whitespace errors.
+- [x] Review the complete branch diff for accidental changes to `src/routes/links.ts`, `src/moderation/reports.ts`, `src/routes/moderation.ts`, `src/client/moderation.tsx`, owner Link controls, or unrelated in-progress work. Confirm the migration is additive and forward-only.
 - [ ] Capture desktop and mobile screenshots of the public Timeline footer and Link report companion; include them with validation results in the PR.
 - [ ] Self-review and request an independent code review. Open one `feat/public-reporting-ux` PR targeting `main` (no released branch exists), include the focused and full-check results and UI evidence, and require independent code-review approval and passing GitHub CI before merging. Human design and plan approval gates are waived by the user. Do not deploy as part of this change.
