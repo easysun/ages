@@ -1035,12 +1035,31 @@ describe("isolated provider consent flow", () => {
     const expiredTokens = Array.from({ length: 101 }, (_, index) =>
       index.toString(16).padStart(64, "0"),
     );
-    for (const [index, token] of expiredTokens.entries())
-      await insertTicket(
-        link,
-        token,
-        new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
-      );
+    const expiredTickets = await Promise.all(
+      expiredTokens.map(async (token, index) => ({
+        token_hash: await ticketHash(token),
+        expires_at: new Date(Date.UTC(2000, 0, 1, 0, 0, index)).toISOString(),
+      })),
+    );
+    await env.DB.prepare(`INSERT INTO tracking_tickets (
+      token_hash,link_id,target_kind,event_json,providers_json,expires_at
+    ) SELECT json_extract(value,'$.token_hash'),?,?,?,?,json_extract(value,'$.expires_at')
+      FROM json_each(?)`)
+      .bind(
+        link.id,
+        "url",
+        JSON.stringify({
+          event_name: "ages_link_click",
+          link_id: link.id,
+          target_kind: "url",
+          channel: "Other",
+          utm: {},
+          custom: [],
+        }),
+        JSON.stringify({ ga4: null, meta: null, gtm: null }),
+        JSON.stringify(expiredTickets),
+      )
+      .run();
     const consumed = await insertTicket(
       link,
       "f".repeat(64),
