@@ -1,6 +1,6 @@
 # Public Content Reporting UX Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Let visitors report visible Timelines and known Ages Links through an accessible flow that survives sign-in without disclosing private content or changing existing share behavior.
 
@@ -56,31 +56,31 @@ type ReportTarget =
 - Existing `oauth_attempts` rows store nullable `report_target_kind` and `report_target_value`. Their constraints bound the kind to `timeline|link` and the value to 1–100 characters; the route enforces the stricter Link slug expression and all-or-none pairing.
 - Callback continues to consume state, browser binding, verifier, and nonce exactly once. It redirects to `/` when there is no report target, or constructs only `/report?kind=timeline&timeline_id=...` or `/report?kind=link&slug=...` from the stored validated fields.
 
-- [ ] **Step 1: Add failing OAuth continuation tests**
+- [x] **Step 1: Add failing OAuth continuation tests**
 
 In `tests/integration/auth.test.ts`, add tests that start OAuth with each valid target, assert the target is stored on the attempt, complete the fake Google callback, and assert the 303 `Location` is the exact internal report route. Assert no report event or report text is created. Keep the existing no-target redirect-to-`/` assertion. Add invalid cases for arbitrary `next`, one-sided pairs, repeated keys, Timeline IDs over 100 characters, and Link slugs outside `[a-z0-9-]{3,64}`; assert 400 and zero OAuth attempts. Extend the state replay case to prove a restored target is available only to the callback that consumes the attempt.
 
-- [ ] **Step 2: Run the focused tests and confirm they fail for the missing continuation**
+- [x] **Step 2: Run the focused tests and confirm they fail for the missing continuation**
 
 Run: `npm exec -- vitest run tests/integration/auth.test.ts`
 
 Expected: the new target-storage/redirect assertions fail because the current attempt schema has no report target and the callback always redirects to `/`.
 
-- [ ] **Step 3: Add the additive migration and shared target schema**
+- [x] **Step 3: Add the additive migration and shared target schema**
 
 Add nullable `report_target_kind` and `report_target_value` columns in `migrations/0017_oauth_report_target.sql`, with the bounds stated above. Extract the existing two-way target union in `src/moderation/model.ts` as `reportTargetSchema` and use it from `reportSchema` so API and OAuth validation cannot drift.
 
-- [ ] **Step 4: Store and restore only the validated target in `src/routes/auth.ts`**
+- [x] **Step 4: Store and restore only the validated target in `src/routes/auth.ts`**
 
 Validate the exact OAuth-start query before creating the attempt; insert its kind/value with the existing hashed state, browser hash, verifier, nonce, and expiry. Extend `DELETE ... RETURNING` to consume the target fields with the attempt. After successful identity exchange and session creation, build the fixed `/report` route from those returned fields with `URLSearchParams`; retain `/` for ordinary sign-in. Never use a caller-supplied path as a redirect.
 
-- [ ] **Step 5: Run the focused auth integration suite**
+- [x] **Step 5: Run the focused auth integration suite**
 
 Run: `npm exec -- vitest run tests/integration/auth.test.ts`
 
 Expected: PASS, including existing PKCE, origin, expiry, mismatch, replay, and provider-claim cases.
 
-- [ ] **Step 6: Run `npm run check`, then commit the OAuth continuation slice**
+- [x] **Step 6: Run `npm run check`, then commit the OAuth continuation slice**
 
 ```bash
 git add migrations/0017_oauth_report_target.sql src/moderation/model.ts src/routes/auth.ts tests/integration/auth.test.ts
