@@ -173,6 +173,12 @@ test("the Link companion accepts only same-origin short URLs or slugs", async ({
     `${e2eOrigin}/elsewhere/${slug}`,
     `//127.0.0.1:${port}/s/${slug}`,
     `http://user:pass@127.0.0.1:${port}/s/${slug}`,
+    `${e2eOrigin}/s/ignored/../${slug}`,
+    `/s/ignored/../${slug}`,
+    `${e2eOrigin}/s/ignored/%2e%2e/${slug}`,
+    `/s/ignored/%2e%2e/${slug}`,
+    `${e2eOrigin}/s/ignored\\..\\${slug}`,
+    `/s/ignored\\..\\${slug}`,
     "UPPERCASE",
     "ab",
   ]) {
@@ -327,6 +333,10 @@ test("target switches, logout and stale authorization cannot restore report deta
   await expect(
     page.getByLabel("Report details (optional)", { exact: true }),
   ).toHaveValue("");
+  const unselectedLinkDraft = `${e2eOrigin}/s/another-link?draft=success#fragment`;
+  await page
+    .getByLabel("Ages Link URL or slug", { exact: true })
+    .fill(unselectedLinkDraft);
   await page
     .getByLabel("Report details (optional)", { exact: true })
     .fill("Current target draft");
@@ -338,6 +348,9 @@ test("target switches, logout and stale authorization cannot restore report deta
   await expect(
     page.getByLabel("Report details (optional)", { exact: true }),
   ).toHaveValue("Current target draft");
+  await expect(
+    page.getByLabel("Ages Link URL or slug", { exact: true }),
+  ).toHaveValue(unselectedLinkDraft);
   await expect(
     page.getByText("Thank you. Your report has been received.", {
       exact: true,
@@ -359,6 +372,9 @@ test("target switches, logout and stale authorization cannot restore report deta
     await page.getByRole("button", { name: "Use this Link" }).click();
     await expect(page).toHaveURL(`${e2eOrigin}/report?kind=link&slug=${slug}`);
     await page
+      .getByLabel("Ages Link URL or slug", { exact: true })
+      .fill(`${e2eOrigin}/s/${slug}?draft=auth#fragment`);
+    await page
       .getByLabel("Report details (optional)", { exact: true })
       .fill("New sensitive draft");
     const delayedAuthorization = page.waitForResponse(
@@ -373,7 +389,13 @@ test("target switches, logout and stale authorization cannot restore report deta
     await expect(
       page.getByLabel("Report details (optional)", { exact: true }),
     ).toHaveCount(0);
+    await expect(
+      page.getByLabel("Ages Link URL or slug", { exact: true }),
+    ).toHaveValue("");
     await expect(page).toHaveURL(`${e2eOrigin}/report?kind=link&slug=${slug}`);
+    await expect(
+      page.getByText(`Ages Link: ${slug}`, { exact: true }),
+    ).toBeVisible();
   }
 
   status = 200;
@@ -382,6 +404,9 @@ test("target switches, logout and stale authorization cannot restore report deta
   await page.goto(`/report?kind=timeline&timeline_id=${id}`);
   await selectCategory(page);
   await page
+    .getByLabel("Ages Link URL or slug", { exact: true })
+    .fill(`${e2eOrigin}/s/${slug}?draft=logout#fragment`);
+  await page
     .getByLabel("Report details (optional)", { exact: true })
     .fill("Clear on sign out");
   await page.getByRole("button", { name: "Submit report" }).click();
@@ -389,6 +414,15 @@ test("target switches, logout and stale authorization cannot restore report deta
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(
     page.getByRole("link", { name: "Continue with Google", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByLabel("Ages Link URL or slug", { exact: true }),
+  ).toHaveValue("");
+  await expect(page).toHaveURL(
+    `${e2eOrigin}/report?kind=timeline&timeline_id=${id}`,
+  );
+  await expect(
+    page.getByText(`Timeline: ${id}`, { exact: true }),
   ).toBeVisible();
   const lateLogoutResponse = page.waitForResponse(
     (r) => r.url().endsWith("/api/reports") && r.request().method() === "POST",

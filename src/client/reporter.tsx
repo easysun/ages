@@ -74,19 +74,28 @@ function parseReportTarget(search: string) {
   return { target: null, invalid: true };
 }
 
+function unnormalizedLinkPath(input: string): string | null {
+  if (input.startsWith("/")) {
+    if (input.startsWith("//")) return null;
+    return input.split(/[?#]/, 1)[0] ?? "";
+  }
+  const absoluteUrl = /^[a-z][a-z\d+.-]*:\/\/[^/?#\\]*([^?#]*)/i.exec(input);
+  return absoluteUrl ? (absoluteUrl[1] ?? "") : null;
+}
+
 function parseLinkInput(value: string): ReportTarget | null {
   const input = value.trim();
   if (linkSlugPattern.test(input)) return { kind: "link", slug: input };
-  if (input.startsWith("//")) return null;
-  if (!input.startsWith("/") && !/^[a-z][a-z\d+.-]*:/i.test(input)) return null;
+  const rawPath = unnormalizedLinkPath(input);
+  const match = rawPath && /^\/s\/([a-z0-9-]{3,64})$/.exec(rawPath);
+  if (!rawPath || !match) return null;
   try {
     const url = new URL(input, window.location.origin);
-    const match = /^\/s\/([a-z0-9-]{3,64})$/.exec(url.pathname);
     if (
       url.origin !== window.location.origin ||
       url.username !== "" ||
       url.password !== "" ||
-      !match
+      url.pathname !== rawPath
     )
       return null;
     return { kind: "link", slug: match[1] as string };
@@ -150,6 +159,7 @@ export function ReporterScreen({
   const invalidateCurrentOperation = useCallback(() => {
     operationGeneration.current++;
     clearDraft();
+    setLinkInput("");
     setFeedback("");
     setSubmitting(pendingRequest.current !== null);
   }, [clearDraft]);
@@ -261,6 +271,7 @@ export function ReporterScreen({
         if (mounted.current) {
           setCategory("");
           setDetail("");
+          setLinkInput("");
           setReceipt("");
           setRequiresSignIn(true);
           setFeedback("Your session ended. Sign in again to send this report.");
