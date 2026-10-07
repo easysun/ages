@@ -106,8 +106,8 @@ function cookie(response: Response, name: string) {
   return pair;
 }
 
-async function start(config = bindings) {
-  const response = await request("/auth/google", {}, config);
+async function start(config = bindings, query = "") {
+  const response = await request(`/auth/google${query}`, {}, config);
   expect(response.status).toBe(302);
   const url = new URL(response.headers.get("Location") ?? "");
   const prefix = config.APP_ENV === "local" ? "" : "__Host-";
@@ -124,9 +124,14 @@ async function start(config = bindings) {
 async function callback(
   attempt: Awaited<ReturnType<typeof start>>,
   session = "",
+  extraQuery = "",
 ) {
+  const query = new URLSearchParams({
+    state: attempt.state,
+    code: attempt.nonce,
+  }).toString();
   return request(
-    `/auth/google/callback?${new URLSearchParams({ state: attempt.state, code: attempt.nonce })}`,
+    `/auth/google/callback?${query}${extraQuery ? `&${extraQuery}` : ""}`,
     {
       headers: { Cookie: `${attempt.cookie}${session ? `; ${session}` : ""}` },
     },
@@ -147,6 +152,7 @@ async function count(
     | "sessions"
     | "oauth_identities"
     | "oauth_attempts"
+    | "report_events"
     | "usage_quotas",
 ) {
   return env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first(
@@ -199,10 +205,99 @@ describe("Google OAuth browser flow", () => {
     expect(attempt.response.headers.get("Cache-Control")).toBe("no-store");
   });
 
+  it.each([
+    {
+      kind: "timeline",
+      value: "timeline-a1",
+      target: "/report?kind=timeline&timeline_id=timeline-a1",
+    },
+    {
+      kind: "link",
+      value: "public-link-a1",
+      target: "/report?kind=link&slug=public-link-a1",
+    },
+    {
+      kind: "timeline",
+      value: "timeline/a&next=attacker",
+      target:
+        "/report?kind=timeline&timeline_id=timeline%2Fa%26next%3Dattacker",
+    },
+  ])(
+    "restores a validated $kind report target after sign-in",
+    async ({ kind, value, target }) => {
+      const query = new URLSearchParams({
+        report_kind: kind,
+        report_value: value,
+      });
+      const attempt = await start(bindings, `?${query}`);
+      const stored =
+        await env.DB.prepare(`SELECT report_target_kind, report_target_value
+        FROM oauth_attempts WHERE state_hash = ?`)
+          .bind(await hashToken(attempt.state))
+          .first<{
+            report_target_kind: string | null;
+            report_target_value: string | null;
+          }>();
+      const response = await callback(attempt);
+
+      expect(stored).toEqual({
+        report_target_kind: kind,
+        report_target_value: value,
+      });
+      expect(attempt.url.searchParams.has("report_kind")).toBe(false);
+      expect(attempt.url.searchParams.has("report_value")).toBe(false);
+      expect(response.status).toBe(303);
+      expect(response.headers.get("Location")).toBe(target);
+      expect(await count("report_events")).toBe(0);
+    },
+  );
+
+  it.each([
+    ["an arbitrary next URL", "next=https%3A%2F%2Fattacker.test"],
+    ["a missing report value", "report_kind=timeline"],
+    ["a missing report kind", "report_value=timeline-a1"],
+    [
+      "a repeated report kind",
+      "report_kind=timeline&report_kind=link&report_value=timeline-a1",
+    ],
+    [
+      "a repeated report value",
+      "report_kind=link&report_value=first-link&report_value=second-link",
+    ],
+    [
+      "an extra query parameter",
+      "report_kind=timeline&report_value=timeline-a1&extra=value",
+    ],
+    [
+      "a malformed percent escape",
+      "report_kind=timeline&report_value=timeline%ZZ",
+    ],
+    [
+      "a Timeline identifier over 100 characters",
+      `report_kind=timeline&report_value=${"x".repeat(101)}`,
+    ],
+    [
+      "a Link slug outside the allowed expression",
+      "report_kind=link&report_value=Bad_Slug",
+    ],
+  ])(
+    "rejects %s before creating an OAuth attempt",
+    async (_description, query) => {
+      const response = await request(`/auth/google?${query}`);
+
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "INVALID_REQUEST" },
+      });
+      expect(await count("oauth_attempts")).toBe(0);
+    },
+  );
+
   it("uses host-only Secure cookies outside local development", async () => {
     const attempt = await start({ ...bindings, APP_ENV: "production" });
     const response = await callback(attempt);
     expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/");
     const session = response.headers
       .getSetCookie()
       .find((value) => value.startsWith("__Host-ages_session="));
@@ -269,12 +364,101 @@ describe("Google OAuth browser flow", () => {
       },
     );
     expect(denied.status).toBe(400);
+    expect(await count("oauth_attempts")).toBe(0);
     expect((await callback(attempt)).status).toBe(400);
     expect(exchanges).toHaveLength(0);
   });
 
-  it("permits only one of two simultaneous callbacks and rejects later replay", async () => {
+  it.each([
+    {
+      label: "identical state values",
+      extraQuery: (attempt: Awaited<ReturnType<typeof start>>) =>
+        `state=${attempt.state}`,
+    },
+    {
+      label: "different state values",
+      extraQuery: () => `state=${"z".repeat(43)}`,
+    },
+    {
+      label: "identical code values",
+      extraQuery: (attempt: Awaited<ReturnType<typeof start>>) =>
+        `code=${attempt.nonce}`,
+    },
+    {
+      label: "different code values",
+      extraQuery: () => "code=another-code",
+    },
+    {
+      label: "identical provider metadata values",
+      extraQuery: () => "scope=openid&scope=openid",
+    },
+  ])(
+    "rejects duplicate callback $label before consuming the attempt",
+    async ({ extraQuery }) => {
+      const attempt = await start();
+      const response = await callback(attempt, "", extraQuery(attempt));
+
+      expect(response.status).toBe(400);
+      expect(
+        response.headers
+          .getSetCookie()
+          .some(
+            (value) =>
+              value.startsWith("ages_oauth=;") && value.includes("Max-Age=0"),
+          ),
+      ).toBe(true);
+      expect(await count("oauth_attempts")).toBe(1);
+      expect(await count("sessions")).toBe(0);
+      expect(await count("report_events")).toBe(0);
+      expect(exchanges).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["an absolute next URL", "next=https%3A%2F%2Fattacker.test"],
+    ["an empty next value", "next="],
+  ])(
+    "rejects %s before consuming the OAuth attempt",
+    async (_description, extraQuery) => {
+      const attempt = await start();
+      const response = await callback(attempt, "", extraQuery);
+
+      expect(response.status).toBe(400);
+      expect(
+        response.headers
+          .getSetCookie()
+          .some(
+            (value) =>
+              value.startsWith("ages_oauth=;") && value.includes("Max-Age=0"),
+          ),
+      ).toBe(true);
+      expect(await count("oauth_attempts")).toBe(1);
+      expect(await count("sessions")).toBe(0);
+      expect(await count("report_events")).toBe(0);
+      expect(exchanges).toHaveLength(0);
+    },
+  );
+
+  it("allows unique provider metadata without using it as a redirect", async () => {
     const attempt = await start();
+    const response = await callback(
+      attempt,
+      "",
+      "scope=openid&authuser=0&prompt=consent",
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("Location")).toBe("/");
+    expect(await count("oauth_attempts")).toBe(0);
+    expect(await count("sessions")).toBe(1);
+    expect(exchanges).toHaveLength(1);
+  });
+
+  it("permits only one of two simultaneous callbacks and rejects later replay", async () => {
+    const attempt = await start(
+      bindings,
+      "?report_kind=timeline&report_value=timeline-replay-a1",
+    );
     const responses = await Promise.all([callback(attempt), callback(attempt)]);
     expect(responses.map((response) => response.status).sort()).toEqual([
       303, 400,
@@ -282,6 +466,11 @@ describe("Google OAuth browser flow", () => {
     expect(exchanges).toHaveLength(1);
     expect(await count("sessions")).toBe(1);
     expect(await count("oauth_attempts")).toBe(0);
+    expect(
+      responses
+        .find((response) => response.status === 303)
+        ?.headers.get("Location"),
+    ).toBe("/report?kind=timeline&timeline_id=timeline-replay-a1");
     expect((await callback(attempt)).status).toBe(400);
     const exchange = exchanges[0];
     expect(exchange?.get("code_verifier")).toMatch(/^[A-Za-z0-9_-]{43}$/);

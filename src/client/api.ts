@@ -75,6 +75,18 @@ export type ReportPage = {
   }[];
   next_cursor: string | null;
 };
+export type ReportTarget =
+  | { kind: "timeline"; timeline_id: string }
+  | { kind: "link"; slug: string };
+export type ReportCategory =
+  | "spam"
+  | "abuse"
+  | "copyright"
+  | "illegal"
+  | "other";
+export type ReportReceipt = {
+  report: { id: string; status: "received" };
+};
 export type UploadIntent = {
   asset: Omit<LibraryAsset, "tags">;
   upload: {
@@ -98,15 +110,28 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
     credentials: "same-origin",
   });
-  const payload = await response.json();
   if (!response.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      // Preserve the HTTP status when an error body is empty or malformed.
+    }
+    const envelope =
+      payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as { error?: unknown }).error
+        : null;
+    const error =
+      envelope && typeof envelope === "object" && !Array.isArray(envelope)
+        ? (envelope as { code?: unknown; message?: unknown })
+        : null;
     throw new RequestError(
-      payload.error?.code ?? "REQUEST_FAILED",
-      payload.error?.message ?? "Please try again.",
+      typeof error?.code === "string" ? error.code : "REQUEST_FAILED",
+      typeof error?.message === "string" ? error.message : "Please try again.",
       response.status,
     );
   }
-  return payload as T;
+  return (await response.json()) as T;
 }
 export function jsonBody(value: unknown) {
   return {
