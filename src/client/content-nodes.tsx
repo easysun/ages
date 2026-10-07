@@ -40,6 +40,7 @@ export function ContentNodesScreen({
 }): React.JSX.Element {
   const authGenerationRef = useRef(authGeneration);
   authGenerationRef.current = authGeneration;
+  const collectionGenerationRef = useRef(0);
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [timelines, setTimelines] = useState<TimelinePage["timelines"]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -63,8 +64,14 @@ export function ContentNodesScreen({
   const [editTitle, setEditTitle] = useState("");
   const [editVisibility, setEditVisibility] = useState<Visibility>("private");
 
+  function refreshCollection() {
+    collectionGenerationRef.current += 1;
+    setRefreshVersion((version) => version + 1);
+  }
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshVersion intentionally triggers a fresh collection read.
   useEffect(() => {
+    const generation = ++collectionGenerationRef.current;
     const controller = new AbortController();
     let active = true;
     setLoading(true);
@@ -78,7 +85,12 @@ export function ContentNodesScreen({
       }),
     ])
       .then(([page, timelinePage]) => {
-        if (!active || authGenerationRef.current !== authGeneration) return;
+        if (
+          !active ||
+          authGenerationRef.current !== authGeneration ||
+          collectionGenerationRef.current !== generation
+        )
+          return;
         setNodes(page.nodes);
         setNextCursor(page.next_cursor);
         setTimelines(timelinePage.timelines);
@@ -89,11 +101,21 @@ export function ContentNodesScreen({
         );
       })
       .catch((reason: unknown) => {
-        if (!active || controller.signal.aborted) return;
+        if (
+          !active ||
+          controller.signal.aborted ||
+          authGenerationRef.current !== authGeneration ||
+          collectionGenerationRef.current !== generation
+        )
+          return;
         setError(errorMessage(reason));
       })
       .finally(() => {
-        if (active && authGenerationRef.current === authGeneration)
+        if (
+          active &&
+          authGenerationRef.current === authGeneration &&
+          collectionGenerationRef.current === generation
+        )
           setLoading(false);
       });
     return () => {
@@ -158,7 +180,7 @@ export function ContentNodesScreen({
       setExternalUrl("");
       setExternalTitle("");
       setStatus("Reference added.");
-      setRefreshVersion((version) => version + 1);
+      refreshCollection();
     } catch (reason) {
       if (authGenerationRef.current === generation)
         setError(errorMessage(reason));
@@ -187,7 +209,7 @@ export function ContentNodesScreen({
       if (authGenerationRef.current !== generation) return;
       setSelectedId(result.node.id);
       setStatus("Timeline reference added.");
-      setRefreshVersion((version) => version + 1);
+      refreshCollection();
     } catch (reason) {
       if (authGenerationRef.current === generation)
         setError(errorMessage(reason));
@@ -218,7 +240,7 @@ export function ContentNodesScreen({
       );
       if (authGenerationRef.current !== generation) return;
       setStatus("Reference saved.");
-      setRefreshVersion((version) => version + 1);
+      refreshCollection();
     } catch (reason) {
       if (authGenerationRef.current === generation)
         setError(errorMessage(reason));
@@ -241,7 +263,7 @@ export function ContentNodesScreen({
       if (authGenerationRef.current !== generation) return;
       setSelectedId(null);
       setStatus("Reference removed. The original content is still intact.");
-      setRefreshVersion((version) => version + 1);
+      refreshCollection();
     } catch (reason) {
       if (authGenerationRef.current === generation)
         setError(errorMessage(reason));
@@ -264,7 +286,7 @@ export function ContentNodesScreen({
       setRemovedMode(false);
       setSelectedId(result.node.id);
       setStatus("Reference restored.");
-      setRefreshVersion((version) => version + 1);
+      refreshCollection();
     } catch (reason) {
       if (authGenerationRef.current === generation)
         setError(errorMessage(reason));
@@ -276,13 +298,18 @@ export function ContentNodesScreen({
   async function loadMore() {
     if (!nextCursor || loading) return;
     const generation = authGeneration;
+    const collectionGeneration = collectionGenerationRef.current;
     setLoading(true);
     setError("");
     try {
       const page = await api<NodePage>(
         `${collectionPath(removedMode)}&cursor=${encodeURIComponent(nextCursor)}`,
       );
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        collectionGenerationRef.current !== collectionGeneration
+      )
+        return;
       setNodes((current) => [
         ...current,
         ...page.nodes.filter(
@@ -291,16 +318,30 @@ export function ContentNodesScreen({
       ]);
       setNextCursor(page.next_cursor);
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        collectionGenerationRef.current === collectionGeneration
+      )
         setError(errorMessage(reason));
     } finally {
-      if (authGenerationRef.current === generation) setLoading(false);
+      if (
+        authGenerationRef.current === generation &&
+        collectionGenerationRef.current === collectionGeneration
+      )
+        setLoading(false);
     }
   }
 
   function changeCollection() {
+    collectionGenerationRef.current += 1;
+    setNodes([]);
+    setNextCursor(null);
     setSelectedId(null);
     setDetail(null);
+    setDetailLoading(false);
+    setDetailError("");
+    setLoading(true);
+    setError("");
     setStatus("");
     setRemovedMode((removed) => !removed);
   }
@@ -335,11 +376,7 @@ export function ContentNodesScreen({
           <p className="error" role="alert">
             {error}
           </p>
-          <button
-            type="button"
-            className="button"
-            onClick={() => setRefreshVersion((version) => version + 1)}
-          >
+          <button type="button" className="button" onClick={refreshCollection}>
             Try again
           </button>
         </div>
@@ -509,7 +546,7 @@ export function ContentNodesScreen({
                 <button
                   type="button"
                   className="button"
-                  onClick={() => setRefreshVersion((version) => version + 1)}
+                  onClick={refreshCollection}
                 >
                   Try again
                 </button>

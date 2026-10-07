@@ -1,4 +1,5 @@
-import { type BrowserContext, expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 import {
   e2eOrigin,
   executeFixtureSql,
@@ -41,6 +42,127 @@ async function ownerFixture(context: BrowserContext) {
   const { owner, ids } = await seedLibrary(context);
   const timeline = seedTimeline(owner, ids, 1, "A private memory");
   return { owner, ids, timeline };
+}
+
+async function seedNodeCollections(
+  context: BrowserContext,
+  liveCount = 31,
+  removedCount = 31,
+) {
+  const { owner } = await seedLibrary(context);
+  const firstTimestamp = Date.now();
+  const makeNodes = (collection: "live" | "removed", count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `cn_${randomUUID()}`,
+      title: `${collection === "live" ? "Live" : "Removed"} page ${index}`,
+      url: `https://example.test/${collection}/${index}`,
+      createdAt: new Date(
+        firstTimestamp +
+          (collection === "live" ? removedCount + index : index) * 1000,
+      ).toISOString(),
+      removed: collection === "removed",
+    }));
+  const liveNodes = makeNodes("live", liveCount);
+  const removedNodes = makeNodes("removed", removedCount);
+  const inserts = [...removedNodes, ...liveNodes].map((node) => {
+    const removedAt = node.removed ? `'${node.createdAt}'` : "NULL";
+    return (
+      "INSERT INTO content_nodes (id, owner_id, kind, visibility, timeline_id, url, title, created_at, updated_at, removed_at) " +
+      `VALUES ('${node.id}', '${owner}', 'external', 'private', NULL, '${node.url}', '${node.title}', '${node.createdAt}', '${node.createdAt}', ${removedAt});`
+    );
+  });
+  executeFixtureSql(inserts.join("\n"));
+  return { liveNodes, removedNodes };
+}
+
+type CollectionMode = "live" | "removed";
+type PageResponseGate = {
+  collection: CollectionMode;
+  hasCursor: boolean;
+  fail?: boolean;
+  titles: Promise<string[]>;
+  resume: Promise<void>;
+  release: () => void;
+  finished: Promise<void>;
+  complete: () => void;
+  setTitles: (titles: string[]) => void;
+};
+
+function pageResponseGate(
+  collection: CollectionMode,
+  hasCursor: boolean,
+  fail = false,
+): PageResponseGate {
+  let resolveTitles!: (titles: string[]) => void;
+  let resolveResume!: () => void;
+  let resolveFinished!: () => void;
+  return {
+    collection,
+    hasCursor,
+    fail,
+    titles: new Promise((resolve) => {
+      resolveTitles = resolve;
+    }),
+    resume: new Promise((resolve) => {
+      resolveResume = resolve;
+    }),
+    release: () => resolveResume(),
+    finished: new Promise((resolve) => {
+      resolveFinished = resolve;
+    }),
+    complete: () => resolveFinished(),
+    setTitles: (titles) => resolveTitles(titles),
+  };
+}
+
+async function waitForBrowserRender(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+}
+
+async function interceptPageGates(page: Page, gates: PageResponseGate[]) {
+  await page.route("**/api/content-nodes?**", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const url = new URL(route.request().url());
+    const collection: CollectionMode =
+      url.searchParams.get("removed") === "true" ? "removed" : "live";
+    const hasCursor = url.searchParams.has("cursor");
+    const gateIndex = gates.findIndex(
+      (gate) => gate.collection === collection && gate.hasCursor === hasCursor,
+    );
+    if (gateIndex < 0) return route.continue();
+    const [gate] = gates.splice(gateIndex, 1);
+    if (!gate) return route.continue();
+
+    try {
+      const response = await route.fetch();
+      const payload = (await response.json()) as { nodes: NodePayload[] };
+      gate.setTitles(payload.nodes.map((node) => node.title ?? ""));
+      await gate.resume;
+      if (gate.fail) {
+        await route
+          .fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: {
+                code: "SERVICE_UNAVAILABLE",
+                message: "A stale page read failed.",
+              },
+            }),
+          })
+          .catch(() => undefined);
+      } else {
+        await route.fulfill({ response }).catch(() => undefined);
+      }
+    } finally {
+      gate.complete();
+    }
+  });
 }
 
 async function ownerCookie(context: BrowserContext) {
@@ -136,6 +258,15 @@ test("private_nodes_require_owner", async ({ page, context }) => {
     },
   );
   expect((await unavailable.json()).effective_visibility).toBeNull();
+
+  executeFixtureSql(
+    `UPDATE timelines SET moderation_blocked=0 WHERE id='${timeline.id}';`,
+  );
+  const availableOwner = await page.goto(`/c/${node.id}`);
+  expect(availableOwner?.status()).toBe(200);
+  await expect(
+    page.getByRole("heading", { name: "A private memory", exact: true }),
+  ).toBeVisible();
 
   executeFixtureSql(
     `UPDATE sessions SET expires_at='${new Date(Date.now() - 60_000).toISOString()}' WHERE user_id='${ownerUser}';`,
@@ -349,6 +480,169 @@ test("restore_removed_reference_after_refresh", async ({ page, context }) => {
       ),
     )
     .toBe(true);
+});
+
+test("collection_switch_discards_delayed_pages_in_both_directions", async ({
+  page,
+  context,
+}) => {
+  await seedNodeCollections(context);
+  const gates: PageResponseGate[] = [];
+  await interceptPageGates(page, gates);
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+
+  const livePage = pageResponseGate("live", true);
+  gates.push(livePage);
+  await page.getByRole("button", { name: "Load more references" }).click();
+  expect(await livePage.titles).toEqual(["Live page 0"]);
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Restore Removed page 30" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+  livePage.release();
+  await livePage.finished;
+  await page.waitForLoadState("networkidle");
+  await expect(
+    page.getByRole("button", { name: "Restore Live page 0" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+
+  const removedPage = pageResponseGate("removed", true);
+  gates.push(removedPage);
+  await page.getByRole("button", { name: "Load more references" }).click();
+  expect(await removedPage.titles).toEqual(["Removed page 0"]);
+  await page.getByRole("button", { name: "Show live references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+  removedPage.release();
+  await removedPage.finished;
+  await page.waitForLoadState("networkidle");
+  await expect(
+    page.getByRole("button", { name: "Edit Removed page 0" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+});
+
+test("failed_collection_switch_clears_old_rows_and_retry_reloads_both_modes", async ({
+  page,
+  context,
+}) => {
+  await ownerFixture(context);
+  const live = await createExternal(context, "private", "Live only");
+  const removed = await createExternal(context, "private", "Removed only");
+  const deleted = await context.request.delete(
+    `/api/content-nodes/${removed.id}`,
+    { headers: await ownerHeaders(context) },
+  );
+  expect(deleted.status()).toBe(200);
+
+  let failNext: CollectionMode | null = null;
+  await page.route("**/api/content-nodes?**", async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const url = new URL(route.request().url());
+    const collection: CollectionMode =
+      url.searchParams.get("removed") === "true" ? "removed" : "live";
+    if (collection === failNext && !url.searchParams.has("cursor")) {
+      failNext = null;
+      return route.abort("failed");
+    }
+    return route.continue();
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: `Edit ${live.title}` }),
+  ).toBeVisible();
+  failNext = "removed";
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `Restore ${live.title}` }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("button", { name: `Restore ${removed.title}` }),
+  ).toBeVisible();
+
+  failNext = "live";
+  await page.getByRole("button", { name: "Show live references" }).click();
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `Edit ${removed.title}` }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("button", { name: `Edit ${live.title}` }),
+  ).toBeVisible();
+});
+
+test("refresh_discards_stale_pagination_errors_and_loading_state", async ({
+  page,
+  context,
+}) => {
+  const { liveNodes } = await seedNodeCollections(context, 31, 0);
+  const gates: PageResponseGate[] = [];
+  await interceptPageGates(page, gates);
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+
+  const stalePage = pageResponseGate("live", true, true);
+  gates.push(stalePage);
+  await page.getByRole("button", { name: "Load more references" }).click();
+  expect(await stalePage.titles).toEqual(["Live page 0"]);
+  const removedPageNode = liveNodes.find(
+    (node) => node.title === "Live page 0",
+  );
+  if (!removedPageNode) throw new Error("Expected a paginated live node");
+  const deleted = await context.request.delete(
+    `/api/content-nodes/${removedPageNode.id}`,
+    { headers: await ownerHeaders(context) },
+  );
+  expect(deleted.status()).toBe(200);
+
+  const refreshedPage = pageResponseGate("live", false);
+  gates.push(refreshedPage);
+  await page.getByLabel("Title", { exact: true }).fill("Refresh marker");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  expect(await refreshedPage.titles).toContain("Refresh marker");
+  stalePage.release();
+  await stalePage.finished;
+  await waitForBrowserRender(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 0" }),
+  ).toHaveCount(0);
+
+  refreshedPage.release();
+  await refreshedPage.finished;
+  await expect(
+    page.getByRole("button", { name: "Edit Refresh marker" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 0" }),
+  ).toHaveCount(0);
 });
 
 test("logout_discards_delayed_node_result", async ({ page, context }) => {

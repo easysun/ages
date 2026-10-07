@@ -273,6 +273,24 @@ describe("effective Timeline node visibility", () => {
   });
 });
 
+describe("public ContentNode pages", () => {
+  it("never fetches an external target while rendering the page", async () => {
+    const created = await createExternal(
+      "https://example.test/no-server-fetch",
+      "External page",
+      "public",
+    );
+    const outboundFetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(null, { status: 502 }));
+
+    const response = await request(`/c/${created.id}`, "GET", undefined, "");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("External page");
+    expect(outboundFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe("owner ContentNode API", () => {
   it("owner detail reports effective visibility and unavailable targets", async () => {
     const timelineId = await createTimeline("Private source");
