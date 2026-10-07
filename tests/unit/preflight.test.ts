@@ -24,6 +24,8 @@ function configured() {
         "/health/*",
         "/t",
         "/t/*",
+        "/c",
+        "/c/*",
         "/s",
         "/s/*",
       ],
@@ -168,6 +170,15 @@ describe("Release environment isolation", () => {
     config.env.preview.vars.R2_BUCKET_NAME = "ages-preview-media";
     config.assets.run_worker_first = ["/api/*"];
     expect(() => releaseTarget(config, "preview")).toThrow("Worker route");
+
+    const missingContentNodeRoute = configured();
+    missingContentNodeRoute.assets.run_worker_first =
+      missingContentNodeRoute.assets.run_worker_first.filter(
+        (route) => route !== "/c" && route !== "/c/*",
+      );
+    expect(() => releaseTarget(missingContentNodeRoute, "preview")).toThrow(
+      "Worker route",
+    );
   });
   it("never accepts credential values in committed configuration", () => {
     const config = configured();

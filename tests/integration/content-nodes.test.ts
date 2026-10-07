@@ -274,6 +274,32 @@ describe("effective Timeline node visibility", () => {
 });
 
 describe("owner ContentNode API", () => {
+  it("owner detail reports effective visibility and unavailable targets", async () => {
+    const timelineId = await createTimeline("Private source");
+    const created = await createNode({
+      kind: "timeline",
+      timeline_id: timelineId,
+      visibility: "public",
+    });
+
+    const detail = await node(created.id);
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({
+      node: { id: created.id, visibility: "public" },
+      effective_visibility: "private",
+    });
+
+    await env.DB.prepare("UPDATE timelines SET moderation_blocked=1 WHERE id=?")
+      .bind(timelineId)
+      .run();
+    const unavailable = await node(created.id);
+    expect(unavailable.status).toBe(200);
+    expect(await unavailable.json()).toMatchObject({
+      node: { id: created.id },
+      effective_visibility: null,
+    });
+  });
+
   it("creates private nodes by default and never stores Timeline titles in node metadata", async () => {
     const timelineId = await createTimeline("Private original title");
     const timelineNode = await createNode({

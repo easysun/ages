@@ -13,6 +13,7 @@ import { linkAnalytics } from "./routes/link-analytics";
 import { linkResolver, links } from "./routes/links";
 import { me } from "./routes/me";
 import { administration, reports } from "./routes/moderation";
+import { publicContentNode } from "./routes/public-content-node";
 import { publicTimeline } from "./routes/public-timeline";
 import { timelines } from "./routes/timelines";
 import { uploads } from "./routes/uploads";
@@ -64,5 +65,6 @@ export function createApp() {
   app.route("/s", linkResolver);
 
   app.route("/t", publicTimeline);
+  app.route("/c", publicContentNode);
   return app;
 }

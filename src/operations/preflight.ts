@@ -293,7 +293,7 @@ export function validateReleaseTarget(
   const precedence = assets.run_worker_first;
   requireValue(
     Array.isArray(precedence) &&
-      ["api", "auth", "health", "t", "s"].every(
+      ["api", "auth", "health", "t", "c", "s"].every(
         (prefix) =>
           precedence.includes(`/${prefix}`) &&
           precedence.includes(`/${prefix}/*`),

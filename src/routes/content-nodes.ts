@@ -6,6 +6,7 @@ import type { AppContext } from "../bindings";
 import {
   type ContentNode,
   createContentNodeSchema,
+  effectiveNode,
   publicNodePayload,
   updateContentNodeSchema,
 } from "../graph/nodes";
@@ -175,13 +176,15 @@ contentNodes.get("/", async (context) => {
 });
 
 contentNodes.get("/:id", async (context) => {
-  const row = await readOwnedNode(
-    context.env.DB,
-    context.req.param("id"),
-    context.get("user").id,
-  );
+  const owner = context.get("user").id;
+  const id = context.req.param("id");
+  const row = await readOwnedNode(context.env.DB, id, owner);
   if (!row) throw new ApiError("NOT_FOUND");
-  return context.json({ node: publicNodePayload(row) });
+  const effective = await effectiveNode(context.env.DB, id, owner);
+  return context.json({
+    node: publicNodePayload(row),
+    effective_visibility: effective?.visibility ?? null,
+  });
 });
 
 contentNodes.patch("/:id", async (context) => {
