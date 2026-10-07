@@ -221,6 +221,19 @@ describe("Durable endpoint limits", () => {
       404,
     );
   });
+  it("limits unauthenticated ContentNode API attempts by trusted IP", async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 610 }, () =>
+        request("/api/content-nodes", "GET", "", "203.0.113.3"),
+      ),
+    );
+    expect(
+      responses.filter((response) => response.status === 401),
+    ).toHaveLength(600);
+    expect(
+      responses.filter((response) => response.status === 429),
+    ).toHaveLength(10);
+  });
   it("requires cloud IP metadata, uses fallback only locally, and never records raw IP/session/query secrets", async () => {
     expect(
       (

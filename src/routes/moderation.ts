@@ -3,6 +3,7 @@ import { encodeCursor, libraryQuery } from "../assets/library";
 import { assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
+import { contentNodeModerationSchema } from "../graph/nodes";
 import { ApiError } from "../http/errors";
 import { parseJson } from "../http/json";
 import {
@@ -30,6 +31,79 @@ administration.use("*", requireUser, async (context, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(context.req.method))
     assertSameOrigin(context);
   await next();
+});
+administration.get("/content-nodes/:id", async (context) => {
+  const operator = context.get("user").id;
+  const id = context.req.param("id");
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare(
+      "SELECT moderation_blocked FROM content_nodes WHERE id=? AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')",
+    ).bind(id, operator),
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(operator),
+  ]);
+  if ((result[1]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const row = result[0]?.results[0] as
+    | { moderation_blocked: number }
+    | undefined;
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    moderation: { node_id: id, blocked: row.moderation_blocked === 1 },
+  });
+});
+administration.patch("/content-nodes/:id", async (context) => {
+  const input = await parseJson(context, contentNodeModerationSchema);
+  const operator = context.get("user").id;
+  const id = context.req.param("id");
+  const action = `cne_${crypto.randomUUID()}`;
+  const blocked = Number(input.blocked);
+  const stamp = new Date().toISOString();
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare(`INSERT INTO content_node_moderation_events
+      (id, moderator_id, node_id, previous_blocked, blocked, reason, created_at)
+      SELECT ?, ?, id, moderation_blocked, ?, ?, ? FROM content_nodes
+      WHERE id=? AND moderation_blocked != ?
+        AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      action,
+      operator,
+      blocked,
+      input.reason,
+      stamp,
+      id,
+      blocked,
+      operator,
+    ),
+    context.env.DB.prepare(`UPDATE content_nodes SET moderation_blocked=?, updated_at=?
+      WHERE id=? AND moderation_blocked != ?
+        AND EXISTS(SELECT 1 FROM content_node_moderation_events
+          WHERE id=? AND moderator_id=? AND node_id=? AND blocked=?)
+        AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      blocked,
+      stamp,
+      id,
+      blocked,
+      action,
+      operator,
+      id,
+      blocked,
+      operator,
+    ),
+    context.env.DB.prepare(`SELECT moderation_blocked FROM content_nodes WHERE id=?
+      AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      id,
+      operator,
+    ),
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(operator),
+  ]);
+  if ((result[3]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const row = result[2]?.results[0] as
+    | { moderation_blocked: number }
+    | undefined;
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    moderation: { node_id: id, blocked: row.moderation_blocked === 1 },
+  });
 });
 administration.get("/reports", async (context) => {
   const owner = context.get("user").id;

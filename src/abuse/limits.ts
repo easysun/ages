@@ -40,7 +40,7 @@ async function consume(
 export const requestLimits = createMiddleware<AppContext>(
   async (context, next) => {
     const protectedPath =
-      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|links|reports|admin)(?:\/|$)|t(?:\/|$)|s(?:\/|$))/.test(
+      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|content-nodes|links|reports|admin)(?:\/|$)|t(?:\/|$)|s(?:\/|$))/.test(
         context.req.path,
       );
     if (!protectedPath) return next();
