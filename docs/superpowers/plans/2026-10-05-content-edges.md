@@ -1,0 +1,71 @@
+# Typed Content Relations and Backlinks Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Let source owners create typed content relationships with immediate public backlinks and protected unlisted/private relationships.
+
+**Architecture:** Directed D1 edges reference durable nodes from the Content Nodes plan; no reciprocal edge is created. Every outbound/inbound read recomputes effective endpoint access. Target-owner blocking and administrator moderation use independent state, and both must permit visibility; administrator changes have append-only audit history. A target owner can accept an unlisted cross-owner edge or suppress/block/report an incoming relation.
+
+**Tech Stack:** Existing Hono/D1/Zod/React/Vitest/Playwright.
+
+**Spec:** `docs/superpowers/specs/2026-10-04-tracking-content-graph-design.md`, delivery slice4. Requires merged `2026-10-05-content-nodes.md` interfaces; no dependency on vendor providers.
+
+## Global Constraints
+
+- Types are exactly `related_to`, `references`, `continuation`; source must belong to authenticated creator.
+- Both effectively public endpoints activate immediately, including different owners; this is a source assertion, not endorsement.
+- Either effectively unlisted endpoint requires target-owner acceptance for cross-owner edges; acceptance never overrides privacy or moderation. Private cross-owner relations are forbidden.
+- Same-owner private relations are owner-only; source/target must both be accessible at read time. Never list an unlisted node through public backlinks, directory or index.
+- Public attribution uses the fixed non-identifying “added by source owner” label in v1; never use auth display name/email. No reverse edge, social feed, public hashtags or Asset graph grant.
+- English committed content; no destructive target operations or remote migration/deployment.
+
+## Review Focus
+
+1. Previously public edge must hide when either endpoint becomes unlisted/private (Task1).
+2. Pending unlisted relations must not reveal source IDs/titles in anonymous backlink listings (Task1).
+3. Visibility changes must not reactivate previously suppressed/blocked edges (Task1).
+4. Target-owner and administrator blocks are independent: neither authority can clear the other's block, and suppression changes neither block (Task1).
+5. Foreign source writes and target moderation must not modify unrelated edges (Task1).
+6. Delayed acceptance/report responses must not reappear after logout, auth-generation changes, or node selection changes, and stale requests must not clear newer state (Task2).
+7. Every viewer-specific edge response is `private, no-store`, including the early anonymous GET route (Task1).
+
+---
+
+### Task 1: Directed edges, authorization and review controls
+
+**Representative contract assertions:**
+
+```ts
+expect((await visibleEdges(db, target.id, 'incoming', null, null, null, 30)).edges).toHaveLength(1);
+expect((await visibleEdges(db, source.id, 'incoming', null, null, null, 30)).edges).toHaveLength(0);
+```
+Create one effectively public directed edge through its source owner; there is no reverse row.
+
+
+**Files:** Create `migrations/0019_content_edges.sql` (provisional; allocate the next unused number after inspecting the merged Content Nodes migration and current directory), `src/graph/edges.ts`, `src/routes/content-edges.ts`, `tests/integration/content-edges.test.ts`; modify `src/routes/content-nodes.ts`, `src/routes/moderation.ts`, `src/moderation/reports.ts`, `src/abuse/limits.ts`, `src/app.ts`. Read current report validation/append-only model before adding graph reporting.
+
+**Interfaces:** `ContentEdge = {id:string;source_id:string;target_id:string;type:'related_to'|'references'|'continuation';creator_id:string;accepted_at:string|null;suppressed_at:string|null;target_owner_blocked_at:string|null;admin_blocked:boolean;removed_at:string|null;created_at:string}`. Target-owner `block`/`unblock` changes only `target_owner_blocked_at`; administrator block/unblock changes only `admin_blocked`. An edge is visible only when it is accepted when required, unsuppressed, not removed, not blocked by either authority, and both endpoints are effectively accessible. Suppression/unsuppression never changes either block state. Admin state transitions append rows to `content_edge_moderation_events` with moderator ID, edge ID, previous/new blocked state, reason, and timestamp; prohibit update/delete on those audit rows. `visibleEdges(db:D1Database, nodeId:string, direction:'incoming'|'outgoing', viewerId:string|null, knownNodeId:string|null, cursor:string|null, limit:number):Promise<{edges:PublicEdge[];next_cursor:string|null}>`; `PublicEdge = {id:string;type:ContentEdge['type'];source:{id:string;title:string|null};target:{id:string;title:string|null};attribution:'added by source owner';created_at:string}`. Payload contains no creator account ID/email. Use effectiveNode from slice3 for every endpoint.
+
+- [ ] Write `public_foreign_edge_is_immediate_not_reciprocal`, `unlisted_edge_requires_target_acceptance_and_known_endpoints`, `private_cross_owner_edge_is_rejected`, `visibility_change_hides_existing_edge`, `suppression_survives_visibility_changes`, `target_owner_and_admin_blocks_are_independent`, `suppression_cannot_clear_either_block`, `admin_block_changes_append_audit_event`, `foreign_source_write_fails`, `blocked_story_member_hides_backlink`. Assert no reverse row, duplicate triple409, source owner only, target owner control only, neither authority can unblock the other's state, admin audit rows retain actor/prior state/new state/reason/time, both endpoint policies/moderation rechecked, pagination cannot disclose hidden counts/cursors and cross-origin403.
+- [ ] Run `npx vitest run tests/integration/content-edges.test.ts`; observe absent edge endpoints fail.
+- [ ] Create constrained edge table with nodeFKs and unique live source/target/type, creator-source ownership enforced on insertion; no physical node cascade. Reject self-edge400. POST `/api/content-edges` `{source_id,target_id,type}`; DELETE `/:id` marks removed (creator only); PATCH `/:id` `{action:'accept'|'suppress'|'unsuppress'|'block'|'unblock'}` target owner only. Separate acceptance/suppression/block state so unsuppress cannot clear a block. Public-created edges retain `accepted_at:null`; after a transition to unlisted they need explicit acceptance, never historical auto-acceptance. Same-owner edges need no acceptance but private reads remain owner-only.
+- [ ] Expose GET `/api/content-nodes/:id/edges?direction=incoming|outgoing&known_node=<id>&cursor=...&limit=...` default30/max100. Anonymous unqualified lists include only both-public endpoints. Owner may list only relations whose endpoints they can access. Unlisted non-owner access requires nodeId and explicit opposite known_node ID supplied by viewer (possession of both unlisted node URLs); return only that pair after acceptance, no discovery of other unlisted sources/targets. Cursor namespace `edges.` binds viewer, node, direction and known_node; validate duplicate/unknown queries strictly. No hidden totals. Private foreign endpoint remains excluded even with its ID. Register the anonymous edge-read route before the existing owner-only `/api/content-nodes` wildcard middleware, without weakening node CRUD authentication. Set `Cache-Control: private, no-store` in that early GET handler before query validation or any return/throw so anonymous, owner, pair-qualified, and error responses are never cached. Regression tests must prove anonymous both-public edge reads succeed, pair-qualified unlisted reads include the header, and existing owner node list/detail still return401.
+- [ ] Add owner-only pending inbox GET `/api/content-nodes/:id/incoming-review` with public or unlisted source only, exact target ownership and bounded keyset. Include fixed attribution and no auth identity. Endpoint possession permits review by target owner without publishing unlisted source to other viewers.
+- [ ] Store graph-specific reports separately in append-only `content_edge_reports` rows (reporter,edge,category,detail,created_at), with database guards against update/delete. POST `/api/content-edges/:id/reports` is authenticated, target-owner-only in v1, uses the existing five categories/detail1000 validation and same-origin protection, deduplicates each reporter/edge pair within the rolling 24-hour window, and enforces one shared maximum of 20 report events per reporter per rolling 24 hours across `report_events` and `content_edge_reports`. Both the graph insert and existing `createReport` insert must count recent rows from both tables atomically, so alternating routes cannot bypass the cap; test graph-after-existing and existing-after-graph rejection at the combined limit. Add admin role-protected GET `/api/admin/content-edge-reports` keyset and PATCH `/api/admin/content-edges/:id` reasoned block/unblock with append-only graph audit rows. Update request-limit routing so `/api/content-edges` receives the existing global per-IP limit; authenticated edge/admin mutations receive the existing per-user `writes` budget; graph report POST also receives the existing per-user `reports` budget (10/minute), as `/api/reports` does today. Match `POST /api/content-edges/:id/reports` explicitly with one edge-ID segment and verify it consumes both reports and writes counters. There is no separate configured moderation budget. Add tests proving graph routes cannot bypass the global IP limit, write budget, reports budget, daily cap, deduplication, or append-only event guarantees.
+- [ ] Re-run focused integration and existing moderation tests, apply the migration locally and rerun `CI=true AGES_E2E_PORT=8811 AGES_E2E_TRACKING_PORT=8812 npm run check` before commit; commit `Add typed content edges and protected backlink queries`.
+
+### Task 2: Relations, backlink rendering and moderation UI
+
+**Files:** Create `src/client/content-edges.tsx`, `tests/e2e/content-edges.spec.ts`; modify `src/client/content-nodes.tsx`, `src/graph/render.ts`, `src/routes/public-content-node.ts`, `src/client/moderation.tsx`, `src/client/api.ts`, `src/client/styles.css`, `README.md`.
+
+**Interfaces:** `ContentEdgesPanel({nodeId:string;authGeneration:number}):React.JSX.Element` consumes Task1 routes. Node SSR uses `visibleEdges` for bounded first-page public backlinks only; authenticated owner controls use ownerAPI, never embed sensitive pending inbox into anonymous HTML.
+
+- [ ] Write `public_relation_appears_as_backlink`, `pending_unlisted_is_owner_review_only`, `target_suppresses_and_reports_without_endorsement`, `moderator_block_hides_edge_without_deleting_nodes`, `authorization_failures_clear_private_relation_state_for_401_and_403_even_with_malformed_bodies`, `late_relation_response_after_logout_or_auth_generation_change_is_discarded`, `late_acceptance_after_node_switch_is_discarded`, `late_report_after_node_switch_is_discarded`. Assert relation types, creator-source check, explicit acceptance, fixed attribution, no reciprocal link, invalid access404, moderation reason/audit retention, keyboard/mobile/retry, refresh persistence and nooverflow. For 401 and 403, assert pending inbox and pair-qualified relation state are cleared based on HTTP status even when the response body is malformed, and protected controls stay disabled until access is refreshed. For every read and write, gate success, error, and finally updates on current request ownership for both `authGeneration` and `nodeId` plus a request generation; after logout, auth-generation change, or node selection change, stale responses must neither repopulate nor clear newer state. Anonymous public HTML must contain neither unlisted source title nor ID before/after acceptance.
+- [ ] Run `npm run test:e2e -- tests/e2e/content-edges.spec.ts`; observe missing relation controls/backlinks fail.
+- [ ] Add typed target-URL/ID form (owner chooses known target, no global search), outgoing relationships, incoming owner review and suppression/block/report controls. Accepted unlisted cross-owner relations are shown only in the pair-qualified view; do not link to undisclosed nodes from generic public lists. Extend admin console with separate graph-report queue and authoritative reasoned edge/node state (node moderation API from slice3); reuse access invalidation and confirmed-write/retry semantics. A 401/403 determined from `RequestError.status` clears all private inbox and pair-qualified relation data and disables protected controls until an authorized refresh; malformed error JSON does not change this behavior. Every async completion path checks that its auth generation, selected node ID, and local request generation still own the state update, including `finally`, so old reads/writes cannot modify or clear a newer selection.
+- [ ] Re-run focused desktop/mobile tests serially; inspect screenshots. README explains directed assertion, effective privacy and URL-possession limits; Link expiry does not delete relation identity.
+- [ ] Run `CI=true AGES_E2E_PORT=8811 AGES_E2E_TRACKING_PORT=8812 npm run check` and `git diff --check` before commit; commit `Render safe backlinks and content relation controls`.
+
+## Review and publication gate
+
+Human design and plan approval gates are waived by the user. After slice3 merge, execute in `feat/content-edges`. Independent review must examine unlisted metadata discovery, effective visibility transitions, source/target/admin authorization and immutable audit history. Publish/attach focused slice4 PR with verification/screenshots and green CI before merge. Public beta additionally requires bounded abuse/rate-limit verification with actual deployment configuration; this local plan does not claim cloud readiness.
