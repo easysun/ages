@@ -195,11 +195,8 @@ export function ContentNodesScreen({
         setNodes(page.nodes);
         setNextCursor(page.next_cursor);
         setTimelines(timelinePage.timelines);
-        setSelectedId((current) =>
-          current && page.nodes.some((node) => node.id === current)
-            ? current
-            : (page.nodes[0]?.id ?? null),
-        );
+        // A selected node may be on a later page; its detail read verifies it.
+        setSelectedId((current) => current ?? page.nodes[0]?.id ?? null);
       })
       .catch((reason: unknown) => {
         if (

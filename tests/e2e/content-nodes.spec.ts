@@ -674,6 +674,154 @@ test("older_save_refresh_keeps_newer_selected_reference_draft", async ({
   await expect(title).toHaveValue("Second unsaved title");
 });
 
+test("page_two_save_keeps_newer_title_and_selection_after_first_page_refresh", async ({
+  page,
+  context,
+}) => {
+  const { liveNodes } = await seedNodeCollections(context, 31, 0);
+  const pageTwo = liveNodes[0];
+  if (!pageTwo) throw new Error("Expected a second-page reference");
+  let releaseSave!: () => void;
+  let saveHeld!: () => void;
+  const saveResume = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const heldSave = new Promise<void>((resolve) => {
+    saveHeld = resolve;
+  });
+  await page.route(`**/api/content-nodes/${pageTwo.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    saveHeld();
+    await saveResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  await page.getByRole("button", { name: "Load more references" }).click();
+  await page.getByRole("button", { name: "Edit Live page 0" }).click();
+  const title = page.getByLabel("Title", { exact: true });
+  await expect(title).toHaveValue("Live page 0");
+  await title.fill("Saved page-two title");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldSave;
+  await title.fill("Newer page-two draft");
+  const refreshedList = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/content-nodes" &&
+      !url.searchParams.has("cursor") &&
+      response.request().method() === "GET" &&
+      response.status() === 200
+    );
+  });
+  releaseSave();
+  await refreshedList;
+  await waitForBrowserRender(page);
+  await expect(
+    page.getByRole("link", { name: `/c/${pageTwo.id}` }),
+  ).toBeVisible();
+  await expect(title).toHaveValue("Newer page-two draft");
+});
+
+test("older_save_keeps_newer_page_two_selection_after_loading_more", async ({
+  page,
+  context,
+}) => {
+  const { liveNodes } = await seedNodeCollections(context, 31, 0);
+  const pageOne = liveNodes[30];
+  const pageTwo = liveNodes[0];
+  if (!pageOne || !pageTwo)
+    throw new Error("Expected references on both pages");
+  let releaseSave!: () => void;
+  let saveHeld!: () => void;
+  const saveResume = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const heldSave = new Promise<void>((resolve) => {
+    saveHeld = resolve;
+  });
+  await page.route(`**/api/content-nodes/${pageOne.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    saveHeld();
+    await saveResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+  const title = page.getByLabel("Title", { exact: true });
+  await title.fill("Saved page-one title");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldSave;
+  await page.getByRole("button", { name: "Load more references" }).click();
+  await page.getByRole("button", { name: "Edit Live page 0" }).click();
+  await expect(title).toHaveValue("Live page 0");
+  await title.fill("Newer page-two draft");
+  releaseSave();
+  await expect(
+    page.getByRole("button", { name: "Edit Saved page-one title" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: `/c/${pageTwo.id}` }),
+  ).toBeVisible();
+  await expect(title).toHaveValue("Newer page-two draft");
+});
+
+test("missing_page_two_selection_shows_detail_failure_after_refresh", async ({
+  page,
+  context,
+}) => {
+  const { liveNodes } = await seedNodeCollections(context, 31, 0);
+  const pageOne = liveNodes[30];
+  const pageTwo = liveNodes[0];
+  if (!pageOne || !pageTwo)
+    throw new Error("Expected references on both pages");
+  let releaseSave!: () => void;
+  let saveHeld!: () => void;
+  const saveResume = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const heldSave = new Promise<void>((resolve) => {
+    saveHeld = resolve;
+  });
+  await page.route(`**/api/content-nodes/${pageOne.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    saveHeld();
+    await saveResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldSave;
+  await page.getByRole("button", { name: "Load more references" }).click();
+  await page.getByRole("button", { name: "Edit Live page 0" }).click();
+  await expect(page.getByLabel("Title", { exact: true })).toHaveValue(
+    "Live page 0",
+  );
+  const deleted = await context.request.delete(
+    `/api/content-nodes/${pageTwo.id}`,
+    { headers: await ownerHeaders(context) },
+  );
+  expect(deleted.status()).toBe(200);
+  releaseSave();
+  await expect(
+    page.locator(".content-node-detail-panel [role='alert']"),
+  ).toBeVisible();
+  await expect(page.getByLabel("Title", { exact: true })).toHaveCount(0);
+});
+
 test("collection_switch_discards_delayed_pages_in_both_directions", async ({
   page,
   context,
