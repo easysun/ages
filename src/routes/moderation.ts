@@ -3,6 +3,7 @@ import { encodeCursor, libraryQuery } from "../assets/library";
 import { assertSameOrigin } from "../auth/config";
 import { requireUser } from "../auth/session";
 import type { AppContext } from "../bindings";
+import { contentEdgeModerationSchema } from "../graph/edges";
 import { contentNodeModerationSchema } from "../graph/nodes";
 import { ApiError } from "../http/errors";
 import { parseJson } from "../http/json";
@@ -167,6 +168,123 @@ administration.get("/reports", async (context) => {
           ? { subject: { kind: "timeline", id: row.timeline_id } }
           : {}),
     })),
+  });
+});
+administration.get("/content-edge-reports", async (context) => {
+  const owner = context.get("user").id;
+  const url = new URL(context.req.url);
+  if (url.searchParams.has("tag")) throw new ApiError("INVALID_REQUEST");
+  const encoded = url.searchParams.get("cursor");
+  if (encoded !== null) {
+    if (
+      !encoded.startsWith("edge-reports.") ||
+      url.searchParams.getAll("cursor").length !== 1
+    )
+      throw new ApiError("INVALID_REQUEST");
+    url.searchParams.set("cursor", encoded.slice("edge-reports.".length));
+  }
+  const { limit, cursor } = libraryQuery(url.href, owner);
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(owner),
+    context.env.DB.prepare(`SELECT r.id,r.edge_id,r.category,r.detail,r.reporter_id,r.created_at,
+        e.source_id,e.target_id,e.type FROM content_edge_reports r
+      JOIN content_edges e ON e.id=r.edge_id
+      WHERE EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')
+      ${cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : ""}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT ?`).bind(
+      owner,
+      ...(cursor ? [cursor.created_at, cursor.created_at, cursor.id] : []),
+      limit + 1,
+    ),
+  ]);
+  if ((result[0]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const found = (result[1]?.results ?? []) as {
+    id: string;
+    edge_id: string;
+    category: string;
+    detail: string;
+    reporter_id: string;
+    created_at: string;
+    source_id: string;
+    target_id: string;
+    type: string;
+  }[];
+  const rows = found.slice(0, limit);
+  const last = rows.at(-1);
+  return context.json({
+    next_cursor:
+      found.length > limit && last
+        ? `edge-reports.${encodeCursor({
+            v: 1,
+            owner,
+            tag: null,
+            created_at: last.created_at,
+            id: last.id,
+          })}`
+        : null,
+    reports: rows.map((row) => ({
+      id: row.id,
+      edge_id: row.edge_id,
+      category: row.category,
+      detail: row.detail,
+      reporter_id: row.reporter_id,
+      created_at: row.created_at,
+      source_id: row.source_id,
+      target_id: row.target_id,
+      type: row.type,
+    })),
+  });
+});
+administration.patch("/content-edges/:id", async (context) => {
+  const input = await parseJson(context, contentEdgeModerationSchema);
+  const operator = context.get("user").id;
+  const id = context.req.param("id");
+  const action = `cem_${crypto.randomUUID()}`;
+  const blocked = Number(input.blocked);
+  const stamp = new Date().toISOString();
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare(`INSERT INTO content_edge_moderation_events
+      (id,moderator_id,edge_id,previous_blocked,blocked,reason,created_at)
+      SELECT ?,?,id,admin_blocked,?,?,? FROM content_edges
+      WHERE id=? AND admin_blocked != ?
+        AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      action,
+      operator,
+      blocked,
+      input.reason,
+      stamp,
+      id,
+      blocked,
+      operator,
+    ),
+    context.env.DB.prepare(`UPDATE content_edges SET admin_blocked=?
+      WHERE id=? AND admin_blocked != ?
+        AND EXISTS(SELECT 1 FROM content_edge_moderation_events
+          WHERE id=? AND moderator_id=? AND edge_id=? AND blocked=?)
+        AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      blocked,
+      id,
+      blocked,
+      action,
+      operator,
+      id,
+      blocked,
+      operator,
+    ),
+    context.env.DB.prepare(`SELECT admin_blocked FROM content_edges WHERE id=?
+      AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      id,
+      operator,
+    ),
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(operator),
+  ]);
+  if ((result[3]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const row = result[2]?.results[0] as { admin_blocked: number } | undefined;
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    moderation: { edge_id: id, blocked: row.admin_blocked === 1 },
   });
 });
 administration.get("/content", async (context) => {

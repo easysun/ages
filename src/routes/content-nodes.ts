@@ -1,8 +1,13 @@
 import { Hono } from "hono";
 import { encodeCursor, libraryQuery } from "../assets/library";
 import { assertSameOrigin } from "../auth/config";
-import { requireUser } from "../auth/session";
+import { requireUser, sessionHash } from "../auth/session";
 import type { AppContext } from "../bindings";
+import {
+  type ContentEdge,
+  type PublicEdge,
+  visibleEdges,
+} from "../graph/edges";
 import {
   type ContentNode,
   createContentNodeSchema,
@@ -14,8 +19,65 @@ import { ApiError } from "../http/errors";
 import { parseJson } from "../http/json";
 
 type ContentNodeRow = ContentNode & { timeline_title: string | null };
+type ContentEdgeRecord = Omit<ContentEdge, "admin_blocked"> & {
+  admin_blocked: number;
+};
 
 export const contentNodes = new Hono<AppContext>();
+
+async function optionalViewerId(context: Parameters<typeof sessionHash>[0]) {
+  const hash = await sessionHash(context);
+  if (!hash) return null;
+  const user = await context.env.DB.prepare(`SELECT u.id FROM sessions s
+      JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`)
+    .bind(hash, new Date().toISOString())
+    .first<{ id: string }>();
+  return user?.id ?? null;
+}
+
+contentNodes.get("/:id/edges", async (context) => {
+  context.header("Cache-Control", "private, no-store");
+  const params = new URL(context.req.url).searchParams;
+  const allowed = new Set(["direction", "known_node", "cursor", "limit"]);
+  for (const key of params.keys()) {
+    if (!allowed.has(key) || params.getAll(key).length !== 1)
+      throw new ApiError("INVALID_REQUEST");
+  }
+
+  const direction = params.get("direction");
+  if (direction !== "incoming" && direction !== "outgoing")
+    throw new ApiError("INVALID_REQUEST");
+  const knownNodeId = params.get("known_node");
+  if (
+    knownNodeId !== null &&
+    (knownNodeId.length === 0 || knownNodeId.length > 100)
+  )
+    throw new ApiError("INVALID_REQUEST");
+  const limitText = params.get("limit") ?? "30";
+  const limit = Number(limitText);
+  if (
+    !/^[1-9]\d*$/.test(limitText) ||
+    !Number.isSafeInteger(limit) ||
+    limit > 100
+  )
+    throw new ApiError("INVALID_REQUEST");
+  const cursor = params.get("cursor");
+  if (cursor !== null && cursor.length > 2007)
+    throw new ApiError("INVALID_REQUEST");
+
+  const viewerId = await optionalViewerId(context);
+  return context.json(
+    await visibleEdges(
+      context.env.DB,
+      context.req.param("id"),
+      direction,
+      viewerId,
+      knownNodeId,
+      cursor,
+      limit,
+    ),
+  );
+});
 
 contentNodes.use("*", requireUser, async (context, next) => {
   context.header("Cache-Control", "private, no-store");
@@ -184,6 +246,102 @@ contentNodes.get("/:id", async (context) => {
   return context.json({
     node: publicNodePayload(row),
     effective_visibility: effective?.visibility ?? null,
+  });
+});
+
+contentNodes.get("/:id/incoming-review", async (context) => {
+  const owner = context.get("user").id;
+  const id = context.req.param("id");
+  const target = await readOwnedNode(context.env.DB, id, owner);
+  if (!target) throw new ApiError("NOT_FOUND");
+  const effectiveTarget = await effectiveNode(context.env.DB, id, owner);
+  if (!effectiveTarget) return context.json({ edges: [], next_cursor: null });
+
+  const url = new URL(context.req.url);
+  const params = url.searchParams;
+  for (const key of params.keys()) {
+    if (!["limit", "cursor"].includes(key) || params.getAll(key).length !== 1)
+      throw new ApiError("INVALID_REQUEST");
+  }
+  const encoded = params.get("cursor");
+  if (encoded !== null) {
+    if (!encoded.startsWith("incoming-review."))
+      throw new ApiError("INVALID_REQUEST");
+    params.set("cursor", encoded.slice("incoming-review.".length));
+  }
+  const cursorOwner = `${owner}:${id}`;
+  const { limit, cursor } = libraryQuery(url.href, cursorOwner);
+  const pageSize = Math.max(30, limit + 1);
+  let after: { created_at: string; id: string } | null = cursor
+    ? { created_at: cursor.created_at, id: cursor.id }
+    : null;
+  const edges: (PublicEdge & {
+    pending_acceptance: boolean;
+    accepted: boolean;
+    suppressed: boolean;
+    blocked_by_target: boolean;
+  })[] = [];
+  let hasMore = false;
+
+  while (!hasMore) {
+    const rows = await context.env.DB.prepare(`SELECT e.* FROM content_edges e
+        WHERE e.target_id=? AND e.removed_at IS NULL
+          ${after ? "AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))" : ""}
+        ORDER BY e.created_at DESC,e.id DESC LIMIT ?`)
+      .bind(
+        id,
+        ...(after ? [after.created_at, after.created_at, after.id] : []),
+        pageSize,
+      )
+      .all<ContentEdgeRecord>();
+    if (rows.results.length === 0) break;
+
+    for (const edge of rows.results) {
+      after = { created_at: edge.created_at, id: edge.id };
+      const source = await effectiveNode(context.env.DB, edge.source_id, owner);
+      if (!source || source.visibility === "private") continue;
+      const pendingAcceptance =
+        source.node.owner_id !== effectiveTarget.node.owner_id &&
+        (source.visibility === "unlisted" ||
+          effectiveTarget.visibility === "unlisted") &&
+        edge.accepted_at === null;
+      edges.push({
+        id: edge.id,
+        type: edge.type,
+        source: { id: source.node.id, title: source.node.title },
+        target: {
+          id: effectiveTarget.node.id,
+          title: effectiveTarget.node.title,
+        },
+        attribution: "added by source owner",
+        created_at: edge.created_at,
+        pending_acceptance: pendingAcceptance,
+        accepted: edge.accepted_at !== null,
+        suppressed: edge.suppressed_at !== null,
+        blocked_by_target: edge.target_owner_blocked_at !== null,
+      });
+      if (edges.length > limit) {
+        hasMore = true;
+        break;
+      }
+    }
+    if (hasMore || rows.results.length < pageSize) break;
+  }
+
+  const page = edges.slice(0, limit);
+  const last = page.at(-1);
+  return context.json({
+    edges: page,
+    next_cursor:
+      hasMore && last
+        ? `incoming-review.${encodeCursor({
+            v: 1,
+            owner: cursorOwner,
+            tag: null,
+            created_at: last.created_at,
+            id: last.id,
+          })}`
+        : null,
   });
 });
 

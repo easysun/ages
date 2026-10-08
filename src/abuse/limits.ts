@@ -40,7 +40,7 @@ async function consume(
 export const requestLimits = createMiddleware<AppContext>(
   async (context, next) => {
     const protectedPath =
-      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|content-nodes|links|reports|admin)(?:\/|$)|t(?:\/|$)|s(?:\/|$)|c(?:\/|$))/.test(
+      /^\/(?:auth\/(?:google|logout)(?:\/|$)|api\/(?:me|assets|timelines|content-nodes|content-edges|links|reports|admin)(?:\/|$)|t(?:\/|$)|s(?:\/|$)|c(?:\/|$))/.test(
         context.req.path,
       );
     if (!protectedPath) return next();
@@ -61,7 +61,11 @@ export async function limitAuthenticatedWrite(context: Context<AppContext>) {
   const owner = context.get("user").id;
   const rejected = await consume(context, "writes", owner);
   if (rejected) return rejected;
-  if (context.req.path === "/api/reports")
+  if (
+    context.req.path === "/api/reports" ||
+    (context.req.method === "POST" &&
+      /^\/api\/content-edges\/[^/]+\/reports$/.test(context.req.path))
+  )
     return consume(context, "reports", owner);
   if (context.req.path === "/api/assets/upload-intent")
     return consume(context, "intents", owner);

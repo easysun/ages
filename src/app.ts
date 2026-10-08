@@ -6,6 +6,7 @@ import type { AppContext } from "./bindings";
 import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
+import { contentEdges } from "./routes/content-edges";
 import { contentNodes } from "./routes/content-nodes";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
@@ -58,6 +59,7 @@ export function createApp() {
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
   app.route("/api/content-nodes", contentNodes);
+  app.route("/api/content-edges", contentEdges);
   app.route("/api/links", linkAnalytics);
   app.route("/api/links", links);
   app.route("/api/reports", reports);
