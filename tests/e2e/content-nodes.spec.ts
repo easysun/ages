@@ -1008,6 +1008,167 @@ test("stale_save_403_does_not_clear_the_newer_removed_collection", async ({
   );
 });
 
+test("switching_collections_releases_only_the_obsolete_mutation_lock", async ({
+  page,
+  context,
+}) => {
+  const { owner } = await ownerFixture(context);
+  const liveNode = await createExternal(context, "private", "Old save target");
+  const { removedNodes } = await seedNodeCollections(context, 0, 1, owner);
+  const removedNode = removedNodes[0];
+  if (!removedNode) throw new Error("Expected a removed reference");
+
+  let releaseOldSave!: () => void;
+  let oldSaveHeld!: () => void;
+  const oldSaveResume = new Promise<void>((resolve) => {
+    releaseOldSave = resolve;
+  });
+  const oldSaveStarted = new Promise<void>((resolve) => {
+    oldSaveHeld = resolve;
+  });
+  let releaseRestore!: () => void;
+  let restoreHeld!: () => void;
+  const restoreResume = new Promise<void>((resolve) => {
+    releaseRestore = resolve;
+  });
+  const restoreStarted = new Promise<void>((resolve) => {
+    restoreHeld = resolve;
+  });
+
+  await page.route(`**/api/content-nodes/${liveNode.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    oldSaveHeld();
+    await oldSaveResume;
+    await route.fulfill({
+      status: 403,
+      contentType: "text/html",
+      body: "Forbidden",
+    });
+  });
+  await page.route(`**/api/content-nodes/${removedNode.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    restoreHeld();
+    await restoreResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: `Edit ${liveNode.title}` }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await oldSaveStarted;
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  const restore = page.getByRole("button", {
+    name: `Restore ${removedNode.title}`,
+  });
+  await expect(restore).toBeEnabled();
+  await restore.click();
+  await restoreStarted;
+  await expect(restore).toBeDisabled();
+
+  const staleDenial = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/content-nodes/${liveNode.id}`) &&
+      response.request().method() === "PATCH" &&
+      response.status() === 403,
+  );
+  releaseOldSave();
+  await staleDenial;
+  await waitForBrowserRender(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(restore).toBeDisabled();
+
+  releaseRestore();
+  await expect(
+    page.getByRole("button", { name: `Edit ${removedNode.title}` }),
+  ).toBeVisible();
+});
+
+test("retrying_a_collection_read_releases_its_obsolete_mutation_lock", async ({
+  page,
+  context,
+}) => {
+  await ownerFixture(context);
+  const retryTarget = await createExternal(context, "private", "Retry target");
+  const oldTarget = await createExternal(context, "private", "Old retry save");
+  let releaseOldSave!: () => void;
+  let oldSaveHeld!: () => void;
+  const oldSaveResume = new Promise<void>((resolve) => {
+    releaseOldSave = resolve;
+  });
+  const oldSaveStarted = new Promise<void>((resolve) => {
+    oldSaveHeld = resolve;
+  });
+  let failDetailOnce = true;
+
+  await page.route(`**/api/content-nodes/${oldTarget.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    oldSaveHeld();
+    await oldSaveResume;
+    await route.fulfill({
+      status: 403,
+      contentType: "text/html",
+      body: "Forbidden",
+    });
+  });
+  await page.route(`**/api/content-nodes/${retryTarget.id}`, async (route) => {
+    if (route.request().method() === "GET" && failDetailOnce) {
+      failDetailOnce = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "READ_FAILED", message: "Detail read needs retry." },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: `Edit ${oldTarget.title}` }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await oldSaveStarted;
+  await page.getByRole("button", { name: `Edit ${retryTarget.title}` }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Detail read needs retry.",
+  );
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("heading", { name: retryTarget.title ?? "" }),
+  ).toBeVisible();
+  const save = page.getByRole("button", { name: "Save changes" });
+  await expect(save).toBeEnabled();
+  const newSave = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/content-nodes/${retryTarget.id}`) &&
+      response.request().method() === "PATCH" &&
+      response.status() === 200,
+  );
+  await save.click();
+  await newSave;
+  const staleDenial = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/content-nodes/${oldTarget.id}`) &&
+      response.request().method() === "PATCH" &&
+      response.status() === 403,
+  );
+  releaseOldSave();
+  await staleDenial;
+  await waitForBrowserRender(page);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
 test("stale_save_success_preserves_newer_collection_error_and_drafts", async ({
   page,
   context,

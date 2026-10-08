@@ -115,6 +115,12 @@ export function ContentNodesScreen({
     setSaving(false);
   }
 
+  function detachMutationLock() {
+    if (activeMutationRef.current === null) return;
+    activeMutationRef.current = null;
+    setSaving(false);
+  }
+
   function clearSensitiveState(message: string) {
     ownerRequestGenerationRef.current += 1;
     collectionGenerationRef.current += 1;
@@ -145,6 +151,7 @@ export function ContentNodesScreen({
   function refreshCollection() {
     if (accessError) return;
     collectionGenerationRef.current += 1;
+    detachMutationLock();
     setRefreshVersion((version) => version + 1);
   }
 
@@ -520,6 +527,7 @@ export function ContentNodesScreen({
 
   function changeCollection() {
     collectionGenerationRef.current += 1;
+    detachMutationLock();
     setNodes([]);
     setNextCursor(null);
     setSelectedId(null);
