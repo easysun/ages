@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "npm run build:client && wrangler dev --env \"\" --local --ip 127.0.0.1",
+    "dev:demo": "npm run build:client && wrangler dev --env \"\" --local --ip 127.0.0.1 --var APP_ORIGIN:http://127.0.0.1:8787 --var LOCAL_LOGIN_ENABLED:true",
     "build": "npm run build:client && npm run build:worker",
     "db:migrate:local": "wrangler d1 migrations apply DB --env \"\" --local",
     "types": "wrangler types types/worker.d.ts --env-interface WorkerBindings --env \"\" --no-strict-vars",

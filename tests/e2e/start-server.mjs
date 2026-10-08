@@ -39,6 +39,8 @@ const appServer = spawn(
     "--var",
     `APP_ORIGIN:http://127.0.0.1:${port}`,
     "--var",
+    "LOCAL_LOGIN_ENABLED:true",
+    "--var",
     "TRACKING_ORIGIN:http://localhost:8798",
     "--var",
     `R2_ACCOUNT_ID:${"a".repeat(32)}`,
