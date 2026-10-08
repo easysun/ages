@@ -48,9 +48,10 @@ async function seedNodeCollections(
   context: BrowserContext,
   liveCount = 31,
   removedCount = 31,
+  ownerId?: string,
 ) {
-  const { owner } = await seedLibrary(context);
-  const firstTimestamp = Date.now();
+  const owner = ownerId ?? (await seedLibrary(context)).owner;
+  const firstTimestamp = Date.now() - (ownerId ? 60_000 : 0);
   const makeNodes = (collection: "live" | "removed", count: number) =>
     Array.from({ length: count }, (_, index) => ({
       id: `cn_${randomUUID()}`,
@@ -72,7 +73,7 @@ async function seedNodeCollections(
     );
   });
   executeFixtureSql(inserts.join("\n"));
-  return { liveNodes, removedNodes };
+  return { owner, liveNodes, removedNodes };
 }
 
 type CollectionMode = "live" | "removed";
@@ -179,6 +180,64 @@ async function ownerHeaders(context: BrowserContext) {
     Cookie: `ages_session=${cookie?.value}`,
     Origin: e2eOrigin,
   };
+}
+
+function setOwnerSessionExpired(owner: string, expired: boolean) {
+  const offset = expired ? -60_000 : 3_600_000;
+  const expiresAt = new Date(Date.now() + offset).toISOString();
+  executeFixtureSql(
+    `UPDATE sessions SET expires_at='${expiresAt}' WHERE user_id='${owner}';`,
+  );
+}
+
+async function ownerWithPaginatedNodes(context: BrowserContext) {
+  const { owner, timeline } = await ownerFixture(context);
+  const seeded = await seedNodeCollections(context, 31, 0, owner);
+  const node = await createExternal(
+    context,
+    "private",
+    "Auth private reference",
+  );
+  return { owner, timeline, node, liveNodes: seeded.liveNodes };
+}
+
+async function fillOwnerDrafts(page: Page, timelineId: string) {
+  await page.getByLabel("External page URL").fill("https://example.test/draft");
+  await page.getByLabel("External title").fill("Unsaved external draft");
+  await page.getByLabel("Visibility", { exact: true }).selectOption("unlisted");
+  await page.getByLabel("Timeline", { exact: true }).selectOption(timelineId);
+  await page.getByLabel("Timeline reference visibility").selectOption("public");
+  await page.getByLabel("Title", { exact: true }).fill("Unsaved edit draft");
+}
+
+async function expectOwnerStateCleared(
+  page: Page,
+  message = "Your session has ended. Sign in again to continue.",
+) {
+  await expect(
+    page.getByRole("alert").filter({ hasText: message }).first(),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Edit / })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^Restore / })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("External page URL")).toHaveValue("");
+  await expect(page.getByLabel("External title")).toHaveValue("");
+  await expect(page.getByLabel("Visibility", { exact: true })).toHaveValue(
+    "private",
+  );
+  await expect(page.getByLabel("Timeline", { exact: true })).toHaveValue("");
+  await expect(
+    page
+      .getByLabel("Timeline", { exact: true })
+      .getByRole("option", { name: "A private memory" }),
+  ).toHaveCount(0);
+  await expect(page.getByLabel("Timeline reference visibility")).toHaveValue(
+    "private",
+  );
+  await expect(page.getByLabel("Title", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /^\// })).toHaveCount(0);
 }
 
 test("private_nodes_require_owner", async ({ page, context }) => {
@@ -643,6 +702,237 @@ test("refresh_discards_stale_pagination_errors_and_loading_state", async ({
   await expect(
     page.getByRole("button", { name: "Edit Live page 0" }),
   ).toHaveCount(0);
+});
+
+for (const deniedRequest of [
+  "collection refresh",
+  "detail read",
+  "pagination",
+  "mutation",
+] as const) {
+  test(`expired_session_${deniedRequest.replaceAll(" ", "_")}_clears_private_state`, async ({
+    page,
+    context,
+  }) => {
+    const { owner, timeline, node, liveNodes } =
+      await ownerWithPaginatedNodes(context);
+    await page.goto("/content");
+    await expect(
+      page.getByRole("button", { name: `Edit ${node.title}` }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Load more references" }),
+    ).toBeVisible();
+    await fillOwnerDrafts(page, timeline.id);
+
+    if (deniedRequest === "collection refresh") {
+      const retryableMutation = async (
+        route: import("@playwright/test").Route,
+      ) => {
+        if (route.request().method() === "PATCH") {
+          await route.fulfill({
+            status: 503,
+            contentType: "text/plain",
+            body: "Temporarily unavailable",
+          });
+          return;
+        }
+        await route.continue();
+      };
+      await page.route("**/api/content-nodes/*", retryableMutation);
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await expect(page.getByRole("alert")).toContainText("Please try again.");
+      await expect(page.getByLabel("External page URL")).toHaveValue(
+        "https://example.test/draft",
+      );
+      await expect(page.getByLabel("External title")).toHaveValue(
+        "Unsaved external draft",
+      );
+      await expect(page.getByLabel("Title", { exact: true })).toHaveValue(
+        "Unsaved edit draft",
+      );
+      await page.unroute("**/api/content-nodes/*", retryableMutation);
+
+      const gates: PageResponseGate[] = [];
+      await interceptPageGates(page, gates);
+      const oldPage = pageResponseGate("live", true);
+      gates.push(oldPage);
+      await page.getByRole("button", { name: "Load more references" }).click();
+      expect(await oldPage.titles).toContain("Live page 0");
+
+      let timelineReads = 0;
+      await page.route(/\/api\/timelines\?limit=100$/, async (route) => {
+        timelineReads += 1;
+        if (timelineReads === 1) {
+          await route.continue();
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            timelines: [
+              {
+                id: timeline.id,
+                title: "A private memory",
+                visibility: "private",
+              },
+            ],
+          }),
+        });
+      });
+      await page.route("**/api/content-nodes/*", async (route) => {
+        if (route.request().method() !== "PATCH") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        setOwnerSessionExpired(owner, true);
+        await route.fulfill({ response });
+      });
+      const collectionDenied = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/content-nodes" &&
+          url.searchParams.get("limit") === "30" &&
+          response.status() === 401
+        );
+      });
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await collectionDenied;
+      await expectOwnerStateCleared(page);
+
+      oldPage.release();
+      await oldPage.finished;
+      await waitForBrowserRender(page);
+      await expectOwnerStateCleared(page);
+      return;
+    }
+
+    setOwnerSessionExpired(owner, true);
+    if (deniedRequest === "detail read") {
+      const target = liveNodes.find((item) => item.title === "Live page 30");
+      if (!target) throw new Error("Expected a second live reference");
+      const deniedDetail = page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/api/content-nodes/${target.id}`) &&
+          response.status() === 401,
+      );
+      await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+      await deniedDetail;
+    } else if (deniedRequest === "pagination") {
+      const deniedPage = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/content-nodes" &&
+          url.searchParams.has("cursor") &&
+          response.status() === 401
+        );
+      });
+      await page.getByRole("button", { name: "Load more references" }).click();
+      await deniedPage;
+    } else {
+      const deniedMutation = page.waitForResponse(
+        (response) =>
+          response.url().endsWith(`/api/content-nodes/${node.id}`) &&
+          response.request().method() === "PATCH" &&
+          response.status() === 401,
+      );
+      await page.getByRole("button", { name: "Save changes" }).click();
+      await deniedMutation;
+    }
+    await expectOwnerStateCleared(page);
+  });
+}
+
+test("current_content_node_403_with_html_body_clears_sensitive_state", async ({
+  page,
+  context,
+}) => {
+  const { timeline, liveNodes } = await ownerWithPaginatedNodes(context);
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Auth private reference" }),
+  ).toBeVisible();
+  await fillOwnerDrafts(page, timeline.id);
+  const target = liveNodes.find((node) => node.title === "Live page 30");
+  if (!target) throw new Error("Expected a second live reference");
+
+  await page.route(`**/api/content-nodes/${target.id}`, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.fulfill({
+        status: 403,
+        contentType: "text/html",
+        body: "Forbidden",
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+  await expectOwnerStateCleared(
+    page,
+    "Access to your content is no longer available.",
+  );
+});
+
+test("stale_content_node_403_does_not_clear_the_newer_collection", async ({
+  page,
+  context,
+}) => {
+  await seedNodeCollections(context, 31, 31);
+  let release!: () => void;
+  let requestHeld!: () => void;
+  let requestFinished!: () => void;
+  const resumed = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    requestHeld = resolve;
+  });
+  const finished = new Promise<void>((resolve) => {
+    requestFinished = resolve;
+  });
+  await page.route("**/api/content-nodes?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      route.request().method() === "GET" &&
+      !url.searchParams.has("removed") &&
+      url.searchParams.has("cursor")
+    ) {
+      await route.fetch();
+      requestHeld();
+      await resumed;
+      await route
+        .fulfill({
+          status: 403,
+          contentType: "text/html",
+          body: "Forbidden",
+        })
+        .catch(() => undefined);
+      requestFinished();
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: "Edit Live page 30" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Load more references" }).click();
+  await held;
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Restore Removed page 30" }),
+  ).toBeVisible();
+
+  release();
+  await finished;
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Restore Removed page 30" }),
+  ).toBeVisible();
 });
 
 test("logout_discards_delayed_node_result", async ({ page, context }) => {

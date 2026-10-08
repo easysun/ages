@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, errorMessage, jsonBody } from "./api";
+import { api, errorMessage, jsonBody, RequestError } from "./api";
 
 type Visibility = "private" | "unlisted" | "public";
 type ContentNode = {
@@ -33,6 +33,19 @@ function collectionPath(removed: boolean) {
   return `/api/content-nodes?limit=30${removed ? "&removed=true" : ""}`;
 }
 
+function isAuthorizationFailure(reason: unknown): reason is RequestError {
+  return (
+    reason instanceof RequestError &&
+    (reason.status === 401 || reason.status === 403)
+  );
+}
+
+function authorizationMessage(reason: RequestError) {
+  return reason.status === 401
+    ? "Your session has ended. Sign in again to continue."
+    : "Access to your content is no longer available.";
+}
+
 export function ContentNodesScreen({
   authGeneration,
 }: {
@@ -41,6 +54,7 @@ export function ContentNodesScreen({
   const authGenerationRef = useRef(authGeneration);
   authGenerationRef.current = authGeneration;
   const collectionGenerationRef = useRef(0);
+  const ownerRequestGenerationRef = useRef(0);
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [timelines, setTimelines] = useState<TimelinePage["timelines"]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -52,6 +66,7 @@ export function ContentNodesScreen({
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [accessError, setAccessError] = useState("");
   const [detailError, setDetailError] = useState("");
   const [status, setStatus] = useState("");
   const [externalUrl, setExternalUrl] = useState("");
@@ -64,14 +79,48 @@ export function ContentNodesScreen({
   const [editTitle, setEditTitle] = useState("");
   const [editVisibility, setEditVisibility] = useState<Visibility>("private");
 
+  function clearSensitiveState(message: string) {
+    ownerRequestGenerationRef.current += 1;
+    collectionGenerationRef.current += 1;
+    setNodes([]);
+    setTimelines([]);
+    setNextCursor(null);
+    setSelectedId(null);
+    setDetail(null);
+    setRemovedMode(false);
+    setLoading(false);
+    setDetailLoading(false);
+    setSaving(false);
+    setError("");
+    setDetailError("");
+    setStatus("");
+    setExternalUrl("");
+    setExternalTitle("");
+    setExternalVisibility("private");
+    setTimelineId("");
+    setTimelineVisibility("private");
+    setEditTitle("");
+    setEditVisibility("private");
+    setAccessError(message);
+  }
+
   function refreshCollection() {
+    if (accessError) return;
+    collectionGenerationRef.current += 1;
+    setRefreshVersion((version) => version + 1);
+  }
+
+  function retryAfterAuthorizationFailure() {
+    setAccessError("");
     collectionGenerationRef.current += 1;
     setRefreshVersion((version) => version + 1);
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshVersion intentionally triggers a fresh collection read.
   useEffect(() => {
+    if (accessError) return;
     const generation = ++collectionGenerationRef.current;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     const controller = new AbortController();
     let active = true;
     setLoading(true);
@@ -88,6 +137,7 @@ export function ContentNodesScreen({
         if (
           !active ||
           authGenerationRef.current !== authGeneration ||
+          ownerRequestGenerationRef.current !== ownerRequestGeneration ||
           collectionGenerationRef.current !== generation
         )
           return;
@@ -105,15 +155,21 @@ export function ContentNodesScreen({
           !active ||
           controller.signal.aborted ||
           authGenerationRef.current !== authGeneration ||
+          ownerRequestGenerationRef.current !== ownerRequestGeneration ||
           collectionGenerationRef.current !== generation
         )
           return;
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
       })
       .finally(() => {
         if (
           active &&
           authGenerationRef.current === authGeneration &&
+          ownerRequestGenerationRef.current === ownerRequestGeneration &&
           collectionGenerationRef.current === generation
         )
           setLoading(false);
@@ -122,15 +178,16 @@ export function ContentNodesScreen({
       active = false;
       controller.abort();
     };
-  }, [authGeneration, refreshVersion, removedMode]);
+  }, [accessError, authGeneration, refreshVersion, removedMode]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: refreshVersion intentionally triggers a fresh detail read.
   useEffect(() => {
-    if (removedMode || !selectedId) {
+    if (accessError || removedMode || !selectedId) {
       setDetail(null);
       setDetailError("");
       return;
     }
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     const controller = new AbortController();
     let active = true;
     setDetail(null);
@@ -140,28 +197,49 @@ export function ContentNodesScreen({
       signal: controller.signal,
     })
       .then((result) => {
-        if (!active || authGenerationRef.current !== authGeneration) return;
+        if (
+          !active ||
+          authGenerationRef.current !== authGeneration ||
+          ownerRequestGenerationRef.current !== ownerRequestGeneration
+        )
+          return;
         setDetail(result);
         setEditTitle(result.node.title ?? "");
         setEditVisibility(result.node.visibility);
       })
       .catch((reason: unknown) => {
-        if (!active || controller.signal.aborted) return;
+        if (
+          !active ||
+          controller.signal.aborted ||
+          authGenerationRef.current !== authGeneration ||
+          ownerRequestGenerationRef.current !== ownerRequestGeneration
+        )
+          return;
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setDetailError(errorMessage(reason));
       })
       .finally(() => {
-        if (active && authGenerationRef.current === authGeneration)
+        if (
+          active &&
+          authGenerationRef.current === authGeneration &&
+          ownerRequestGenerationRef.current === ownerRequestGeneration
+        )
           setDetailLoading(false);
       });
     return () => {
       active = false;
       controller.abort();
     };
-  }, [authGeneration, refreshVersion, removedMode, selectedId]);
+  }, [accessError, authGeneration, refreshVersion, removedMode, selectedId]);
 
   async function createExternal(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     setSaving(true);
     setError("");
     setStatus("");
@@ -175,17 +253,33 @@ export function ContentNodesScreen({
           visibility: externalVisibility,
         }),
       });
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration
+      )
+        return;
       setSelectedId(result.node.id);
       setExternalUrl("");
       setExternalTitle("");
       setStatus("Reference added.");
       refreshCollection();
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
-      if (authGenerationRef.current === generation) setSaving(false);
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      )
+        setSaving(false);
     }
   }
 
@@ -193,7 +287,9 @@ export function ContentNodesScreen({
     event: React.SubmitEvent<HTMLFormElement>,
   ) {
     event.preventDefault();
+    if (accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     setSaving(true);
     setError("");
     setStatus("");
@@ -206,22 +302,39 @@ export function ContentNodesScreen({
           visibility: timelineVisibility,
         }),
       });
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration
+      )
+        return;
       setSelectedId(result.node.id);
       setStatus("Timeline reference added.");
       refreshCollection();
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
-      if (authGenerationRef.current === generation) setSaving(false);
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      )
+        setSaving(false);
     }
   }
 
   async function saveSelected(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!detail) return;
+    if (!detail || accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     setSaving(true);
     setError("");
     setStatus("");
@@ -238,20 +351,37 @@ export function ContentNodesScreen({
           }),
         },
       );
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration
+      )
+        return;
       setStatus("Reference saved.");
       refreshCollection();
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
-      if (authGenerationRef.current === generation) setSaving(false);
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      )
+        setSaving(false);
     }
   }
 
   async function removeSelected() {
-    if (!detail) return;
+    if (!detail || accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     setSaving(true);
     setError("");
     setStatus("");
@@ -260,20 +390,38 @@ export function ContentNodesScreen({
         `/api/content-nodes/${encodeURIComponent(detail.node.id)}`,
         { method: "DELETE" },
       );
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration
+      )
+        return;
       setSelectedId(null);
       setStatus("Reference removed. The original content is still intact.");
       refreshCollection();
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
-      if (authGenerationRef.current === generation) setSaving(false);
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      )
+        setSaving(false);
     }
   }
 
   async function restore(node: ContentNode) {
+    if (accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     setSaving(true);
     setError("");
     setStatus("");
@@ -282,22 +430,39 @@ export function ContentNodesScreen({
         `/api/content-nodes/${encodeURIComponent(node.id)}`,
         { method: "PATCH", ...jsonBody({ removed: false }) },
       );
-      if (authGenerationRef.current !== generation) return;
+      if (
+        authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration
+      )
+        return;
       setRemovedMode(false);
       setSelectedId(result.node.id);
       setStatus("Reference restored.");
       refreshCollection();
     } catch (reason) {
-      if (authGenerationRef.current === generation)
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
-      if (authGenerationRef.current === generation) setSaving(false);
+      if (
+        authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration
+      )
+        setSaving(false);
     }
   }
 
   async function loadMore() {
-    if (!nextCursor || loading) return;
+    if (!nextCursor || loading || accessError) return;
     const generation = authGeneration;
+    const ownerRequestGeneration = ownerRequestGenerationRef.current;
     const collectionGeneration = collectionGenerationRef.current;
     setLoading(true);
     setError("");
@@ -307,6 +472,7 @@ export function ContentNodesScreen({
       );
       if (
         authGenerationRef.current !== generation ||
+        ownerRequestGenerationRef.current !== ownerRequestGeneration ||
         collectionGenerationRef.current !== collectionGeneration
       )
         return;
@@ -320,12 +486,19 @@ export function ContentNodesScreen({
     } catch (reason) {
       if (
         authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration &&
         collectionGenerationRef.current === collectionGeneration
-      )
+      ) {
+        if (isAuthorizationFailure(reason)) {
+          clearSensitiveState(authorizationMessage(reason));
+          return;
+        }
         setError(errorMessage(reason));
+      }
     } finally {
       if (
         authGenerationRef.current === generation &&
+        ownerRequestGenerationRef.current === ownerRequestGeneration &&
         collectionGenerationRef.current === collectionGeneration
       )
         setLoading(false);
@@ -365,13 +538,27 @@ export function ContentNodesScreen({
           className="text-button"
           onClick={changeCollection}
           aria-pressed={removedMode}
+          disabled={Boolean(accessError)}
         >
           {removedMode ? "Show live references" : "Show removed references"}
         </button>
         {status ? <p role="status">{status}</p> : null}
       </div>
 
-      {error ? (
+      {accessError ? (
+        <div className="content-node-error">
+          <p className="error" role="alert">
+            {accessError}
+          </p>
+          <button
+            type="button"
+            className="button"
+            onClick={retryAfterAuthorizationFailure}
+          >
+            Try again
+          </button>
+        </div>
+      ) : error ? (
         <div className="content-node-error">
           <p className="error" role="alert">
             {error}
@@ -394,7 +581,7 @@ export function ContentNodesScreen({
               id="content-node-timeline"
               value={timelineId}
               onChange={(event) => setTimelineId(event.target.value)}
-              disabled={!timelines.length || saving}
+              disabled={!timelines.length || saving || Boolean(accessError)}
               required
             >
               <option value="">Choose a Timeline</option>
@@ -413,7 +600,7 @@ export function ContentNodesScreen({
               onChange={(event) =>
                 setTimelineVisibility(event.target.value as Visibility)
               }
-              disabled={saving}
+              disabled={saving || Boolean(accessError)}
             >
               {visibilityOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -424,7 +611,7 @@ export function ContentNodesScreen({
             <button
               className="button primary"
               type="submit"
-              disabled={!timelines.length || saving}
+              disabled={!timelines.length || saving || Boolean(accessError)}
             >
               Add Timeline reference
             </button>
@@ -441,6 +628,7 @@ export function ContentNodesScreen({
               value={externalUrl}
               onChange={(event) => setExternalUrl(event.target.value)}
               placeholder="https://example.com/story"
+              disabled={saving || Boolean(accessError)}
             />
             <label htmlFor="content-node-title">External title</label>
             <input
@@ -449,6 +637,7 @@ export function ContentNodesScreen({
               value={externalTitle}
               onChange={(event) => setExternalTitle(event.target.value)}
               placeholder="A place or story to remember"
+              disabled={saving || Boolean(accessError)}
             />
             <label htmlFor="content-node-visibility">Visibility</label>
             <select
@@ -457,7 +646,7 @@ export function ContentNodesScreen({
               onChange={(event) =>
                 setExternalVisibility(event.target.value as Visibility)
               }
-              disabled={saving}
+              disabled={saving || Boolean(accessError)}
             >
               {visibilityOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -465,7 +654,11 @@ export function ContentNodesScreen({
                 </option>
               ))}
             </select>
-            <button className="button primary" type="submit" disabled={saving}>
+            <button
+              className="button primary"
+              type="submit"
+              disabled={saving || Boolean(accessError)}
+            >
               Add reference
             </button>
           </form>
@@ -493,7 +686,7 @@ export function ContentNodesScreen({
                       <button
                         type="button"
                         className="button"
-                        disabled={saving}
+                        disabled={saving || Boolean(accessError)}
                         onClick={() => restore(node)}
                         aria-label={`Restore ${nodeLabel(node)}`}
                       >
@@ -525,7 +718,7 @@ export function ContentNodesScreen({
               type="button"
               className="button"
               onClick={loadMore}
-              disabled={loading}
+              disabled={loading || Boolean(accessError)}
             >
               Load more references
             </button>
@@ -599,7 +792,7 @@ export function ContentNodesScreen({
                     onChange={(event) =>
                       setEditVisibility(event.target.value as Visibility)
                     }
-                    disabled={saving}
+                    disabled={saving || Boolean(accessError)}
                   >
                     {visibilityOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -610,7 +803,7 @@ export function ContentNodesScreen({
                   <button
                     className="button primary"
                     type="submit"
-                    disabled={saving}
+                    disabled={saving || Boolean(accessError)}
                   >
                     Save changes
                   </button>
@@ -623,7 +816,7 @@ export function ContentNodesScreen({
                   <button
                     type="button"
                     className="button danger"
-                    disabled={saving}
+                    disabled={saving || Boolean(accessError)}
                     onClick={removeSelected}
                     aria-label={`Remove reference to ${selectedLabel}`}
                   >
