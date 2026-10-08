@@ -935,6 +935,181 @@ test("stale_content_node_403_does_not_clear_the_newer_collection", async ({
   ).toBeVisible();
 });
 
+test("stale_save_403_does_not_clear_the_newer_removed_collection", async ({
+  page,
+  context,
+}) => {
+  const { owner, timeline, node } = await ownerWithPaginatedNodes(context);
+  const { removedNodes } = await seedNodeCollections(context, 0, 1, owner);
+  const removedNode = removedNodes[0];
+  if (!removedNode) throw new Error("Expected a removed reference");
+
+  let releaseResponse!: () => void;
+  let mutationHeld!: () => void;
+  let mutationFinished!: () => void;
+  const heldResponse = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+  const heldMutation = new Promise<void>((resolve) => {
+    mutationHeld = resolve;
+  });
+  const finishedMutation = new Promise<void>((resolve) => {
+    mutationFinished = resolve;
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: `Edit ${node.title}` }),
+  ).toBeVisible();
+  await fillOwnerDrafts(page, timeline.id);
+  await page.route(`**/api/content-nodes/${node.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    mutationHeld();
+    await heldResponse;
+    await route.fulfill({
+      status: 403,
+      contentType: "text/html",
+      body: "Forbidden",
+    });
+    mutationFinished();
+  });
+
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldMutation;
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await expect(
+    page.getByRole("button", { name: `Restore ${removedNode.title}` }),
+  ).toBeVisible();
+
+  releaseResponse();
+  await finishedMutation;
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: `Restore ${removedNode.title}` }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Show live references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit Unsaved edit draft" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("External page URL")).toHaveValue(
+    "https://example.test/draft",
+  );
+  await expect(page.getByLabel("External title")).toHaveValue(
+    "Unsaved external draft",
+  );
+  await expect(page.getByLabel("Timeline", { exact: true })).toHaveValue(
+    timeline.id,
+  );
+});
+
+test("stale_save_success_preserves_newer_collection_error_and_drafts", async ({
+  page,
+  context,
+}) => {
+  const { owner, timeline, node } = await ownerWithPaginatedNodes(context);
+  const { removedNodes } = await seedNodeCollections(context, 0, 1, owner);
+  const removedNode = removedNodes[0];
+  if (!removedNode) throw new Error("Expected a removed reference");
+
+  let releaseResponse!: () => void;
+  let mutationHeld!: () => void;
+  let mutationFinished!: () => void;
+  const heldResponse = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
+  });
+  const heldMutation = new Promise<void>((resolve) => {
+    mutationHeld = resolve;
+  });
+  const finishedMutation = new Promise<void>((resolve) => {
+    mutationFinished = resolve;
+  });
+  let failRemovedRead = true;
+
+  await page.route("**/api/content-nodes?**", async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      route.request().method() === "GET" &&
+      url.searchParams.get("removed") === "true" &&
+      failRemovedRead
+    ) {
+      failRemovedRead = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "READ_FAILED",
+            message: "The newer collection read failed.",
+          },
+        }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto("/content");
+  await expect(
+    page.getByRole("button", { name: `Edit ${node.title}` }),
+  ).toBeVisible();
+  await fillOwnerDrafts(page, timeline.id);
+  await page.route(`**/api/content-nodes/${node.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    mutationHeld();
+    await heldResponse;
+    await route.fulfill({ response });
+    mutationFinished();
+  });
+
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldMutation;
+  const failedCollectionRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/content-nodes" &&
+      url.searchParams.get("removed") === "true" &&
+      response.status() === 503
+    );
+  });
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await failedCollectionRead;
+  await expect(page.getByRole("alert")).toContainText(
+    "The newer collection read failed.",
+  );
+
+  releaseResponse();
+  await finishedMutation;
+  await expect(page.getByRole("alert")).toContainText(
+    "The newer collection read failed.",
+  );
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("button", { name: `Restore ${removedNode.title}` }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Show live references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit Unsaved edit draft" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("External page URL")).toHaveValue(
+    "https://example.test/draft",
+  );
+  await expect(page.getByLabel("External title")).toHaveValue(
+    "Unsaved external draft",
+  );
+});
+
 test("logout_discards_delayed_node_result", async ({ page, context }) => {
   await ownerFixture(context);
   const node = await createExternal(

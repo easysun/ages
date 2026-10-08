@@ -55,6 +55,8 @@ export function ContentNodesScreen({
   authGenerationRef.current = authGeneration;
   const collectionGenerationRef = useRef(0);
   const ownerRequestGenerationRef = useRef(0);
+  const mutationSequenceRef = useRef(0);
+  const activeMutationRef = useRef<number | null>(null);
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [timelines, setTimelines] = useState<TimelinePage["timelines"]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -79,9 +81,45 @@ export function ContentNodesScreen({
   const [editTitle, setEditTitle] = useState("");
   const [editVisibility, setEditVisibility] = useState<Visibility>("private");
 
+  function ownsOwnerRequest(
+    requestAuthGeneration: number,
+    ownerRequestGeneration: number,
+  ) {
+    return (
+      authGenerationRef.current === requestAuthGeneration &&
+      ownerRequestGenerationRef.current === ownerRequestGeneration
+    );
+  }
+
+  function ownsMutation(
+    requestAuthGeneration: number,
+    ownerRequestGeneration: number,
+    collectionGeneration: number,
+  ) {
+    return (
+      ownsOwnerRequest(requestAuthGeneration, ownerRequestGeneration) &&
+      collectionGenerationRef.current === collectionGeneration
+    );
+  }
+
+  function beginMutation() {
+    const mutationId = ++mutationSequenceRef.current;
+    activeMutationRef.current = mutationId;
+    setSaving(true);
+    return mutationId;
+  }
+
+  function finishMutation(mutationId: number) {
+    if (activeMutationRef.current !== mutationId) return;
+    activeMutationRef.current = null;
+    setSaving(false);
+  }
+
   function clearSensitiveState(message: string) {
     ownerRequestGenerationRef.current += 1;
     collectionGenerationRef.current += 1;
+    mutationSequenceRef.current += 1;
+    activeMutationRef.current = null;
     setNodes([]);
     setTimelines([]);
     setNextCursor(null);
@@ -237,10 +275,11 @@ export function ContentNodesScreen({
 
   async function createExternal(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (accessError) return;
+    if (accessError || activeMutationRef.current !== null) return;
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
-    setSaving(true);
+    const collectionGeneration = collectionGenerationRef.current;
+    const mutationId = beginMutation();
     setError("");
     setStatus("");
     try {
@@ -254,8 +293,7 @@ export function ContentNodesScreen({
         }),
       });
       if (
-        authGenerationRef.current !== generation ||
-        ownerRequestGenerationRef.current !== ownerRequestGeneration
+        !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
       setSelectedId(result.node.id);
@@ -265,8 +303,7 @@ export function ContentNodesScreen({
       refreshCollection();
     } catch (reason) {
       if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
+        ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       ) {
         if (isAuthorizationFailure(reason)) {
           clearSensitiveState(authorizationMessage(reason));
@@ -275,11 +312,7 @@ export function ContentNodesScreen({
         setError(errorMessage(reason));
       }
     } finally {
-      if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
-      )
-        setSaving(false);
+      finishMutation(mutationId);
     }
   }
 
@@ -287,10 +320,11 @@ export function ContentNodesScreen({
     event: React.SubmitEvent<HTMLFormElement>,
   ) {
     event.preventDefault();
-    if (accessError) return;
+    if (accessError || activeMutationRef.current !== null) return;
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
-    setSaving(true);
+    const collectionGeneration = collectionGenerationRef.current;
+    const mutationId = beginMutation();
     setError("");
     setStatus("");
     try {
@@ -303,8 +337,7 @@ export function ContentNodesScreen({
         }),
       });
       if (
-        authGenerationRef.current !== generation ||
-        ownerRequestGenerationRef.current !== ownerRequestGeneration
+        !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
       setSelectedId(result.node.id);
@@ -312,8 +345,7 @@ export function ContentNodesScreen({
       refreshCollection();
     } catch (reason) {
       if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
+        ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       ) {
         if (isAuthorizationFailure(reason)) {
           clearSensitiveState(authorizationMessage(reason));
@@ -322,20 +354,17 @@ export function ContentNodesScreen({
         setError(errorMessage(reason));
       }
     } finally {
-      if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
-      )
-        setSaving(false);
+      finishMutation(mutationId);
     }
   }
 
   async function saveSelected(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!detail || accessError) return;
+    if (!detail || accessError || activeMutationRef.current !== null) return;
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
-    setSaving(true);
+    const collectionGeneration = collectionGenerationRef.current;
+    const mutationId = beginMutation();
     setError("");
     setStatus("");
     try {
@@ -352,16 +381,14 @@ export function ContentNodesScreen({
         },
       );
       if (
-        authGenerationRef.current !== generation ||
-        ownerRequestGenerationRef.current !== ownerRequestGeneration
+        !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
       setStatus("Reference saved.");
       refreshCollection();
     } catch (reason) {
       if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
+        ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       ) {
         if (isAuthorizationFailure(reason)) {
           clearSensitiveState(authorizationMessage(reason));
@@ -370,19 +397,16 @@ export function ContentNodesScreen({
         setError(errorMessage(reason));
       }
     } finally {
-      if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
-      )
-        setSaving(false);
+      finishMutation(mutationId);
     }
   }
 
   async function removeSelected() {
-    if (!detail || accessError) return;
+    if (!detail || accessError || activeMutationRef.current !== null) return;
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
-    setSaving(true);
+    const collectionGeneration = collectionGenerationRef.current;
+    const mutationId = beginMutation();
     setError("");
     setStatus("");
     try {
@@ -391,8 +415,7 @@ export function ContentNodesScreen({
         { method: "DELETE" },
       );
       if (
-        authGenerationRef.current !== generation ||
-        ownerRequestGenerationRef.current !== ownerRequestGeneration
+        !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
       setSelectedId(null);
@@ -400,8 +423,7 @@ export function ContentNodesScreen({
       refreshCollection();
     } catch (reason) {
       if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
+        ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       ) {
         if (isAuthorizationFailure(reason)) {
           clearSensitiveState(authorizationMessage(reason));
@@ -410,19 +432,16 @@ export function ContentNodesScreen({
         setError(errorMessage(reason));
       }
     } finally {
-      if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
-      )
-        setSaving(false);
+      finishMutation(mutationId);
     }
   }
 
   async function restore(node: ContentNode) {
-    if (accessError) return;
+    if (accessError || activeMutationRef.current !== null) return;
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
-    setSaving(true);
+    const collectionGeneration = collectionGenerationRef.current;
+    const mutationId = beginMutation();
     setError("");
     setStatus("");
     try {
@@ -431,8 +450,7 @@ export function ContentNodesScreen({
         { method: "PATCH", ...jsonBody({ removed: false }) },
       );
       if (
-        authGenerationRef.current !== generation ||
-        ownerRequestGenerationRef.current !== ownerRequestGeneration
+        !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
       setRemovedMode(false);
@@ -441,8 +459,7 @@ export function ContentNodesScreen({
       refreshCollection();
     } catch (reason) {
       if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
+        ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       ) {
         if (isAuthorizationFailure(reason)) {
           clearSensitiveState(authorizationMessage(reason));
@@ -451,11 +468,7 @@ export function ContentNodesScreen({
         setError(errorMessage(reason));
       }
     } finally {
-      if (
-        authGenerationRef.current === generation &&
-        ownerRequestGenerationRef.current === ownerRequestGeneration
-      )
-        setSaving(false);
+      finishMutation(mutationId);
     }
   }
 
