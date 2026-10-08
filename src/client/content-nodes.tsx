@@ -57,6 +57,11 @@ export function ContentNodesScreen({
   const ownerRequestGenerationRef = useRef(0);
   const mutationSequenceRef = useRef(0);
   const activeMutationRef = useRef<number | null>(null);
+  const editDraftRef = useRef({
+    nodeId: null as string | null,
+    revision: 0,
+    dirty: false,
+  });
   const [nodes, setNodes] = useState<ContentNode[]>([]);
   const [timelines, setTimelines] = useState<TimelinePage["timelines"]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -145,6 +150,7 @@ export function ContentNodesScreen({
     setTimelineVisibility("private");
     setEditTitle("");
     setEditVisibility("private");
+    editDraftRef.current = { nodeId: null, revision: 0, dirty: false };
     setAccessError(message);
   }
 
@@ -232,6 +238,13 @@ export function ContentNodesScreen({
       setDetailError("");
       return;
     }
+    if (editDraftRef.current.nodeId !== selectedId) {
+      editDraftRef.current = {
+        nodeId: selectedId,
+        revision: editDraftRef.current.revision,
+        dirty: false,
+      };
+    }
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
     const controller = new AbortController();
     let active = true;
@@ -249,7 +262,11 @@ export function ContentNodesScreen({
         )
           return;
         setDetail(result);
-        setEditTitle(result.node.title ?? "");
+        if (
+          editDraftRef.current.nodeId === selectedId &&
+          !editDraftRef.current.dirty
+        )
+          setEditTitle(result.node.title ?? "");
         setEditVisibility(result.node.visibility);
       })
       .catch((reason: unknown) => {
@@ -371,6 +388,7 @@ export function ContentNodesScreen({
     const generation = authGeneration;
     const ownerRequestGeneration = ownerRequestGenerationRef.current;
     const collectionGeneration = collectionGenerationRef.current;
+    const savedTitleRevision = editDraftRef.current.revision;
     const mutationId = beginMutation();
     setError("");
     setStatus("");
@@ -391,6 +409,11 @@ export function ContentNodesScreen({
         !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
+      if (
+        editDraftRef.current.nodeId === detail.node.id &&
+        editDraftRef.current.revision === savedTitleRevision
+      )
+        editDraftRef.current.dirty = false;
       setStatus("Reference saved.");
       refreshCollection();
     } catch (reason) {
@@ -460,10 +483,8 @@ export function ContentNodesScreen({
         !ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
       )
         return;
-      setRemovedMode(false);
-      setSelectedId(result.node.id);
+      switchCollection(false, result.node.id);
       setStatus("Reference restored.");
-      refreshCollection();
     } catch (reason) {
       if (
         ownsMutation(generation, ownerRequestGeneration, collectionGeneration)
@@ -525,19 +546,28 @@ export function ContentNodesScreen({
     }
   }
 
-  function changeCollection() {
+  function switchCollection(removed: boolean, selection: string | null = null) {
     collectionGenerationRef.current += 1;
     detachMutationLock();
+    editDraftRef.current = {
+      nodeId: selection,
+      revision: editDraftRef.current.revision,
+      dirty: false,
+    };
     setNodes([]);
     setNextCursor(null);
-    setSelectedId(null);
+    setSelectedId(selection);
     setDetail(null);
     setDetailLoading(false);
     setDetailError("");
     setLoading(true);
     setError("");
     setStatus("");
-    setRemovedMode((removed) => !removed);
+    setRemovedMode(removed);
+  }
+
+  function changeCollection() {
+    switchCollection(!removedMode);
   }
 
   const selectedLabel = detail ? nodeLabel(detail.node) : "";
@@ -799,7 +829,14 @@ export function ContentNodesScreen({
                         id="content-node-edit-title"
                         maxLength={200}
                         value={editTitle}
-                        onChange={(event) => setEditTitle(event.target.value)}
+                        onChange={(event) => {
+                          editDraftRef.current = {
+                            nodeId: detail.node.id,
+                            revision: editDraftRef.current.revision + 1,
+                            dirty: true,
+                          };
+                          setEditTitle(event.target.value);
+                        }}
                       />
                       <p className="field-help">{detail.node.url}</p>
                     </>

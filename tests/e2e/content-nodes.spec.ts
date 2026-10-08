@@ -541,6 +541,139 @@ test("restore_removed_reference_after_refresh", async ({ page, context }) => {
     .toBe(true);
 });
 
+test("restore_clears_removed_rows_and_cursor_before_failed_live_read", async ({
+  page,
+  context,
+}) => {
+  await seedNodeCollections(context, 1, 31);
+  const gates: PageResponseGate[] = [];
+  await interceptPageGates(page, gates);
+  await page.goto("/content");
+  await page.getByRole("button", { name: "Show removed references" }).click();
+  await expect(
+    page.getByRole("button", { name: "Restore Removed page 30" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toBeVisible();
+
+  const liveRead = pageResponseGate("live", false, true);
+  gates.push(liveRead);
+  await page.getByRole("button", { name: "Restore Removed page 30" }).click();
+  expect(await liveRead.titles).toContain("Removed page 30");
+  await expect(
+    page.getByRole("button", { name: "Edit Removed page 29" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toHaveCount(0);
+
+  liveRead.release();
+  await liveRead.finished;
+  await expect(page.getByRole("alert")).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Edit Removed page 29" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load more references" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(
+    page.getByRole("button", { name: "Edit Removed page 30" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Edit Removed page 29" }),
+  ).toHaveCount(0);
+});
+
+test("save_keeps_newer_title_typed_in_the_same_editor", async ({
+  page,
+  context,
+}) => {
+  await ownerFixture(context);
+  const node = await createExternal(context, "private", "Original title");
+  let releaseSave!: () => void;
+  let saveHeld!: () => void;
+  const saveResume = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const heldSave = new Promise<void>((resolve) => {
+    saveHeld = resolve;
+  });
+  await page.route(`**/api/content-nodes/${node.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    saveHeld();
+    await saveResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  const title = page.getByLabel("Title", { exact: true });
+  await expect(title).toHaveValue("Original title");
+  await title.fill("Saved title");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldSave;
+  await title.fill("Newer unsaved title");
+  const refreshedDetail = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/content-nodes/${node.id}`) &&
+      response.request().method() === "GET" &&
+      response.status() === 200,
+  );
+  releaseSave();
+  await refreshedDetail;
+  await waitForBrowserRender(page);
+  await expect(title).toHaveValue("Newer unsaved title");
+});
+
+test("older_save_refresh_keeps_newer_selected_reference_draft", async ({
+  page,
+  context,
+}) => {
+  await ownerFixture(context);
+  const first = await createExternal(context, "private", "First reference");
+  const second = await createExternal(context, "private", "Second reference");
+  let releaseSave!: () => void;
+  let saveHeld!: () => void;
+  const saveResume = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  const heldSave = new Promise<void>((resolve) => {
+    saveHeld = resolve;
+  });
+  await page.route(`**/api/content-nodes/${first.id}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    saveHeld();
+    await saveResume;
+    await route.fulfill({ response });
+  });
+
+  await page.goto("/content");
+  await page.getByRole("button", { name: "Edit First reference" }).click();
+  const title = page.getByLabel("Title", { exact: true });
+  await expect(title).toHaveValue("First reference");
+  await title.fill("First saved title");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await heldSave;
+  await page.getByRole("button", { name: "Edit Second reference" }).click();
+  await expect(title).toHaveValue("Second reference");
+  await title.fill("Second unsaved title");
+  const refreshedDetail = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/api/content-nodes/${second.id}`) &&
+      response.request().method() === "GET" &&
+      response.status() === 200,
+  );
+  releaseSave();
+  await refreshedDetail;
+  await waitForBrowserRender(page);
+  await expect(title).toHaveValue("Second unsaved title");
+});
+
 test("collection_switch_discards_delayed_pages_in_both_directions", async ({
   page,
   context,
