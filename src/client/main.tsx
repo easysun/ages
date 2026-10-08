@@ -11,6 +11,7 @@ import {
   type Profile,
   RequestError,
 } from "./api";
+import { ContentNodesScreen } from "./content-nodes";
 import { AssetDetails } from "./details";
 import { LinksScreen } from "./links";
 import { ModerationScreen } from "./moderation";
@@ -132,6 +133,13 @@ function App() {
             Timelines
           </a>
           <a
+            href="/content"
+            onClick={collectionLink}
+            aria-current={path === "/content" ? "page" : undefined}
+          >
+            Content
+          </a>
+          <a
             href="/links"
             onClick={collectionLink}
             aria-current={path === "/links" ? "page" : undefined}
@@ -196,6 +204,8 @@ function App() {
           />
         ) : path === "/links" ? (
           <LinksScreen authGeneration={generation} />
+        ) : path === "/content" ? (
+          <ContentNodesScreen authGeneration={generation} />
         ) : path === "/settings/tracking" ? (
           <TrackingSettingsScreen authGeneration={generation} />
         ) : path === "/library" || path === "/" ? (

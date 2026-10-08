@@ -68,7 +68,11 @@ Reference: [Google OpenID Connect](https://developers.google.com/identity/openid
 
 The React client is built with Vite and served through Wrangler static assets. API, auth, health, Timeline (`/t`), and short-link (`/s`) paths always reach Hono, including unknown paths in those namespaces; browser navigation falls back to the client HTML. New static output and Worker bundles stay separate. No external site hosting or deployment is part of the local build.
 
-Sign-in uses the existing Google route. The authenticated Library shows private photos/videos, exact tag filters, cursor pagination, keyboard selection, storage use, and a responsive detail dialog with tag editing, standalone Asset sharing, local QR/copy controls, and recoverable Trash/restore. Add moments sends the original File directly to the returned signed R2 PUT URL, then finalizes through JSON. Upload retries check completion first, preserving an upload whose PUT response was lost. The authenticated client navigation links the Library, Timeline editor, and owner Links workspace.
+Sign-in uses the existing Google route. The authenticated Library shows private photos/videos, exact tag filters, cursor pagination, keyboard selection, storage use, and a responsive detail dialog with tag editing, standalone Asset sharing, local QR/copy controls, and recoverable Trash/restore. Add moments sends the original File directly to the returned signed R2 PUT URL, then finalizes through JSON. Upload retries check completion first, preserving an upload whose PUT response was lost. The authenticated client navigation links the Library, Timeline editor, Content workspace, and owner Links workspace.
+
+### Content references
+
+The authenticated Content workspace creates stable references to owned Timelines or external pages, shows effective visibility after Timeline policy is applied, and supports editing, reversible removal, and restore. A reference has its own `/c/:id` URL, so editing its title or visibility does not change its identity. Public and unlisted references resolve without sign-in; unlisted pages send `noindex` and all reference pages use no-store caching. Removing a reference leaves its Timeline, original Assets, and independent Links intact.
 
 ### Owner Links and click analytics
 

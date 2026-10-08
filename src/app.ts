@@ -6,12 +6,14 @@ import type { AppContext } from "./bindings";
 import { ApiError, errorResponse } from "./http/errors";
 import { requestContext } from "./http/middleware";
 import { auth } from "./routes/auth";
+import { contentNodes } from "./routes/content-nodes";
 import { health } from "./routes/health";
 import { library } from "./routes/library";
 import { linkAnalytics } from "./routes/link-analytics";
 import { linkResolver, links } from "./routes/links";
 import { me } from "./routes/me";
 import { administration, reports } from "./routes/moderation";
+import { publicContentNode } from "./routes/public-content-node";
 import { publicTimeline } from "./routes/public-timeline";
 import { timelines } from "./routes/timelines";
 import { uploads } from "./routes/uploads";
@@ -55,6 +57,7 @@ export function createApp() {
   app.route("/api/assets", uploads);
   app.route("/api/assets", library);
   app.route("/api/timelines", timelines);
+  app.route("/api/content-nodes", contentNodes);
   app.route("/api/links", linkAnalytics);
   app.route("/api/links", links);
   app.route("/api/reports", reports);
@@ -62,5 +65,6 @@ export function createApp() {
   app.route("/s", linkResolver);
 
   app.route("/t", publicTimeline);
+  app.route("/c", publicContentNode);
   return app;
 }

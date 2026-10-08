@@ -1,8 +1,10 @@
 // Each caller aliases the Timeline as t. A blocked story member hides its captions and OG too.
-export const visibleTimelineSql = `t.visibility IN ('unlisted', 'public') AND t.moderation_blocked = 0
+export const timelineContentAvailableSql = `t.moderation_blocked = 0
   AND NOT EXISTS (SELECT 1 FROM assets blocked WHERE blocked.id = t.cover_asset_id AND blocked.moderation_blocked = 1)
   AND NOT EXISTS (SELECT 1 FROM timeline_items i JOIN assets blocked ON blocked.id = i.asset_id
     WHERE i.timeline_id = t.id AND blocked.moderation_blocked = 1)`;
+
+export const visibleTimelineSql = `t.visibility IN ('unlisted', 'public') AND ${timelineContentAvailableSql}`;
 
 export const publicLinkSql = `l.active = 1 AND l.moderation_blocked = 0
   AND (l.expires_at IS NULL OR julianday(l.expires_at) > julianday(?))
