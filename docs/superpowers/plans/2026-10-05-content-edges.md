@@ -56,7 +56,7 @@ Create one effectively public directed edge through its source owner; there is n
 
 ### Task 2: Relations, backlink rendering and moderation UI
 
-**Files:** Create `src/client/content-edges.tsx`, `tests/e2e/content-edges.spec.ts`; modify `src/client/content-nodes.tsx`, `src/graph/render.ts`, `src/routes/public-content-node.ts`, `src/client/moderation.tsx`, `src/routes/moderation.ts`, `tests/integration/content-edges.test.ts`, `src/client/api.ts`, `src/client/styles.css`, `README.md`.
+**Files:** Create `src/client/content-edges.tsx`, `tests/e2e/content-edges.spec.ts`; modify `src/client/content-nodes.tsx`, `src/client/main.tsx` (pass the existing auth generation to moderation), `src/graph/render.ts`, `src/routes/public-content-node.ts`, `src/client/moderation.tsx`, `src/routes/moderation.ts`, `tests/integration/content-edges.test.ts`, `src/client/api.ts`, `src/client/styles.css`, `README.md`.
 
 **Interfaces:** `ContentEdgesPanel({nodeId:string;authGeneration:number}):React.JSX.Element` consumes Task1 routes. Node SSR uses `visibleEdges` for bounded first-page public backlinks only; authenticated owner controls use ownerAPI, never embed sensitive pending inbox into anonymous HTML.
 
