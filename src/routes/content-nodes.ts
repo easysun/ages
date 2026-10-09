@@ -12,6 +12,10 @@ import {
   type ContentNode,
   createContentNodeSchema,
   effectiveNode,
+  effectiveNodeAvailableSql,
+  effectiveNodeTimelineJoinSql,
+  effectiveNodeTitleSql,
+  effectiveNodeVisibilitySql,
   publicNodePayload,
   updateContentNodeSchema,
 } from "../graph/nodes";
@@ -21,6 +25,11 @@ import { parseJson } from "../http/json";
 type ContentNodeRow = ContentNode & { timeline_title: string | null };
 type ContentEdgeRecord = Omit<ContentEdge, "admin_blocked"> & {
   admin_blocked: number;
+};
+type IncomingReviewEdgeRecord = ContentEdgeRecord & {
+  source_owner_id: string;
+  source_title: string | null;
+  source_visibility: ContentNode["visibility"];
 };
 
 export const contentNodes = new Hono<AppContext>();
@@ -271,69 +280,63 @@ contentNodes.get("/:id/incoming-review", async (context) => {
   }
   const cursorOwner = `${owner}:${id}`;
   const { limit, cursor } = libraryQuery(url.href, cursorOwner);
-  const pageSize = Math.max(30, limit + 1);
-  let after: { created_at: string; id: string } | null = cursor
+  const after = cursor
     ? { created_at: cursor.created_at, id: cursor.id }
     : null;
-  const edges: (PublicEdge & {
+  const sourceVisibility = effectiveNodeVisibilitySql(
+    "source",
+    "source_timeline",
+  );
+  const rows = await context.env.DB.prepare(`SELECT e.*,
+        source.owner_id AS source_owner_id,
+        ${effectiveNodeTitleSql("source", "source_timeline")} AS source_title,
+        ${sourceVisibility} AS source_visibility
+      FROM content_edges e
+      JOIN content_nodes source ON source.id=e.source_id
+      ${effectiveNodeTimelineJoinSql("source", "source_timeline")}
+      WHERE e.target_id=? AND e.removed_at IS NULL
+        ${after ? "AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))" : ""}
+        AND ${effectiveNodeAvailableSql("source", "source_timeline")}
+        AND ${sourceVisibility}!='private'
+      ORDER BY e.created_at DESC,e.id DESC LIMIT ?`)
+    .bind(
+      id,
+      ...(after ? [after.created_at, after.created_at, after.id] : []),
+      limit + 1,
+    )
+    .all<IncomingReviewEdgeRecord>();
+  const page: (PublicEdge & {
     pending_acceptance: boolean;
     accepted: boolean;
     suppressed: boolean;
     blocked_by_target: boolean;
-  })[] = [];
-  let hasMore = false;
-
-  while (!hasMore) {
-    const rows = await context.env.DB.prepare(`SELECT e.* FROM content_edges e
-        WHERE e.target_id=? AND e.removed_at IS NULL
-          ${after ? "AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))" : ""}
-        ORDER BY e.created_at DESC,e.id DESC LIMIT ?`)
-      .bind(
-        id,
-        ...(after ? [after.created_at, after.created_at, after.id] : []),
-        pageSize,
-      )
-      .all<ContentEdgeRecord>();
-    if (rows.results.length === 0) break;
-
-    for (const edge of rows.results) {
-      after = { created_at: edge.created_at, id: edge.id };
-      const source = await effectiveNode(context.env.DB, edge.source_id, owner);
-      if (!source || source.visibility === "private") continue;
-      const pendingAcceptance =
-        source.node.owner_id !== effectiveTarget.node.owner_id &&
-        (source.visibility === "unlisted" ||
-          effectiveTarget.visibility === "unlisted") &&
-        edge.accepted_at === null;
-      edges.push({
-        id: edge.id,
-        type: edge.type,
-        source: { id: source.node.id, title: source.node.title },
-        target: {
-          id: effectiveTarget.node.id,
-          title: effectiveTarget.node.title,
-        },
-        attribution: "added by source owner",
-        created_at: edge.created_at,
-        pending_acceptance: pendingAcceptance,
-        accepted: edge.accepted_at !== null,
-        suppressed: edge.suppressed_at !== null,
-        blocked_by_target: edge.target_owner_blocked_at !== null,
-      });
-      if (edges.length > limit) {
-        hasMore = true;
-        break;
-      }
-    }
-    if (hasMore || rows.results.length < pageSize) break;
-  }
-
-  const page = edges.slice(0, limit);
+  })[] = rows.results.slice(0, limit).map((edge) => {
+    const pendingAcceptance =
+      edge.source_owner_id !== effectiveTarget.node.owner_id &&
+      (edge.source_visibility === "unlisted" ||
+        effectiveTarget.visibility === "unlisted") &&
+      edge.accepted_at === null;
+    return {
+      id: edge.id,
+      type: edge.type,
+      source: { id: edge.source_id, title: edge.source_title },
+      target: {
+        id: effectiveTarget.node.id,
+        title: effectiveTarget.node.title,
+      },
+      attribution: "added by source owner",
+      created_at: edge.created_at,
+      pending_acceptance: pendingAcceptance,
+      accepted: edge.accepted_at !== null,
+      suppressed: edge.suppressed_at !== null,
+      blocked_by_target: edge.target_owner_blocked_at !== null,
+    };
+  });
   const last = page.at(-1);
   return context.json({
     edges: page,
     next_cursor:
-      hasMore && last
+      rows.results.length > limit && last
         ? `incoming-review.${encodeCursor({
             v: 1,
             owner: cursorOwner,

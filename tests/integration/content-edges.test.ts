@@ -33,6 +33,7 @@ function request(
   cookie = owner,
   site = origin,
   extraHeaders: Record<string, string> = {},
+  requestBindings: Bindings = bindings,
 ) {
   return app.request(
     `${origin}${path}`,
@@ -47,8 +48,59 @@ function request(
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     },
-    bindings,
+    requestBindings,
   );
+}
+
+function countPreparedStatements(db: D1Database) {
+  let count = 0;
+  const countedDb = new Proxy(db, {
+    get(target, property) {
+      if (property === "prepare")
+        return (query: string) => {
+          count += 1;
+          return target.prepare(query);
+        };
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as D1Database;
+  return { db: countedDb, count: () => count };
+}
+
+async function seedIncomingEdges(
+  targetId: string,
+  candidates: {
+    sourceId: string;
+    visibility: "private" | "unlisted" | "public";
+    createdAt: string;
+  }[],
+) {
+  const statements = candidates.flatMap(
+    ({ sourceId, visibility, createdAt }) => [
+      env.DB.prepare(`INSERT INTO content_nodes
+      (id,owner_id,kind,visibility,timeline_id,url,title,created_at,updated_at)
+      VALUES (?,?,'external',?,NULL,?,?,?,?)`).bind(
+        sourceId,
+        "owner_a",
+        visibility,
+        `https://example.test/${sourceId}`,
+        sourceId,
+        createdAt,
+        createdAt,
+      ),
+      env.DB.prepare(`INSERT INTO content_edges
+      (id,source_id,target_id,type,creator_id,created_at)
+      VALUES (?,?,?,'references',?,?)`).bind(
+        `ce_${sourceId}`,
+        sourceId,
+        targetId,
+        "owner_a",
+        createdAt,
+      ),
+    ],
+  );
+  await env.DB.batch(statements);
 }
 
 async function createExternal(
@@ -310,6 +362,53 @@ describe("directed ContentEdges", () => {
       (await pairAfterAcceptance.json<{ edges: unknown[] }>()).edges,
     ).toHaveLength(1);
     await expectEdgeList(target.id, "incoming", { edges: [] });
+  });
+
+  it("target_owner_cannot_preaccept_a_public_edge_before_it_becomes_unlisted", async () => {
+    const source = await createExternal("Public source", "public");
+    const target = await createExternal("Public target", "public", other);
+    const edgeId = await edgeBetween(source.id, target.id);
+
+    expect((await edgeAction(edgeId, "accept", other)).status).toBe(409);
+    const beforeTransition = await env.DB.prepare(
+      "SELECT accepted_at FROM content_edges WHERE id=?",
+    )
+      .bind(edgeId)
+      .first<{ accepted_at: string | null }>();
+    expect(beforeTransition?.accepted_at).toBeNull();
+
+    expect(
+      (
+        await request(
+          `/api/content-nodes/${encodeURIComponent(source.id)}`,
+          "PATCH",
+          { visibility: "unlisted" },
+          owner,
+        )
+      ).status,
+    ).toBe(200);
+    await expectEdgeList(
+      target.id,
+      "incoming",
+      { edges: [] },
+      `known_node=${encodeURIComponent(source.id)}`,
+      other,
+    );
+
+    expect((await edgeAction(edgeId, "accept", other)).status).toBe(200);
+    const afterAcceptance = await env.DB.prepare(
+      "SELECT accepted_at FROM content_edges WHERE id=?",
+    )
+      .bind(edgeId)
+      .first<{ accepted_at: string | null }>();
+    expect(afterAcceptance?.accepted_at).not.toBeNull();
+    await expectEdgeList(
+      target.id,
+      "incoming",
+      { edges: [{ id: edgeId }] },
+      `known_node=${encodeURIComponent(source.id)}`,
+      other,
+    );
   });
 
   it("private_cross_owner_edge_is_rejected", async () => {
@@ -695,6 +794,99 @@ describe("edge listing and owner review", () => {
     expect(payload).not.toContain(hiddenSource.id);
   });
 
+  it("filters_many_hidden_candidates_before_bounded_edge_pages_and_exact_pairs", async () => {
+    const target = await createExternal("Public target", "public", other);
+    const hiddenCandidates = Array.from({ length: 40 }, (_, index) => ({
+      sourceId: `cn_hidden_${String(index).padStart(2, "0")}`,
+      visibility: "private" as const,
+      createdAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const visibleCandidates = [
+      {
+        sourceId: "cn_visible_0",
+        visibility: "public" as const,
+        createdAt: "2000-01-02T00:00:00.000Z",
+      },
+      {
+        sourceId: "cn_visible_1",
+        visibility: "public" as const,
+        createdAt: "2000-01-01T00:00:00.000Z",
+      },
+    ];
+    await seedIncomingEdges(target.id, [
+      ...hiddenCandidates,
+      ...visibleCandidates,
+    ]);
+
+    const firstRead = countPreparedStatements(env.DB);
+    const firstResponse = await request(
+      `/api/content-nodes/${target.id}/edges?direction=incoming&limit=1`,
+      "GET",
+      undefined,
+      "",
+      origin,
+      {},
+      { ...bindings, DB: firstRead.db },
+    );
+    expect(firstResponse.status).toBe(200);
+    const firstPage = await firstResponse.json<{
+      edges: { id: string; source: { id: string } }[];
+      next_cursor: string | null;
+    }>();
+    expect(firstPage.edges).toMatchObject([
+      { id: "ce_cn_visible_0", source: { id: "cn_visible_0" } },
+    ]);
+    expect(firstPage.next_cursor).toMatch(/^edges\./);
+    expect(firstRead.count()).toBeLessThanOrEqual(3);
+    const firstCursorValue = firstPage.next_cursor;
+    if (firstCursorValue === null)
+      throw new Error("Expected a second visible edge cursor");
+    const firstCursor = JSON.parse(
+      atob(firstCursorValue.slice("edges.".length)),
+    ) as { id: string; created_at: string };
+    expect(firstCursor).toMatchObject({
+      id: "ce_cn_visible_0",
+      created_at: "2000-01-02T00:00:00.000Z",
+    });
+
+    const secondRead = countPreparedStatements(env.DB);
+    const secondResponse = await request(
+      `/api/content-nodes/${target.id}/edges?direction=incoming&limit=1&cursor=${encodeURIComponent(firstCursorValue)}`,
+      "GET",
+      undefined,
+      "",
+      origin,
+      {},
+      { ...bindings, DB: secondRead.db },
+    );
+    const secondPage = await secondResponse.json<{
+      edges: { id: string; source: { id: string } }[];
+      next_cursor: string | null;
+    }>();
+    expect(secondResponse.status).toBe(200);
+    expect(secondPage.edges).toMatchObject([
+      { id: "ce_cn_visible_1", source: { id: "cn_visible_1" } },
+    ]);
+    expect(secondPage.next_cursor).toBeNull();
+    expect(secondRead.count()).toBeLessThanOrEqual(3);
+
+    const exactPairRead = countPreparedStatements(env.DB);
+    const exactPairResponse = await request(
+      `/api/content-nodes/${target.id}/edges?direction=incoming&known_node=cn_visible_1`,
+      "GET",
+      undefined,
+      "",
+      origin,
+      {},
+      { ...bindings, DB: exactPairRead.db },
+    );
+    expect(exactPairResponse.status).toBe(200);
+    expect(
+      await exactPairResponse.json<{ edges: { id: string }[] }>(),
+    ).toMatchObject({ edges: [{ id: "ce_cn_visible_1" }] });
+    expect(exactPairRead.count()).toBeLessThanOrEqual(3);
+  });
+
   it("limits_unlisted_reads_to_the_explicit_pair_and_never_exposes_private_foreign_nodes", async () => {
     const source = await createExternal("Unlisted source", "unlisted");
     const target = await createExternal("Public target", "public", other);
@@ -797,6 +989,87 @@ describe("edge listing and owner review", () => {
       ],
       next_cursor: null,
     });
+  });
+
+  it("filters_many_private_sources_before_bounded_incoming_review_pages", async () => {
+    const target = await createExternal("Owned target", "public", other);
+    const hiddenCandidates = Array.from({ length: 40 }, (_, index) => ({
+      sourceId: `cn_review_hidden_${String(index).padStart(2, "0")}`,
+      visibility: "private" as const,
+      createdAt: "2099-01-01T00:00:00.000Z",
+    }));
+    const visibleCandidates = [
+      {
+        sourceId: "cn_review_visible_0",
+        visibility: "public" as const,
+        createdAt: "2000-01-02T00:00:00.000Z",
+      },
+      {
+        sourceId: "cn_review_visible_1",
+        visibility: "unlisted" as const,
+        createdAt: "2000-01-01T00:00:00.000Z",
+      },
+    ];
+    await seedIncomingEdges(target.id, [
+      ...hiddenCandidates,
+      ...visibleCandidates,
+    ]);
+
+    const firstRead = countPreparedStatements(env.DB);
+    const firstResponse = await request(
+      `/api/content-nodes/${target.id}/incoming-review?limit=1`,
+      "GET",
+      undefined,
+      other,
+      origin,
+      {},
+      { ...bindings, DB: firstRead.db },
+    );
+    expect(firstResponse.status).toBe(200);
+    const firstPage = await firstResponse.json<{
+      edges: { id: string; source: { id: string } }[];
+      next_cursor: string | null;
+    }>();
+    expect(firstPage.edges).toMatchObject([
+      {
+        id: "ce_cn_review_visible_0",
+        source: { id: "cn_review_visible_0" },
+      },
+    ]);
+    expect(firstPage.next_cursor).toMatch(/^incoming-review\./);
+    expect(firstRead.count()).toBeLessThanOrEqual(5);
+    const firstCursorValue = firstPage.next_cursor;
+    if (firstCursorValue === null)
+      throw new Error("Expected a second visible incoming edge");
+
+    const secondRead = countPreparedStatements(env.DB);
+    const secondResponse = await request(
+      `/api/content-nodes/${target.id}/incoming-review?limit=1&cursor=${encodeURIComponent(firstCursorValue)}`,
+      "GET",
+      undefined,
+      other,
+      origin,
+      {},
+      { ...bindings, DB: secondRead.db },
+    );
+    const secondPage = await secondResponse.json<{
+      edges: {
+        id: string;
+        source: { id: string };
+        pending_acceptance: boolean;
+      }[];
+      next_cursor: string | null;
+    }>();
+    expect(secondResponse.status).toBe(200);
+    expect(secondPage.edges).toMatchObject([
+      {
+        id: "ce_cn_review_visible_1",
+        source: { id: "cn_review_visible_1" },
+        pending_acceptance: true,
+      },
+    ]);
+    expect(secondPage.next_cursor).toBeNull();
+    expect(secondRead.count()).toBeLessThanOrEqual(5);
   });
 });
 

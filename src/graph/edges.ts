@@ -1,7 +1,14 @@
 import { z } from "zod";
 import { ApiError } from "../http/errors";
 import { reportSchema } from "../moderation/model";
-import { contentNodeModerationSchema, effectiveNode } from "./nodes";
+import {
+  contentNodeModerationSchema,
+  effectiveNode,
+  effectiveNodeAvailableSql,
+  effectiveNodeTimelineJoinSql,
+  effectiveNodeTitleSql,
+  effectiveNodeVisibilitySql,
+} from "./nodes";
 
 export type ContentEdge = {
   id: string;
@@ -28,6 +35,10 @@ export type PublicEdge = {
 
 type EdgeRow = Omit<ContentEdge, "admin_blocked"> & {
   admin_blocked: number;
+};
+type VisibleEdgeRow = EdgeRow & {
+  source_title: string | null;
+  target_title: string | null;
 };
 
 const nodeId = z.string().min(1).max(100);
@@ -108,67 +119,6 @@ function cursorMatches(
   );
 }
 
-function isPairQualified(
-  edge: EdgeRow,
-  direction: "incoming" | "outgoing",
-  knownNodeId: string | null,
-) {
-  return (
-    knownNodeId !== null &&
-    knownNodeId === (direction === "incoming" ? edge.source_id : edge.target_id)
-  );
-}
-
-async function publicEdgeForViewer(
-  db: D1Database,
-  edge: EdgeRow,
-  viewerId: string | null,
-  direction: "incoming" | "outgoing",
-  knownNodeId: string | null,
-): Promise<PublicEdge | null> {
-  const [source, target] = await Promise.all([
-    effectiveNode(db, edge.source_id, viewerId),
-    effectiveNode(db, edge.target_id, viewerId),
-  ]);
-  if (!source || !target) return null;
-
-  const pairQualified = isPairQualified(edge, direction, knownNodeId);
-  if (knownNodeId !== null && !pairQualified) return null;
-  const sameOwner = source.node.owner_id === target.node.owner_id;
-  const viewerOwnsBoth =
-    viewerId !== null &&
-    source.node.owner_id === viewerId &&
-    target.node.owner_id === viewerId;
-  const crossOwner = !sameOwner;
-
-  if (
-    crossOwner &&
-    (source.visibility === "unlisted" || target.visibility === "unlisted") &&
-    (!pairQualified || !edge.accepted_at)
-  )
-    return null;
-  if (
-    (source.visibility === "private" || target.visibility === "private") &&
-    !viewerOwnsBoth
-  )
-    return null;
-  if (
-    !pairQualified &&
-    !viewerOwnsBoth &&
-    (source.visibility !== "public" || target.visibility !== "public")
-  )
-    return null;
-
-  return {
-    id: edge.id,
-    type: edge.type,
-    source: { id: source.node.id, title: source.node.title },
-    target: { id: target.node.id, title: target.node.title },
-    attribution: "added by source owner",
-    created_at: edge.created_at,
-  };
-}
-
 export async function visibleEdges(
   db: D1Database,
   nodeId: string,
@@ -191,54 +141,77 @@ export async function visibleEdges(
       throw new ApiError("INVALID_REQUEST");
   }
 
-  const pageSize = Math.max(30, limit + 1);
   const nodeColumn = direction === "incoming" ? "target_id" : "source_id";
-  let after: Pick<EdgeCursor, "created_at" | "id"> | null = cursor
+  const oppositeColumn = direction === "incoming" ? "source_id" : "target_id";
+  const after = cursor
     ? { created_at: cursor.created_at, id: cursor.id }
     : null;
-  const visible: PublicEdge[] = [];
-  let hasMoreVisible = false;
+  const sourceVisibility = effectiveNodeVisibilitySql(
+    "source",
+    "source_timeline",
+  );
+  const targetVisibility = effectiveNodeVisibilitySql(
+    "target",
+    "target_timeline",
+  );
+  const viewerOwnsBoth = viewerId
+    ? "(source.owner_id=? AND target.owner_id=?)"
+    : "0";
+  const knownNodeFilter =
+    knownNodeId === null ? "" : `AND e.${oppositeColumn}=?`;
+  const relationVisibility =
+    knownNodeId === null
+      ? `AND (${viewerOwnsBoth} OR (${sourceVisibility}='public' AND ${targetVisibility}='public'))`
+      : `AND (${viewerOwnsBoth} OR (${sourceVisibility}!='private' AND ${targetVisibility}!='private'))
+      AND (source.owner_id=target.owner_id
+        OR (${sourceVisibility}!='unlisted' AND ${targetVisibility}!='unlisted')
+        OR e.accepted_at IS NOT NULL)`;
+  const afterFilter = after
+    ? "AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))"
+    : "";
+  const rows = await db
+    .prepare(`SELECT e.*,
+        ${effectiveNodeTitleSql("source", "source_timeline")} AS source_title,
+        ${effectiveNodeTitleSql("target", "target_timeline")} AS target_title
+      FROM content_edges e
+      JOIN content_nodes source ON source.id=e.source_id
+      ${effectiveNodeTimelineJoinSql("source", "source_timeline")}
+      JOIN content_nodes target ON target.id=e.target_id
+      ${effectiveNodeTimelineJoinSql("target", "target_timeline")}
+      WHERE e.${nodeColumn}=? AND e.removed_at IS NULL AND e.suppressed_at IS NULL
+        AND e.target_owner_blocked_at IS NULL AND e.admin_blocked=0
+        ${knownNodeFilter}
+        ${afterFilter}
+        AND ${effectiveNodeAvailableSql("source", "source_timeline")}
+        AND ${effectiveNodeAvailableSql("target", "target_timeline")}
+        AND (${sourceVisibility}!='private' OR source.owner_id=?)
+        AND (${targetVisibility}!='private' OR target.owner_id=?)
+        ${relationVisibility}
+      ORDER BY e.created_at DESC,e.id DESC LIMIT ?`)
+    .bind(
+      nodeId,
+      ...(knownNodeId === null ? [] : [knownNodeId]),
+      ...(after ? [after.created_at, after.created_at, after.id] : []),
+      viewerId ?? "",
+      viewerId ?? "",
+      ...(viewerId === null ? [] : [viewerId, viewerId]),
+      limit + 1,
+    )
+    .all<VisibleEdgeRow>();
 
-  while (!hasMoreVisible) {
-    const rows = await db
-      .prepare(`SELECT e.* FROM content_edges e
-        WHERE e.${nodeColumn}=? AND e.removed_at IS NULL AND e.suppressed_at IS NULL
-          AND e.target_owner_blocked_at IS NULL AND e.admin_blocked=0
-          ${after ? "AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))" : ""}
-        ORDER BY e.created_at DESC,e.id DESC LIMIT ?`)
-      .bind(
-        nodeId,
-        ...(after ? [after.created_at, after.created_at, after.id] : []),
-        pageSize,
-      )
-      .all<EdgeRow>();
-    if (rows.results.length === 0) break;
-
-    for (const edge of rows.results) {
-      after = { created_at: edge.created_at, id: edge.id };
-      const publicEdge = await publicEdgeForViewer(
-        db,
-        edge,
-        viewerId,
-        direction,
-        knownNodeId,
-      );
-      if (!publicEdge) continue;
-      visible.push(publicEdge);
-      if (visible.length > limit) {
-        hasMoreVisible = true;
-        break;
-      }
-    }
-    if (hasMoreVisible || rows.results.length < pageSize) break;
-  }
-
-  const page = visible.slice(0, limit);
+  const page = rows.results.slice(0, limit).map<PublicEdge>((edge) => ({
+    id: edge.id,
+    type: edge.type,
+    source: { id: edge.source_id, title: edge.source_title },
+    target: { id: edge.target_id, title: edge.target_title },
+    attribution: "added by source owner",
+    created_at: edge.created_at,
+  }));
   const last = page.at(-1);
   return {
     edges: page,
     next_cursor:
-      hasMoreVisible && last
+      rows.results.length > limit && last
         ? encodeEdgeCursor({
             v: 1,
             viewer: viewerId,

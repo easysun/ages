@@ -8,7 +8,12 @@ import {
   contentEdgeReportSchema,
   createContentEdgeSchema,
 } from "../graph/edges";
-import { effectiveNode } from "../graph/nodes";
+import {
+  effectiveNode,
+  effectiveNodeAvailableSql,
+  effectiveNodeTimelineJoinSql,
+  effectiveNodeVisibilitySql,
+} from "../graph/nodes";
 import { ApiError, errorResponse } from "../http/errors";
 import { parseJson } from "../http/json";
 
@@ -101,11 +106,28 @@ contentEdges.patch("/:id", async (context) => {
     block: "target_owner_blocked_at=COALESCE(target_owner_blocked_at, ?)",
     unblock: "target_owner_blocked_at=NULL",
   }[input.action];
+  const acceptanceGate =
+    input.action === "accept"
+      ? `AND (accepted_at IS NOT NULL OR EXISTS (
+        SELECT 1 FROM content_nodes source
+        ${effectiveNodeTimelineJoinSql("source", "source_timeline")}
+        JOIN content_nodes target ON target.id=content_edges.target_id
+        ${effectiveNodeTimelineJoinSql("target", "target_timeline")}
+        WHERE source.id=content_edges.source_id
+          AND source.owner_id!=target.owner_id
+          AND ${effectiveNodeAvailableSql("source", "source_timeline")}
+          AND ${effectiveNodeAvailableSql("target", "target_timeline")}
+          AND ${effectiveNodeVisibilitySql("source", "source_timeline")}!='private'
+          AND ${effectiveNodeVisibilitySql("target", "target_timeline")}!='private'
+          AND (${effectiveNodeVisibilitySql("source", "source_timeline")}='unlisted'
+            OR ${effectiveNodeVisibilitySql("target", "target_timeline")}='unlisted')
+      ))`
+      : "";
   const values = ["accept", "suppress", "block"].includes(input.action)
     ? [stamp]
     : [];
   await context.env.DB.prepare(`UPDATE content_edges SET ${update}
-      WHERE id=? AND removed_at IS NULL AND EXISTS (
+      WHERE id=? AND removed_at IS NULL ${acceptanceGate} AND EXISTS (
         SELECT 1 FROM content_nodes target
         WHERE target.id=content_edges.target_id AND target.owner_id=?
       )`)
@@ -118,6 +140,8 @@ contentEdges.patch("/:id", async (context) => {
     .bind(id, owner)
     .first<ContentEdgeRow>();
   if (!edge) throw new ApiError("NOT_FOUND");
+  if (input.action === "accept" && edge.accepted_at === null)
+    throw new ApiError("CONFLICT");
   return context.json({ edge: ownerEdgePayload(edge) });
 });
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { linkUrlSchema } from "../links/model";
-import { timelineContentAvailableSql } from "../moderation/availability";
+import { timelineContentAvailableSqlFor } from "../moderation/availability";
 import { moderationSchema } from "../moderation/model";
 
 export type ContentNode = {
@@ -17,11 +17,49 @@ export type ContentNode = {
   moderation_blocked: number;
 };
 
-type ContentNodeRow = ContentNode & {
-  available_timeline_id: string | null;
-  timeline_title: string | null;
-  timeline_visibility: ContentNode["visibility"] | null;
+type EffectiveNodeRow = ContentNode & {
+  effective_title: string | null;
+  effective_visibility: ContentNode["visibility"];
 };
+
+export function effectiveNodeTimelineJoinSql(
+  nodeAlias: string,
+  timelineAlias: string,
+) {
+  return `LEFT JOIN timelines ${timelineAlias} ON ${timelineAlias}.id = ${nodeAlias}.timeline_id
+    AND ${timelineAlias}.owner_id = ${nodeAlias}.owner_id
+    AND ${timelineContentAvailableSqlFor(timelineAlias)}`;
+}
+
+export function effectiveNodeAvailableSql(
+  nodeAlias: string,
+  timelineAlias: string,
+) {
+  return `${nodeAlias}.removed_at IS NULL
+    AND ${nodeAlias}.moderation_blocked = 0
+    AND (${nodeAlias}.kind != 'timeline' OR ${timelineAlias}.id IS NOT NULL)`;
+}
+
+export function effectiveNodeVisibilitySql(
+  nodeAlias: string,
+  timelineAlias: string,
+) {
+  return `CASE WHEN ${nodeAlias}.kind = 'timeline' THEN
+    CASE
+      WHEN ${nodeAlias}.visibility = 'private' OR ${timelineAlias}.visibility = 'private' THEN 'private'
+      WHEN ${nodeAlias}.visibility = 'unlisted' OR ${timelineAlias}.visibility = 'unlisted' THEN 'unlisted'
+      ELSE 'public'
+    END
+  ELSE ${nodeAlias}.visibility END`;
+}
+
+export function effectiveNodeTitleSql(
+  nodeAlias: string,
+  timelineAlias: string,
+) {
+  return `CASE WHEN ${nodeAlias}.kind = 'timeline' THEN ${timelineAlias}.title
+    ELSE ${nodeAlias}.title END`;
+}
 
 const visibilitySchema = z.enum(["private", "unlisted", "public"]);
 const titleSchema = z
@@ -76,41 +114,25 @@ export async function effectiveNode(
   node: ContentNode;
   visibility: ContentNode["visibility"];
 } | null> {
+  const visibilitySql = effectiveNodeVisibilitySql("n", "t");
   const row = await db
-    .prepare(
-      "SELECT n.*, t.id AS available_timeline_id, t.title AS timeline_title, " +
-        "t.visibility AS timeline_visibility FROM content_nodes n " +
-        "LEFT JOIN timelines t ON t.id = n.timeline_id AND t.owner_id = n.owner_id AND " +
-        timelineContentAvailableSql +
-        " WHERE n.id = ? AND n.removed_at IS NULL AND n.moderation_blocked = 0",
-    )
-    .bind(id)
-    .first<ContentNodeRow>();
+    .prepare(`SELECT n.*,
+        ${effectiveNodeTitleSql("n", "t")} AS effective_title,
+        ${visibilitySql} AS effective_visibility
+      FROM content_nodes n
+      ${effectiveNodeTimelineJoinSql("n", "t")}
+      WHERE n.id = ? AND ${effectiveNodeAvailableSql("n", "t")}
+        AND (${visibilitySql} != 'private' OR n.owner_id = ?)`)
+    .bind(id, viewerId ?? "")
+    .first<EffectiveNodeRow>();
   if (!row) return null;
-
-  let effectiveVisibility = row.visibility;
-  let title = row.title;
-  if (row.kind === "timeline") {
-    if (!row.available_timeline_id || !row.timeline_visibility) return null;
-    title = row.timeline_title;
-    const rank = { private: 0, unlisted: 1, public: 2 };
-    effectiveVisibility =
-      rank[row.visibility] <= rank[row.timeline_visibility]
-        ? row.visibility
-        : row.timeline_visibility;
-  }
-
-  if (effectiveVisibility === "private" && viewerId !== row.owner_id)
-    return null;
-
   const {
-    available_timeline_id: _availableTimelineId,
-    timeline_title: _timelineTitle,
-    timeline_visibility: _timelineVisibility,
+    effective_title: effectiveTitle,
+    effective_visibility: effectiveVisibility,
     ...storedNode
   } = row;
   return {
-    node: { ...storedNode, title },
+    node: { ...storedNode, title: effectiveTitle },
     visibility: effectiveVisibility,
   };
 }
