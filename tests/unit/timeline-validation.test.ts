@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
+import * as validation from "../../src/timeline/validation";
 import { eventAtSchema } from "../../src/timeline/validation";
+
+type QuerySchema = {
+  safeParse(value: unknown): { success: boolean; data?: unknown };
+};
+
+function querySchema(name: string) {
+  return (validation as unknown as Record<string, QuerySchema | undefined>)[
+    name
+  ];
+}
 
 describe("Timeline calendar and instant semantics", () => {
   it("accepts named timezone aliases and preserves leap calendar dates", () => {
@@ -77,5 +88,86 @@ describe("Timeline calendar and instant semantics", () => {
       },
     ])
       expect(eventAtSchema.safeParse(value).success).toBe(false);
+  });
+});
+
+describe("Timeline read query validation", () => {
+  it("defaults to bounded overview and detail pages and accepts pinned selectors", () => {
+    const overview = querySchema("timelineOverviewQuerySchema");
+    const items = querySchema("timelineItemsQuerySchema");
+    expect(overview).toBeDefined();
+    expect(items).toBeDefined();
+    if (!overview || !items) return;
+
+    expect(overview.safeParse({}).data).toEqual({ limit: 1000 });
+    expect(
+      overview.safeParse({ version: "7", limit: "12", cursor: "page-token" })
+        .data,
+    ).toEqual({ version: 7, limit: 12, cursor: "page-token" });
+    expect(
+      overview.safeParse({
+        version: "7",
+        from_position: "0",
+        from_id: "item-a",
+      }).data,
+    ).toEqual({ version: 7, limit: 1000, from_position: 0, from_id: "item-a" });
+
+    expect(items.safeParse({ version: "7" }).data).toEqual({
+      version: 7,
+      limit: 100,
+    });
+    expect(
+      items.safeParse({ version: "7", limit: "5", cursor: "page-token" }).data,
+    ).toEqual({ version: 7, limit: 5, cursor: "page-token" });
+    expect(
+      items.safeParse({
+        version: "7",
+        from_position: "0",
+        from_id: "item-a",
+      }).data,
+    ).toEqual({ version: 7, limit: 100, from_position: 0, from_id: "item-a" });
+  });
+
+  it("rejects incomplete, mixed, unpinned, unsafe, and out-of-range selectors", () => {
+    const overview = querySchema("timelineOverviewQuerySchema");
+    const items = querySchema("timelineItemsQuerySchema");
+    expect(overview).toBeDefined();
+    expect(items).toBeDefined();
+    if (!overview || !items) return;
+
+    for (const value of [
+      { cursor: "page-token" },
+      { from_position: "0", from_id: "item-a" },
+      { version: "1", from_position: "0" },
+      { version: "1", from_id: "item-a" },
+      {
+        version: "1",
+        cursor: "page-token",
+        from_position: "0",
+        from_id: "item-a",
+      },
+      { limit: "0" },
+      { limit: "1001" },
+      { version: "0" },
+      { version: "9007199254740992" },
+      { from_position: "-1", from_id: "item-a", version: "1" },
+    ])
+      expect(overview.safeParse(value).success).toBe(false);
+
+    for (const value of [
+      {},
+      { version: "1", from_position: "0" },
+      { version: "1", from_id: "item-a" },
+      {
+        version: "1",
+        cursor: "page-token",
+        from_position: "0",
+        from_id: "item-a",
+      },
+      { version: "1", limit: "0" },
+      { version: "1", limit: "101" },
+      { version: "9007199254740992" },
+    ])
+      expect(items.safeParse(value).success).toBe(false);
   });
 });
