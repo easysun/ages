@@ -22,6 +22,7 @@ type Operation = {
   authGeneration: number;
   nodeId: string;
   pairId: string | null;
+  pairDirection: "incoming" | "outgoing" | null;
   controller: AbortController;
 };
 
@@ -86,6 +87,7 @@ export function ContentEdgesPanel({
   const requestGenerationsRef = useRef(new Map<string, number>());
   const controllersRef = useRef(new Map<string, AbortController>());
   const knownNodeIdRef = useRef<string | null>(null);
+  const pairDirectionRef = useRef<"incoming" | "outgoing">("outgoing");
   const busyOperationRef = useRef<number | null>(null);
   const [outgoing, setOutgoing] = useState<PublicEdge[]>([]);
   const [incoming, setIncoming] = useState<PublicEdge[]>([]);
@@ -111,7 +113,11 @@ export function ContentEdgesPanel({
   const [status, setStatus] = useState("");
 
   const beginOperation = useCallback(
-    (key: string, pairId: string | null = null): Operation => {
+    (
+      key: string,
+      pairId: string | null = null,
+      pairDirection: "incoming" | "outgoing" | null = null,
+    ): Operation => {
       controllersRef.current.get(key)?.abort();
       const controller = new AbortController();
       const id = ++sequenceRef.current;
@@ -124,6 +130,7 @@ export function ContentEdgesPanel({
         authGeneration,
         nodeId,
         pairId,
+        pairDirection,
         controller,
       };
     },
@@ -138,7 +145,8 @@ export function ContentEdgesPanel({
       epochRef.current === operation.epoch &&
       requestGenerationsRef.current.get(operation.key) === operation.id &&
       (operation.pairId === null ||
-        knownNodeIdRef.current === operation.pairId) &&
+        (knownNodeIdRef.current === operation.pairId &&
+          pairDirectionRef.current === operation.pairDirection)) &&
       !operation.controller.signal.aborted
     );
   }, []);
@@ -171,6 +179,7 @@ export function ContentEdgesPanel({
       setReview([]);
       setPairEdges([]);
       knownNodeIdRef.current = null;
+      pairDirectionRef.current = "outgoing";
       setKnownNodeId("");
       setReportingEdgeId(null);
       setReportDetail("");
@@ -199,7 +208,11 @@ export function ContentEdgesPanel({
       append = false,
     ): Promise<boolean> => {
       const key = knownId ? `outgoing-pair:${knownId}` : "outgoing";
-      const operation = beginOperation(key, knownId);
+      const operation = beginOperation(
+        key,
+        knownId,
+        knownId ? "outgoing" : null,
+      );
       if (!knownId && append)
         setLoadingMore((current) => ({ ...current, outgoing: true }));
       try {
@@ -248,7 +261,11 @@ export function ContentEdgesPanel({
       append = false,
     ): Promise<boolean> => {
       const key = knownId ? `incoming-pair:${knownId}` : "incoming";
-      const operation = beginOperation(key, knownId);
+      const operation = beginOperation(
+        key,
+        knownId,
+        knownId ? "incoming" : null,
+      );
       if (!knownId && append)
         setLoadingMore((current) => ({ ...current, incoming: true }));
       try {
@@ -347,10 +364,17 @@ export function ContentEdgesPanel({
     const refreshEpoch = epochRef.current;
     const refreshAuthGeneration = authGeneration;
     const refreshNodeId = nodeId;
+    const knownId = knownNodeIdRef.current;
+    const pairRead = knownId
+      ? pairDirectionRef.current === "incoming"
+        ? readIncoming(knownId)
+        : readOutgoing(knownId)
+      : Promise.resolve(true);
     const reads = await Promise.all([
       readOutgoing(),
       readIncoming(),
       readReview(),
+      pairRead,
     ]);
     if (
       mountedRef.current &&
@@ -358,7 +382,7 @@ export function ContentEdgesPanel({
       nodeIdRef.current === refreshNodeId &&
       epochRef.current === refreshEpoch
     ) {
-      if (reads.slice(0, 3).every(Boolean)) {
+      if (reads.every(Boolean)) {
         setAccessBlocked(false);
         setError("");
       }
@@ -381,6 +405,7 @@ export function ContentEdgesPanel({
     setPairEdges([]);
     setKnownNodeId("");
     knownNodeIdRef.current = null;
+    pairDirectionRef.current = "outgoing";
     busyOperationRef.current = null;
     setReportingEdgeId(null);
     setReportDetail("");
@@ -421,6 +446,7 @@ export function ContentEdgesPanel({
       setTargetInput("");
       knownNodeIdRef.current = targetId;
       setKnownNodeId(targetId);
+      pairDirectionRef.current = "outgoing";
       setPairDirection("outgoing");
       setStatus("Relationship added.");
       void readOutgoing(targetId);
@@ -441,6 +467,11 @@ export function ContentEdgesPanel({
     if (accessBlocked || busyEdgeId) return;
     invalidateOperation("incoming");
     invalidateOperation("incoming-review");
+    setLoadingMore((current) => ({
+      ...current,
+      incoming: false,
+      review: false,
+    }));
     const operation = beginOperation(`edge-action:${edge.id}`);
     busyOperationRef.current = operation.id;
     setBusyEdgeId(edge.id);
@@ -488,10 +519,12 @@ export function ContentEdgesPanel({
         action === "unblock"
       ) {
         knownNodeIdRef.current = edge.source.id;
+        pairDirectionRef.current = "incoming";
         setKnownNodeId(edge.source.id);
         setPairDirection("incoming");
         void readIncoming(edge.source.id);
       } else if (action === "suppress" || action === "block") {
+        invalidateOperation(`incoming-pair:${edge.source.id}`);
         setPairEdges((current) =>
           current.filter((item) => item.id !== edge.id),
         );
@@ -544,11 +577,61 @@ export function ContentEdgesPanel({
     }
   }
 
+  function openKnownTarget() {
+    if (accessBlocked || busyEdgeId) return;
+    const targetId = parseReferenceId(targetInput);
+    if (!targetId) {
+      setError("Enter a known Ages reference URL or reference ID.");
+      setStatus("");
+      return;
+    }
+    knownNodeIdRef.current = targetId;
+    pairDirectionRef.current = "outgoing";
+    setKnownNodeId(targetId);
+    setPairDirection("outgoing");
+    setPairEdges([]);
+    setError("");
+    setStatus("");
+    void readOutgoing(targetId);
+  }
+
+  async function removeOutgoing(edge: PublicEdge) {
+    if (accessBlocked || busyEdgeId) return;
+    invalidateOperation("outgoing");
+    invalidateOperation(`outgoing-pair:${edge.target.id}`);
+    setLoadingMore((current) => ({ ...current, outgoing: false }));
+    const operation = beginOperation(`edge-remove:${edge.id}`);
+    busyOperationRef.current = operation.id;
+    setBusyEdgeId(edge.id);
+    setError("");
+    setStatus("");
+    try {
+      await api<{ removed: boolean }>(
+        `/api/content-edges/${encodeURIComponent(edge.id)}`,
+        { method: "DELETE", signal: operation.controller.signal },
+      );
+      if (!owns(operation)) return;
+      setOutgoing((current) => current.filter((item) => item.id !== edge.id));
+      setPairEdges((current) => current.filter((item) => item.id !== edge.id));
+      setStatus("Relationship removed.");
+    } catch (reason) {
+      if (!owns(operation)) return;
+      if (isAuthorizationFailure(reason)) {
+        authorizationFailure(reason);
+        return;
+      }
+      setError(errorMessage(reason));
+    } finally {
+      if (owns(operation)) releaseBusy(operation);
+    }
+  }
+
   function openKnownPair(edge: IncomingReviewEdge) {
     if (accessBlocked || loading || busyEdgeId !== null) return;
     abortAll();
     setLoadingMore({});
     knownNodeIdRef.current = edge.source.id;
+    pairDirectionRef.current = "incoming";
     setKnownNodeId(edge.source.id);
     setPairDirection("incoming");
     setPairEdges([]);
@@ -556,6 +639,7 @@ export function ContentEdgesPanel({
   }
 
   const knownTargetId = knownNodeId;
+  const parsedTargetInput = parseReferenceId(targetInput);
   const listedIncoming = new Map(incoming.map((edge) => [edge.id, edge]));
   const mergedOutgoing = [
     ...new Map(
@@ -621,6 +705,14 @@ export function ContentEdgesPanel({
           placeholder="Paste a known /c/ reference URL or ID"
           disabled={accessBlocked || busyEdgeId !== null}
         />
+        <button
+          type="button"
+          className="button"
+          disabled={accessBlocked || busyEdgeId !== null || !parsedTargetInput}
+          onClick={openKnownTarget}
+        >
+          Open known target pair
+        </button>
         <label htmlFor={`content-edge-type-${nodeId}`}>Relationship type</label>
         <select
           id={`content-edge-type-${nodeId}`}
@@ -663,6 +755,14 @@ export function ContentEdgesPanel({
                 <a href={`/c/${encodeURIComponent(edge.target.id)}`}>
                   Open known target
                 </a>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={accessBlocked || busyEdgeId !== null}
+                  onClick={() => void removeOutgoing(edge)}
+                >
+                  Remove relationship
+                </button>
               </li>
             ))}
           </ul>

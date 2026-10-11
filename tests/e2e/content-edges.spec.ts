@@ -1113,6 +1113,609 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
   await sourceContext.close();
 });
 
+async function verifyOldPairReadIsDiscardedAfterIncomingMutation(
+  browser: Browser,
+  context: BrowserContext,
+  page: Page,
+  action: "suppress" | "block",
+) {
+  await seedLibrary(context);
+  const target = await createExternal(
+    context,
+    "Pair mutation target",
+    "public",
+  );
+  const { context: sourceContext } = await makeOwner(browser);
+  const source = await createExternal(
+    sourceContext,
+    "Pair mutation unlisted source",
+    "unlisted",
+  );
+  await createEdge(sourceContext, source.id, target.id);
+
+  const stalePair = deferredSignal();
+  await page.route(
+    `**/api/content-nodes/${target.id}/edges?*`,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("direction") !== "incoming" ||
+        url.searchParams.get("known_node") !== source.id
+      )
+        return route.continue();
+      const response = await route.fetch();
+      stalePair.signal();
+      await stalePair.promise;
+      await route.fulfill({ response }).catch(() => undefined);
+    },
+  );
+
+  await page.goto(`${e2eOrigin}/content`);
+  await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+  const incoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  const reviewList = incoming.getByRole("list").last();
+  const reviewRow = reviewList
+    .getByRole("listitem")
+    .filter({ hasText: source.title });
+  await expect(reviewRow).toBeVisible();
+  await reviewRow.getByRole("button", { name: "Accept", exact: true }).click();
+  await stalePair.started;
+
+  await reviewRow
+    .getByRole("button", {
+      name:
+        action === "suppress" ? "Suppress relationship" : "Block relationship",
+    })
+    .click();
+  await expect(reviewRow).toContainText(
+    action === "suppress" ? "Suppressed" : "Blocked by you",
+  );
+
+  stalePair.release();
+  const pair = page.getByRole("region", {
+    name: "Known pair relationship",
+  });
+  await expect(pair).toContainText(
+    "No active relationship is visible for this known pair.",
+  );
+  await expect(pair.getByRole("listitem")).toHaveCount(0);
+  await expect(reviewRow).toContainText(
+    action === "suppress" ? "Suppressed" : "Blocked by you",
+  );
+  await expect(
+    incoming.getByRole("heading", { name: "Visible incoming references" }),
+  ).toHaveCount(0);
+  await sourceContext.close();
+}
+
+test("late_pair_read_cannot_restore_a_suppressed_incoming_edge", async ({
+  browser,
+  context,
+  page,
+}) => {
+  await verifyOldPairReadIsDiscardedAfterIncomingMutation(
+    browser,
+    context,
+    page,
+    "suppress",
+  );
+});
+
+test("late_pair_read_cannot_restore_a_blocked_incoming_edge", async ({
+  browser,
+  context,
+  page,
+}) => {
+  await verifyOldPairReadIsDiscardedAfterIncomingMutation(
+    browser,
+    context,
+    page,
+    "block",
+  );
+});
+
+test("cancelled_incoming_appends_release_only_their_own_loading_state", async ({
+  browser,
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const target = await createExternal(
+    context,
+    "Append cancellation target",
+    "public",
+  );
+  const { context: sourceContext } = await makeOwner(browser);
+  for (let index = 0; index < 31; index++) {
+    const source = await createExternal(
+      sourceContext,
+      `Append cancellation source ${String(index).padStart(2, "0")}`,
+      "public",
+    );
+    await createEdge(sourceContext, source.id, target.id);
+  }
+
+  const appendGates = {
+    incoming: [deferredSignal(), deferredSignal()] as const,
+    review: [deferredSignal(), deferredSignal()] as const,
+  };
+  const appendCounts = { incoming: 0, review: 0 };
+  await page.route(`**/api/content-nodes/${target.id}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    const direction = url.searchParams.get("direction");
+    const isIncoming =
+      url.pathname.endsWith("/edges") &&
+      direction === "incoming" &&
+      url.searchParams.has("cursor");
+    const isReview =
+      url.pathname.endsWith("/incoming-review") &&
+      url.searchParams.has("cursor");
+    const key = isIncoming ? "incoming" : isReview ? "review" : null;
+    if (key === null || appendCounts[key] >= 2) return route.continue();
+
+    const index = appendCounts[key];
+    const gate = appendGates[key][index];
+    if (!gate) return route.continue();
+    appendCounts[key] = index + 1;
+    const response = await route.fetch();
+    gate.signal();
+    await gate.promise;
+    await route.fulfill({ response }).catch(() => undefined);
+  });
+
+  await page.goto(`${e2eOrigin}/content`);
+  await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+  const incoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  const incomingMore = incoming
+    .getByRole("button")
+    .filter({ hasText: /older incoming relationships/ });
+  const reviewMore = incoming
+    .getByRole("button")
+    .filter({ hasText: /older incoming review/ });
+  const reviewList = incoming.getByRole("list").last();
+  const firstReview = reviewList.getByRole("listitem").first();
+  await incomingMore.click();
+  await appendGates.incoming[0].started;
+  await reviewMore.click();
+  await appendGates.review[0].started;
+
+  try {
+    await firstReview
+      .getByRole("button", { name: "Suppress relationship" })
+      .click();
+    await expect(firstReview).toContainText("Suppressed");
+
+    const cancelledControlState = await Promise.all(
+      [incomingMore, reviewMore].map((button) =>
+        button.evaluate((element) => ({
+          disabled: (element as HTMLButtonElement).disabled,
+          label: element.textContent?.trim(),
+        })),
+      ),
+    );
+    expect(cancelledControlState).toEqual([
+      { disabled: false, label: "Load older incoming relationships" },
+      { disabled: false, label: "Load older incoming review" },
+    ]);
+
+    await incomingMore.click();
+    await appendGates.incoming[1].started;
+    await reviewMore.click();
+    await appendGates.review[1].started;
+    appendGates.incoming[0].release();
+    appendGates.review[0].release();
+    await expect(incomingMore).toBeDisabled();
+    await expect(incomingMore).toContainText("Loading older");
+    await expect(reviewMore).toBeDisabled();
+    await expect(reviewMore).toContainText("Loading older");
+
+    appendGates.incoming[1].release();
+    appendGates.review[1].release();
+    const firstPage = await readOwnerEdgePage(context, target.id, "incoming");
+    const laterPage = await readOwnerEdgePage(
+      context,
+      target.id,
+      "incoming",
+      firstPage.next_cursor ?? undefined,
+    );
+    const laterSourceTitle = laterPage.edges[0]?.source.title;
+    expect(laterSourceTitle).toBeTruthy();
+    const visibleIncoming = incoming.getByRole("list").first();
+    await expect(
+      visibleIncoming.getByText(laterSourceTitle ?? "missing page-two source", {
+        exact: true,
+      }),
+    ).toBeVisible();
+  } finally {
+    for (const gate of [...appendGates.incoming, ...appendGates.review])
+      gate.release();
+    await page.unrouteAll();
+  }
+
+  await sourceContext.close();
+});
+
+test("known_target_reopens_an_accepted_unlisted_pair_without_posting", async ({
+  browser,
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const source = await createExternal(
+    context,
+    "Known pair reopening source",
+    "public",
+  );
+  const { context: targetContext } = await makeOwner(browser);
+  const target = await createExternal(
+    targetContext,
+    "Known pair reopening unlisted target",
+    "unlisted",
+  );
+  const edge = await createEdge(context, source.id, target.id);
+  await edgeAction(targetContext, edge.id, "accept");
+
+  let postCount = 0;
+  let pairReadCount = 0;
+  await page.route("**/api/content-edges", async (route) => {
+    if (route.request().method() === "POST") postCount += 1;
+    await route.continue();
+  });
+  await page.route(
+    `**/api/content-nodes/${source.id}/edges?*`,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("direction") === "outgoing" &&
+        url.searchParams.get("known_node") === target.id
+      )
+        pairReadCount += 1;
+      await route.continue();
+    },
+  );
+
+  await page.goto(`${e2eOrigin}/content`);
+  await page.getByRole("button", { name: `Edit ${source.title}` }).click();
+  await page.reload();
+  await page.getByRole("button", { name: `Edit ${source.title}` }).click();
+  const outgoing = page.getByRole("region", { name: "Outgoing relationships" });
+  await expect(outgoing).not.toContainText(target.title);
+  const targetInput = page.getByLabel("Target reference URL or ID");
+  await targetInput.fill(`${e2eOrigin}/c/${target.id}`);
+  const openPair = page.getByRole("button", {
+    name: "Open known target pair",
+  });
+  await expect(openPair).toBeVisible();
+  await openPair.click();
+  const pair = page.getByRole("region", {
+    name: "Known pair relationship",
+  });
+  await expect(pair).toContainText(target.id);
+  await expect(pair).toContainText(target.title);
+
+  await page.getByRole("button", { name: "Refresh relationships" }).click();
+  await expect(pair).toContainText(target.title);
+  await expect(
+    page.getByRole("button", { name: "Open known target pair" }),
+  ).toBeVisible();
+  expect(pairReadCount).toBeGreaterThanOrEqual(2);
+  expect(postCount).toBe(0);
+
+  const pairResponse = await context.request.get(
+    `${e2eOrigin}/api/content-nodes/${source.id}/edges?direction=outgoing&limit=30&known_node=${encodeURIComponent(target.id)}`,
+    { headers: await ownerHeaders(context) },
+  );
+  expect(pairResponse.status()).toBe(200);
+  const pairResult = (await pairResponse.json()) as OwnerEdgePage;
+  expect(pairResult.edges.map((item) => item.id)).toEqual([edge.id]);
+  await targetContext.close();
+});
+
+test("late_incoming_pair_read_cannot_overwrite_the_outgoing_pair_view", async ({
+  browser,
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const target = await createExternal(
+    context,
+    "Pair direction target",
+    "public",
+  );
+  const { context: sourceContext } = await makeOwner(browser);
+  const source = await createExternal(
+    sourceContext,
+    "Pair direction source",
+    "unlisted",
+  );
+  const incomingEdge = await createEdge(
+    sourceContext,
+    source.id,
+    target.id,
+    "references",
+  );
+  const outgoingEdge = await createEdge(
+    context,
+    target.id,
+    source.id,
+    "continuation",
+  );
+  await edgeAction(sourceContext, outgoingEdge.id, "accept");
+
+  await page.addInitScript(
+    ({ nodeId, counterpartId }) => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const requestUrl =
+          typeof input === "string"
+            ? input
+            : input instanceof Request
+              ? input.url
+              : input.href;
+        const url = new URL(requestUrl, window.location.origin);
+        const response = await originalFetch(input, init);
+        if (
+          url.pathname ===
+            `/api/content-nodes/${encodeURIComponent(nodeId)}/edges` &&
+          url.searchParams.get("direction") === "incoming" &&
+          url.searchParams.get("known_node") === counterpartId
+        ) {
+          const payload = (await response.clone().json()) as {
+            edges: { id: string }[];
+          };
+          await new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          );
+          (
+            window as Window & { __incomingPairResponseIds?: string[] }
+          ).__incomingPairResponseIds = payload.edges.map((edge) => edge.id);
+        }
+        return response;
+      };
+    },
+    { nodeId: target.id, counterpartId: source.id },
+  );
+
+  const delayedPairRead = deferredSignal();
+  const pairResponseFinished = deferredSignal();
+  let pairReadStarted = false;
+  await page.route(
+    `**/api/content-nodes/${target.id}/edges?*`,
+    async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        url.searchParams.get("direction") !== "incoming" ||
+        url.searchParams.get("known_node") !== source.id
+      )
+        return route.continue();
+      const response = await route.fetch();
+      pairReadStarted = true;
+      delayedPairRead.signal();
+      await delayedPairRead.promise;
+      try {
+        await route.fulfill({ response });
+      } finally {
+        pairResponseFinished.signal();
+      }
+    },
+  );
+
+  try {
+    await page.goto(`${e2eOrigin}/content`);
+    await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+    const incoming = page.getByRole("region", {
+      name: "Incoming relationships",
+    });
+    const reviewRow = incoming
+      .getByRole("list")
+      .last()
+      .getByRole("listitem")
+      .filter({ hasText: source.title });
+    await expect(reviewRow).toBeVisible();
+    await reviewRow
+      .getByRole("button", { name: "Accept", exact: true })
+      .click();
+    await delayedPairRead.started;
+
+    await page.getByLabel("Target reference URL or ID").fill(source.id);
+    await page.getByRole("button", { name: "Open known target pair" }).click();
+    const pair = page.getByRole("region", {
+      name: "Known pair relationship",
+    });
+    const pairRow = pair.getByRole("listitem");
+    await expect(pairRow).toContainText("continuation");
+    await expect(pairRow).toContainText(source.title);
+
+    delayedPairRead.release();
+    await pairResponseFinished.started;
+    await page.waitForFunction(
+      (edgeId) =>
+        (
+          window as Window & { __incomingPairResponseIds?: string[] }
+        ).__incomingPairResponseIds?.includes(edgeId),
+      incomingEdge.id,
+    );
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(pairRow).toContainText("continuation");
+    await expect(pairRow).toContainText(source.title);
+    await expect(pairRow).not.toContainText("references");
+    await expect(reviewRow).toContainText("Accepted");
+  } finally {
+    delayedPairRead.release();
+    if (pairReadStarted) await pairResponseFinished.started;
+    await sourceContext.close();
+  }
+});
+
+test("source_owner_can_retract_one_edge_without_removing_nodes_or_other_edges", async ({
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const source = await createExternal(
+    context,
+    "Retraction source node",
+    "public",
+  );
+  const target = await createExternal(
+    context,
+    "Retraction target node",
+    "public",
+  );
+  const retainedTarget = await createExternal(
+    context,
+    "Retraction retained target",
+    "public",
+  );
+  const nextSource = await createExternal(
+    context,
+    "Retraction next source node",
+    "public",
+  );
+  const edge = await createEdge(context, source.id, target.id);
+  await createEdge(context, source.id, retainedTarget.id, "continuation");
+  await createEdge(context, nextSource.id, target.id, "related_to");
+
+  const deletion = deferredSignal();
+  await page.route(`**/api/content-edges/${edge.id}`, async (route) => {
+    if (route.request().method() !== "DELETE") return route.continue();
+    const response = await route.fetch();
+    deletion.signal();
+    await deletion.promise;
+    await route.fulfill({ response }).catch(() => undefined);
+  });
+  await page.goto(`${e2eOrigin}/content`);
+  await page.getByRole("button", { name: `Edit ${source.title}` }).click();
+  const outgoing = page.getByRole("region", { name: "Outgoing relationships" });
+  const removedRow = outgoing
+    .getByRole("listitem")
+    .filter({ hasText: target.title });
+  await expect(removedRow).toBeVisible();
+  await removedRow.getByRole("button", { name: "Remove relationship" }).click();
+  await deletion.started;
+
+  const serverPage = await readOwnerEdgePage(context, source.id, "outgoing");
+  expect(serverPage.edges.map((item) => item.id)).not.toContain(edge.id);
+  await page.getByRole("button", { name: `Edit ${nextSource.title}` }).click();
+  const nextOutgoing = page.getByRole("region", {
+    name: "Outgoing relationships",
+  });
+  await expect(
+    nextOutgoing.getByText(target.title, { exact: true }),
+  ).toBeVisible();
+  deletion.release();
+  await expect(
+    page.getByRole("heading", { name: nextSource.title }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Relationship removed" }),
+  ).toHaveCount(0);
+
+  await page.getByRole("button", { name: `Edit ${source.title}` }).click();
+  const refreshedOutgoing = page.getByRole("region", {
+    name: "Outgoing relationships",
+  });
+  await expect(
+    refreshedOutgoing.getByText(target.title, { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    refreshedOutgoing.getByText(retainedTarget.title, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: `Edit ${source.title}` }),
+  ).toBeVisible();
+
+  const publicTarget = await page.goto(`${e2eOrigin}/c/${target.id}`);
+  expect(publicTarget?.status()).toBe(200);
+  await expect(page.locator("body")).not.toContainText(source.title);
+  await expect(page.locator("body")).toContainText(nextSource.title);
+  await expect(page.locator("body")).toContainText(target.title);
+});
+
+test("late_creator_delete_after_auth_generation_change_is_discarded", async ({
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const source = await createExternal(
+    context,
+    "Auth-generation delete source",
+    "public",
+  );
+  const target = await createExternal(
+    context,
+    "Auth-generation delete target",
+    "public",
+  );
+  const edge = await createEdge(context, source.id, target.id);
+
+  const deletion = deferredSignal();
+  const logout = deferredSignal();
+  const logoutFinished = deferredSignal();
+  let logoutStarted = false;
+  await page.route(`**/api/content-edges/${edge.id}`, async (route) => {
+    if (route.request().method() !== "DELETE") return route.continue();
+    const response = await route.fetch();
+    deletion.signal();
+    await deletion.promise;
+    await route.fulfill({ response }).catch(() => undefined);
+  });
+  await page.route("**/auth/logout", async (route) => {
+    logoutStarted = true;
+    logout.signal();
+    await logout.promise;
+    try {
+      await route.continue();
+    } finally {
+      logoutFinished.signal();
+    }
+  });
+
+  await page.goto(`${e2eOrigin}/content`);
+  await page.getByRole("button", { name: `Edit ${source.title}` }).click();
+  const outgoing = page.getByRole("region", { name: "Outgoing relationships" });
+  const row = outgoing.getByRole("listitem").filter({ hasText: target.title });
+  await expect(row).toBeVisible();
+  await row.getByRole("button", { name: "Remove relationship" }).click();
+  await deletion.started;
+
+  try {
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await logout.started;
+    await expect(
+      page.getByRole("button", { name: "Refresh relationships" }),
+    ).toBeEnabled();
+
+    deletion.release();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Relationship removed" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: source.title }),
+    ).toBeVisible();
+    await expect(outgoing.getByText(target.title, { exact: true })).toHaveCount(
+      0,
+    );
+  } finally {
+    deletion.release();
+    logout.release();
+    if (logoutStarted) await logoutFinished.started;
+  }
+
+  await expect(
+    page.getByRole("link", { name: "Continue with Google" }),
+  ).toBeVisible();
+});
+
 test("admin_content_node_moderation_hides_backlinks_without_deleting_the_relation", async ({
   browser,
   context,
