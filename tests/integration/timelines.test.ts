@@ -64,6 +64,7 @@ function request(
   body?: unknown,
   cookie = session,
   requestOrigin = origin,
+  extraHeaders: Record<string, string> = {},
 ) {
   return app.request(
     `${origin}/api/timelines${path}`,
@@ -73,6 +74,7 @@ function request(
         Cookie: cookie,
         Origin: requestOrigin,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     },
@@ -549,6 +551,249 @@ describe("Paged Timeline reads", () => {
     const detail = await detailResponse.json<DetailPage>();
     expect(detail.items).toHaveLength(100);
     expect(detail.next_cursor).toBeTruthy();
+  });
+});
+
+describe("Minimal timeline mutation responses", () => {
+  it("keeps full JSON responses for default writes and non-exact preferences", async () => {
+    await ready();
+    let timeline = await create();
+    const appendResponse = await request(
+      `/${timeline.id}/items`,
+      "POST",
+      {
+        expected_version: timeline.version,
+        asset_id: "asset_a",
+        caption: "First",
+      },
+      session,
+      origin,
+      { Prefer: "return=minimal, wait=1" },
+    );
+    expect(appendResponse.status).toBe(201);
+    const first = await appendResponse.json<{ timeline: Timeline }>();
+    expect(first.timeline).toMatchObject({
+      version: 2,
+      items: [
+        {
+          asset_id: "asset_a",
+          position: 0,
+          caption: "First",
+          event_at: null,
+        },
+      ],
+    });
+    timeline = await append(first.timeline, "asset_a", { caption: "Second" });
+    expect(timeline.version).toBe(3);
+    expect(timeline.items).toHaveLength(2);
+    const [firstItem, secondItem] = timeline.items;
+    if (!firstItem || !secondItem) throw new Error("Expected two story items");
+
+    const editResponse = await request(
+      `/${timeline.id}/items/${firstItem.id}`,
+      "PATCH",
+      { expected_version: timeline.version, caption: "Edited" },
+    );
+    expect(editResponse.status).toBe(200);
+    const edited = await editResponse.json<{ timeline: Timeline }>();
+    expect(edited.timeline).toMatchObject({
+      version: 4,
+      items: [
+        { id: firstItem.id, caption: "Edited" },
+        { id: secondItem.id, caption: "Second" },
+      ],
+    });
+
+    const removeResponse = await request(
+      `/${timeline.id}/items/${secondItem.id}`,
+      "DELETE",
+      { expected_version: edited.timeline.version },
+    );
+    expect(removeResponse.status).toBe(200);
+    const removed = await removeResponse.json<{ timeline: Timeline }>();
+    expect(removed.timeline).toMatchObject({
+      version: 5,
+      items: [{ id: firstItem.id, position: 0, caption: "Edited" }],
+    });
+
+    const orderResponse = await request(`/${timeline.id}/order`, "PUT", {
+      expected_version: removed.timeline.version,
+      item_ids: [firstItem.id],
+    });
+    expect(orderResponse.status).toBe(200);
+    expect(await orderResponse.json<{ timeline: Timeline }>()).toMatchObject({
+      timeline: {
+        version: 6,
+        items: [{ id: firstItem.id, position: 0, caption: "Edited" }],
+      },
+    });
+  });
+
+  it("commits preferred metadata and item writes with empty 204 responses and no full item query", async () => {
+    await ready();
+    let timeline = await append(await create());
+    timeline = await append(timeline);
+    const [firstItem, secondItem] = timeline.items;
+    if (!firstItem || !secondItem) throw new Error("Expected two story items");
+    const initialVersion = timeline.version;
+    let expectedVersion = initialVersion;
+    const capture = captureD1Batches();
+
+    async function expectMinimalWrite(
+      path: string,
+      method: string,
+      body: unknown,
+    ) {
+      const response = await request(path, method, body, session, origin, {
+        Prefer: "return=minimal",
+      });
+      expect.soft(response.status).toBe(204);
+      expect.soft(await response.text()).toBe("");
+      const current = await env.DB.prepare(
+        "SELECT version FROM timelines WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .first<{ version: number }>();
+      expect.soft(current?.version).toBe(expectedVersion + 1);
+      expectedVersion = current?.version ?? expectedVersion;
+    }
+
+    let appendedId = "";
+    try {
+      await expectMinimalWrite(`/${timeline.id}`, "PATCH", {
+        expected_version: expectedVersion,
+        title: "Minimal title",
+      });
+      await expectMinimalWrite(`/${timeline.id}/items`, "POST", {
+        expected_version: expectedVersion,
+        asset_id: "asset_a",
+        caption: "Third",
+      });
+      const appended = await env.DB.prepare(
+        "SELECT id FROM timeline_items WHERE timeline_id = ? AND caption = ?",
+      )
+        .bind(timeline.id, "Third")
+        .first<{ id: string }>();
+      expect(appended).toBeTruthy();
+      appendedId = appended?.id ?? "";
+
+      await expectMinimalWrite(
+        `/${timeline.id}/items/${firstItem.id}`,
+        "PATCH",
+        { expected_version: expectedVersion, caption: "Edited first" },
+      );
+      await expectMinimalWrite(
+        `/${timeline.id}/items/${secondItem.id}`,
+        "DELETE",
+        { expected_version: expectedVersion },
+      );
+      await expectMinimalWrite(`/${timeline.id}/order`, "PUT", {
+        expected_version: expectedVersion,
+        item_ids: [appendedId, firstItem.id],
+      });
+
+      expect.soft(capture.batches).toHaveLength(5);
+      for (const statements of capture.batches) {
+        expect
+          .soft(statements.at(-1))
+          .toMatch(
+            /^SELECT version FROM timelines WHERE id = \? AND owner_id = \?$/,
+          );
+        expect
+          .soft(
+            statements.some((sql) =>
+              /^SELECT \* FROM timelines WHERE id = \? AND EXISTS/.test(sql),
+            ),
+          )
+          .toBe(true);
+        expect
+          .soft(
+            statements.some((sql) =>
+              /^SELECT \* FROM timeline_items WHERE timeline_id = \?/.test(sql),
+            ),
+          )
+          .toBe(false);
+      }
+    } finally {
+      capture.restore();
+    }
+
+    const timelineRow = await env.DB.prepare(
+      "SELECT title, version FROM timelines WHERE id = ?",
+    )
+      .bind(timeline.id)
+      .first<{ title: string; version: number }>();
+    expect(timelineRow).toEqual({
+      title: "Minimal title",
+      version: initialVersion + 5,
+    });
+    const items = await env.DB.prepare(
+      "SELECT id, position, caption FROM timeline_items WHERE timeline_id = ? ORDER BY position, id",
+    )
+      .bind(timeline.id)
+      .all<{ id: string; position: number; caption: string }>();
+    expect(items.results).toEqual([
+      { id: appendedId, position: 0, caption: "Third" },
+      { id: firstItem.id, position: 1, caption: "Edited first" },
+    ]);
+  });
+
+  it("keeps stale preferred writes at 409 without changing timeline or items", async () => {
+    await ready();
+    const timeline = await append(await create());
+    const item = timeline.items[0];
+    if (!item) throw new Error("Expected a story item");
+    const before = await snapshot(timeline.id);
+    const staleWrites: [string, string, unknown][] = [
+      [`/${timeline.id}`, "PATCH", { expected_version: 1, title: "Stale" }],
+      [
+        `/${timeline.id}/items`,
+        "POST",
+        { expected_version: 1, asset_id: "asset_a" },
+      ],
+      [
+        `/${timeline.id}/items/${item.id}`,
+        "PATCH",
+        { expected_version: 1, caption: "Stale" },
+      ],
+      [`/${timeline.id}/items/${item.id}`, "DELETE", { expected_version: 1 }],
+      [
+        `/${timeline.id}/order`,
+        "PUT",
+        { expected_version: 1, item_ids: [item.id] },
+      ],
+    ];
+
+    for (const [path, method, body] of staleWrites) {
+      const response = await request(path, method, body, session, origin, {
+        Prefer: "return=minimal",
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { code: "CONFLICT" },
+      });
+      expect(await snapshot(timeline.id)).toEqual(before);
+    }
+  });
+
+  it("does not return 204 when a preferred write fails inside its D1 batch", async () => {
+    await ready();
+    const timeline = await create();
+    const before = await snapshot(timeline.id);
+    await env.DB.exec(
+      `CREATE TRIGGER inject_minimal_item_failure BEFORE INSERT ON timeline_items BEGIN SELECT RAISE(ABORT, 'injected_failure'); END;`,
+    );
+
+    const response = await request(
+      `/${timeline.id}/items`,
+      "POST",
+      { expected_version: timeline.version, asset_id: "asset_a" },
+      session,
+      origin,
+      { Prefer: "return=minimal" },
+    );
+    expect(response.status).toBe(500);
+    expect(await snapshot(timeline.id)).toEqual(before);
   });
 });
 

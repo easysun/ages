@@ -292,14 +292,18 @@ timelines.patch("/:id", async (context) => {
     context,
     updateTimelineSchema,
   );
+  const minimal = context.req.header("Prefer") === "return=minimal";
+  const timeline = await mutateTimeline(
+    context.env.DB,
+    context.get("user").id,
+    context.req.param("id"),
+    expected_version,
+    { kind: "metadata", ...change },
+    { includeItems: !minimal },
+  );
+  if (minimal) return context.body(null, 204);
   return context.json({
-    timeline: await mutateTimeline(
-      context.env.DB,
-      context.get("user").id,
-      context.req.param("id"),
-      expected_version,
-      { kind: "metadata", ...change },
-    ),
+    timeline,
   });
 });
 timelines.post("/:id/items", async (context) => {
@@ -307,15 +311,19 @@ timelines.post("/:id/items", async (context) => {
     context,
     appendItemSchema,
   );
+  const minimal = context.req.header("Prefer") === "return=minimal";
+  const timeline = await mutateTimeline(
+    context.env.DB,
+    context.get("user").id,
+    context.req.param("id"),
+    expected_version,
+    { kind: "append", ...change },
+    { includeItems: !minimal },
+  );
+  if (minimal) return context.body(null, 204);
   return context.json(
     {
-      timeline: await mutateTimeline(
-        context.env.DB,
-        context.get("user").id,
-        context.req.param("id"),
-        expected_version,
-        { kind: "append", ...change },
-      ),
+      timeline,
     },
     201,
   );
@@ -325,37 +333,49 @@ timelines.patch("/:id/items/:itemId", async (context) => {
     context,
     updateItemSchema,
   );
+  const minimal = context.req.header("Prefer") === "return=minimal";
+  const timeline = await mutateTimeline(
+    context.env.DB,
+    context.get("user").id,
+    context.req.param("id"),
+    expected_version,
+    { kind: "edit", item_id: context.req.param("itemId"), ...change },
+    { includeItems: !minimal },
+  );
+  if (minimal) return context.body(null, 204);
   return context.json({
-    timeline: await mutateTimeline(
-      context.env.DB,
-      context.get("user").id,
-      context.req.param("id"),
-      expected_version,
-      { kind: "edit", item_id: context.req.param("itemId"), ...change },
-    ),
+    timeline,
   });
 });
 timelines.delete("/:id/items/:itemId", async (context) => {
   const { expected_version } = await parseJson(context, removeItemSchema);
+  const minimal = context.req.header("Prefer") === "return=minimal";
+  const timeline = await mutateTimeline(
+    context.env.DB,
+    context.get("user").id,
+    context.req.param("id"),
+    expected_version,
+    { kind: "remove", item_id: context.req.param("itemId") },
+    { includeItems: !minimal },
+  );
+  if (minimal) return context.body(null, 204);
   return context.json({
-    timeline: await mutateTimeline(
-      context.env.DB,
-      context.get("user").id,
-      context.req.param("id"),
-      expected_version,
-      { kind: "remove", item_id: context.req.param("itemId") },
-    ),
+    timeline,
   });
 });
 timelines.put("/:id/order", async (context) => {
   const { expected_version, item_ids } = await parseJson(context, orderSchema);
+  const minimal = context.req.header("Prefer") === "return=minimal";
+  const timeline = await mutateTimeline(
+    context.env.DB,
+    context.get("user").id,
+    context.req.param("id"),
+    expected_version,
+    { kind: "order", item_ids },
+    { includeItems: !minimal },
+  );
+  if (minimal) return context.body(null, 204);
   return context.json({
-    timeline: await mutateTimeline(
-      context.env.DB,
-      context.get("user").id,
-      context.req.param("id"),
-      expected_version,
-      { kind: "order", item_ids },
-    ),
+    timeline,
   });
 });
