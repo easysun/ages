@@ -54,7 +54,8 @@ export async function createReport(
       .prepare(`WITH subject AS (${subject})
       INSERT INTO report_events(id,reporter_id,target_kind,target_id,category,detail,created_at,observed_timeline_version)
       SELECT ?,?,?,subject.id,?,?,?,subject.observed_timeline_version FROM subject
-      WHERE (SELECT count(*) FROM report_events WHERE reporter_id=? AND created_at>?) < 20
+      WHERE (SELECT count(*) FROM report_events WHERE reporter_id=? AND created_at>?)
+        + (SELECT count(*) FROM content_edge_reports WHERE reporter_id=? AND created_at>?) < 20
       AND NOT EXISTS (SELECT 1 FROM report_events r WHERE ${duplicate}) RETURNING id`)
       .bind(
         ...subjectValues,
@@ -64,6 +65,8 @@ export async function createReport(
         input.category,
         input.detail,
         stamp,
+        owner,
+        cutoff,
         owner,
         cutoff,
         owner,
@@ -77,9 +80,13 @@ export async function createReport(
     db.prepare(`SELECT EXISTS(${subject}) AS eligible`).bind(...subjectValues),
     db
       .prepare(
-        "SELECT min(created_at) AS oldest FROM report_events WHERE reporter_id=? AND created_at>?",
+        `SELECT min(created_at) AS oldest FROM (
+          SELECT created_at FROM report_events WHERE reporter_id=? AND created_at>?
+          UNION ALL
+          SELECT created_at FROM content_edge_reports WHERE reporter_id=? AND created_at>?
+        )`,
       )
-      .bind(owner, cutoff),
+      .bind(owner, cutoff, owner, cutoff),
   ]);
   const report = (result[0]?.results[0] ?? result[1]?.results[0]) as
     | { id: string }

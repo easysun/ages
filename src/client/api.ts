@@ -87,6 +87,55 @@ export type ReportCategory =
 export type ReportReceipt = {
   report: { id: string; status: "received" };
 };
+export type ContentEdgeType = "related_to" | "references" | "continuation";
+export type ContentEdgeView = {
+  id: string;
+  type: ContentEdgeType;
+  source: { id: string; title: string | null };
+  target: { id: string; title: string | null };
+  attribution: "added by source owner";
+  created_at: string;
+};
+export type IncomingContentEdgeReview = ContentEdgeView & {
+  pending_acceptance: boolean;
+  accepted: boolean;
+  suppressed: boolean;
+  blocked_by_target: boolean;
+};
+export type ContentEdgePage = {
+  edges: ContentEdgeView[];
+  next_cursor: string | null;
+};
+export type ContentEdgeReviewPage = {
+  edges: IncomingContentEdgeReview[];
+  next_cursor: string | null;
+};
+export type ContentEdgeOwnerState = {
+  id: string;
+  accepted_at: string | null;
+  suppressed_at: string | null;
+  target_owner_blocked_at: string | null;
+};
+export type ContentEdgeModerationState = {
+  moderation: { edge_id: string; blocked: boolean };
+};
+export type ContentNodeModerationState = {
+  moderation: { node_id: string; blocked: boolean };
+};
+export type ContentEdgeReportPage = {
+  reports: {
+    id: string;
+    edge_id: string;
+    category: string;
+    detail: string;
+    reporter_id: string;
+    created_at: string;
+    source_id: string;
+    target_id: string;
+    type: string;
+  }[];
+  next_cursor: string | null;
+};
 export type UploadIntent = {
   asset: Omit<LibraryAsset, "tags">;
   upload: {

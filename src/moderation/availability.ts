@@ -1,8 +1,12 @@
-// Each caller aliases the Timeline as t. A blocked story member hides its captions and OG too.
-export const timelineContentAvailableSql = `t.moderation_blocked = 0
-  AND NOT EXISTS (SELECT 1 FROM assets blocked WHERE blocked.id = t.cover_asset_id AND blocked.moderation_blocked = 1)
+// Each caller aliases the Timeline; a blocked member hides its captions and OG too.
+export function timelineContentAvailableSqlFor(timelineAlias: string) {
+  return `${timelineAlias}.moderation_blocked = 0
+  AND NOT EXISTS (SELECT 1 FROM assets blocked WHERE blocked.id = ${timelineAlias}.cover_asset_id AND blocked.moderation_blocked = 1)
   AND NOT EXISTS (SELECT 1 FROM timeline_items i JOIN assets blocked ON blocked.id = i.asset_id
-    WHERE i.timeline_id = t.id AND blocked.moderation_blocked = 1)`;
+    WHERE i.timeline_id = ${timelineAlias}.id AND blocked.moderation_blocked = 1)`;
+}
+
+export const timelineContentAvailableSql = timelineContentAvailableSqlFor("t");
 
 export const visibleTimelineSql = `t.visibility IN ('unlisted', 'public') AND ${timelineContentAvailableSql}`;
 
