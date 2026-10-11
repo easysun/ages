@@ -186,7 +186,7 @@ function App() {
           <ReporterScreen authenticated authGeneration={generation} />
         ) : path === "/admin/reports" ? (
           profile.user.plan === "admin" ? (
-            <ModerationScreen />
+            <ModerationScreen authGeneration={generation} />
           ) : (
             <main id="main" className="loading-page">
               <h1>Access denied</h1>

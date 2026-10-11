@@ -26,8 +26,11 @@ reports.post("/", async (context) =>
 );
 
 export const administration = new Hono<AppContext>();
-administration.use("*", requireUser, async (context, next) => {
+administration.use("*", async (context, next) => {
   context.header("Cache-Control", "private, no-store");
+  await next();
+});
+administration.use("*", requireUser, async (context, next) => {
   if (context.get("user").plan !== "admin") throw new ApiError("FORBIDDEN");
   if (!["GET", "HEAD", "OPTIONS"].includes(context.req.method))
     assertSameOrigin(context);
@@ -50,6 +53,25 @@ administration.get("/content-nodes/:id", async (context) => {
   if (!row) throw new ApiError("NOT_FOUND");
   return context.json({
     moderation: { node_id: id, blocked: row.moderation_blocked === 1 },
+  });
+});
+administration.get("/content-edges/:id", async (context) => {
+  const operator = context.get("user").id;
+  const id = context.req.param("id");
+  const result = await context.env.DB.batch([
+    context.env.DB.prepare(`SELECT admin_blocked FROM content_edges
+      WHERE id=? AND EXISTS(SELECT 1 FROM users WHERE id=? AND plan='admin')`).bind(
+      id,
+      operator,
+    ),
+    context.env.DB.prepare("SELECT plan FROM users WHERE id=?").bind(operator),
+  ]);
+  if ((result[1]?.results[0] as { plan: string } | undefined)?.plan !== "admin")
+    throw new ApiError("FORBIDDEN");
+  const row = result[0]?.results[0] as { admin_blocked: number } | undefined;
+  if (!row) throw new ApiError("NOT_FOUND");
+  return context.json({
+    moderation: { edge_id: id, blocked: row.admin_blocked === 1 },
   });
 });
 administration.patch("/content-nodes/:id", async (context) => {

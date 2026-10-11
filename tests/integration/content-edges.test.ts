@@ -218,6 +218,15 @@ function adminEdgeState(
   );
 }
 
+function readAdminEdgeState(id: string, cookie = admin) {
+  return request(
+    `/api/admin/content-edges/${encodeURIComponent(id)}`,
+    "GET",
+    undefined,
+    cookie,
+  );
+}
+
 function edgeList(
   nodeId: string,
   direction: "incoming" | "outgoing",
@@ -312,6 +321,42 @@ describe("directed ContentEdges", () => {
     expect(payload).not.toContain("owner_a@example.test");
     expect(payload).not.toContain("owner_b@example.test");
     expect(payload).not.toContain("creator_id");
+  });
+
+  it("public_relation_appears_as_a_server_rendered_backlink", async () => {
+    const source = await createExternal("Public source backlink", "public");
+    const target = await createExternal("Public target page", "public", other);
+    const edgeId = await edgeBetween(source.id, target.id);
+
+    const response = await request(`/c/${target.id}`, "GET", undefined, "");
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(html).toContain("Public source backlink");
+    expect(html).toContain(`/c/${source.id}`);
+    expect(html).toContain("added by source owner");
+    expect(html).not.toContain("owner_a@example.test");
+    expect(await count("content_edges")).toBe(1);
+    expect(edgeId).toMatch(/^ce_/);
+  });
+
+  it("pending_unlisted_relation_never_enters_anonymous_html_before_or_after_acceptance", async () => {
+    const source = await createExternal(
+      "Unlisted source title must stay private",
+      "unlisted",
+    );
+    const target = await createExternal("Public target", "public", other);
+    const edgeId = await edgeBetween(source.id, target.id);
+
+    for (const accepted of [false, true]) {
+      if (accepted)
+        expect((await edgeAction(edgeId, "accept", other)).status).toBe(200);
+      const response = await request(`/c/${target.id}`, "GET", undefined, "");
+      const html = await response.text();
+      expect(response.status).toBe(200);
+      expect(html).not.toContain(source.id);
+      expect(html).not.toContain("Unlisted source title must stay private");
+    }
   });
 
   it("unlisted_edge_requires_target_acceptance_and_known_endpoints", async () => {
@@ -625,6 +670,39 @@ describe("directed ContentEdges", () => {
       (await adminEdgeState(edgeId, true, admin, "https://foreign.test"))
         .status,
     ).toBe(403);
+  });
+
+  it("admin_edge_state_is_authoritative_role_protected_and_no_store", async () => {
+    const source = await createExternal("Source", "public");
+    const target = await createExternal("Target", "public", other);
+    const edgeId = await edgeBetween(source.id, target.id);
+
+    const anonymous = await readAdminEdgeState(edgeId, "");
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get("Cache-Control")).toBe("private, no-store");
+    const ownerResponse = await readAdminEdgeState(edgeId, owner);
+    expect(ownerResponse.status).toBe(403);
+    expect(ownerResponse.headers.get("Cache-Control")).toBe(
+      "private, no-store",
+    );
+
+    const initial = await readAdminEdgeState(edgeId);
+    expect(initial.status).toBe(200);
+    expect(initial.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(await initial.json()).toEqual({
+      moderation: { edge_id: edgeId, blocked: false },
+    });
+    expect((await adminEdgeState(edgeId, true)).status).toBe(200);
+    const refreshed = await readAdminEdgeState(edgeId);
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(await refreshed.json()).toEqual({
+      moderation: { edge_id: edgeId, blocked: true },
+    });
+
+    const missing = await readAdminEdgeState("ce_missing");
+    expect(missing.status).toBe(404);
+    expect(missing.headers.get("Cache-Control")).toBe("private, no-store");
   });
 
   it("foreign_source_write_fails", async () => {

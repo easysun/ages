@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { sessionHash } from "../auth/session";
 import type { AppContext } from "../bindings";
+import { visibleEdges } from "../graph/edges";
 import { effectiveNode } from "../graph/nodes";
 import {
   renderContentNode,
@@ -49,7 +50,11 @@ publicContentNode.on(["GET", "HEAD"], "/:id", async (context) => {
     return context.body(null, 200, {
       "Content-Type": "text/html; charset=utf-8",
     });
-  const body = renderContentNode(result.node, result.visibility);
+  const backlinks =
+    result.visibility === "public"
+      ? (await visibleEdges(db, id, "incoming", null, null, null, 30)).edges
+      : [];
+  const body = renderContentNode(result.node, result.visibility, backlinks);
   return context.body(body, 200, {
     "Content-Type": "text/html; charset=utf-8",
   });

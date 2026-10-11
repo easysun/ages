@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorMessage, jsonBody, RequestError } from "./api";
+import { ContentEdgesPanel } from "./content-edges";
 
 type Visibility = "private" | "unlisted" | "public";
 type ContentNode = {
@@ -878,6 +879,13 @@ export function ContentNodesScreen({
                     Remove reference
                   </button>
                 </div>
+                {detail.effective_visibility !== null ? (
+                  <ContentEdgesPanel
+                    key={detail.node.id}
+                    nodeId={detail.node.id}
+                    authGeneration={authGeneration}
+                  />
+                ) : null}
               </>
             ) : !detailLoading && !detailError ? (
               <p>Select a reference to view its access and edit it.</p>
