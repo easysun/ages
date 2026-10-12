@@ -195,6 +195,7 @@ function App() {
           )
         ) : path === "/timelines" || path.startsWith("/timelines/") ? (
           <TimelineScreen
+            authGeneration={generation}
             id={
               path === "/timelines"
                 ? undefined

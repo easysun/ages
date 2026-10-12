@@ -206,6 +206,32 @@ export function seedTimeline(
   return { id, itemIds };
 }
 
+export function seedLargeTimeline(
+  owner: string,
+  assetId: string,
+  count = 10_000,
+  title = "A large story",
+) {
+  if (!Number.isInteger(count) || count < 0 || count > 10_000)
+    throw new RangeError("count must be an integer from 0 through 10,000");
+  const suffix = randomUUID();
+  const id = `tl_${suffix}`;
+  const now = new Date().toISOString();
+  const itemIds = Array.from(
+    { length: count },
+    (_, ordinal) => `ti_${suffix}_${String(ordinal).padStart(5, "0")}`,
+  );
+  const digits = "(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)";
+  const sql = [
+    `INSERT INTO timelines (id,owner_id,title,created_at,updated_at) VALUES ('${id}','${owner}','${title.replaceAll("'", "''")}','${now}','${now}');`,
+    `WITH d0(d) AS (VALUES ${digits}), d1(d) AS (VALUES ${digits}), d2(d) AS (VALUES ${digits}), d3(d) AS (VALUES ${digits}), ordinals AS (SELECT d0.d + d1.d*10 + d2.d*100 + d3.d*1000 AS ordinal FROM d0 CROSS JOIN d1 CROSS JOIN d2 CROSS JOIN d3) INSERT INTO timeline_items (id,timeline_id,owner_id,asset_id,position,caption,created_at,updated_at) SELECT 'ti_${suffix}_' || printf('%05d', ordinal), '${id}', '${owner}', '${assetId}', ordinal*10, 'Moment ' || (ordinal+1), '${now}', '${now}' FROM ordinals WHERE ordinal < ${count};`,
+  ];
+  const path = resolve(artifacts, `${id}.sql`);
+  writeFileSync(path, sql.join("\n"));
+  command(["d1", "execute", "DB", "--file", path]);
+  return { id, itemIds };
+}
+
 export function seedTaggedLinks(
   owner: string,
   tag: string,
