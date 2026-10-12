@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { timelinePayload } from "../timeline/model";
 import type { EventAt } from "../timeline/validation";
 import {
@@ -302,6 +302,10 @@ function TimelineEditor({
   detailRetryRef.current = detailRetry;
 
   const visibleIndexItems = indexItems.slice(rangeStart, rangeStart + 100);
+  const viewportPositions = useMemo(
+    () => indexItems.map((item) => item.position),
+    [indexItems],
+  );
   const indexedIds = new Set(indexItems.map((item) => item.id));
   const unresolvedDrafts = Object.entries(drafts).filter(
     ([itemId, draft]) =>
@@ -1215,7 +1219,7 @@ function TimelineEditor({
           </button>
         </div>
       ) : null}
-      <StoryViewport positions={indexItems.map((item) => item.position)} />
+      <StoryViewport positions={viewportPositions} />
       {totalItems > 0 ? (
         <section className="moment-range" aria-label="Moment range navigation">
           <h2 ref={heading} tabIndex={-1} id="moment-range-heading">
@@ -1395,6 +1399,37 @@ function Moment({
   remove: () => void;
   showMoveControls: boolean;
 }) {
+  const mediaPlaceholder = useRef<HTMLDivElement>(null);
+  const [mediaInBand, setMediaInBand] = useState(false);
+  const [explicitMediaLoad, setExplicitMediaLoad] = useState(false);
+  const assetId = asset?.id;
+  const observerSupported =
+    typeof window !== "undefined" &&
+    typeof window.IntersectionObserver === "function";
+
+  useEffect(() => {
+    const node = mediaPlaceholder.current;
+    if (!node || !assetId || !observerSupported) return;
+    let observer: IntersectionObserver | null = null;
+    const observeWithViewportOverscan = () => {
+      observer?.disconnect();
+      const overscan = window.innerHeight;
+      observer = new IntersectionObserver(
+        (entries) => {
+          setMediaInBand(entries.some((entry) => entry.isIntersecting));
+        },
+        { rootMargin: `${overscan}px 0px ${overscan}px 0px` },
+      );
+      observer.observe(node);
+    };
+    observeWithViewportOverscan();
+    window.addEventListener("resize", observeWithViewportOverscan);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", observeWithViewportOverscan);
+    };
+  }, [assetId, observerSupported]);
+
   async function submit(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setNotice("");
@@ -1424,17 +1459,32 @@ function Moment({
     await save(change, draft);
   }
   const field = `item-${item.id}`;
+  const hasDimensions =
+    asset !== undefined &&
+    asset.width !== null &&
+    asset.height !== null &&
+    Number.isFinite(asset.width) &&
+    Number.isFinite(asset.height) &&
+    asset.width > 0 &&
+    asset.height > 0;
+  const aspectRatio =
+    hasDimensions && asset ? `${asset.width} / ${asset.height}` : undefined;
+  const mountMedia = observerSupported ? mediaInBand : explicitMediaLoad;
   return (
     <fieldset className="moment" aria-label={`Moment ${index + 1}`}>
       <legend>Moment {index + 1}</legend>
-      <div className="moment-media">
-        {asset?.kind === "image" ? (
+      <div
+        ref={mediaPlaceholder}
+        className={`moment-media${aspectRatio ? " has-aspect-ratio" : ""}`}
+        style={aspectRatio ? { aspectRatio } : undefined}
+      >
+        {asset?.kind === "image" && mountMedia ? (
           <img
             src={momentMediaUrl(asset)}
             alt={asset.original_name}
             loading="lazy"
           />
-        ) : asset?.kind === "video" ? (
+        ) : asset?.kind === "video" && mountMedia ? (
           <video
             src={momentMediaUrl(asset)}
             controls
@@ -1443,8 +1493,20 @@ function Moment({
           >
             <track kind="captions" />
           </video>
+        ) : asset && !observerSupported && !explicitMediaLoad ? (
+          <button
+            className="button secondary moment-media-load"
+            type="button"
+            onClick={() => setExplicitMediaLoad(true)}
+          >
+            Load media
+          </button>
         ) : (
-          <p>Loading this moment’s media…</p>
+          <span className="sr-only">
+            {asset
+              ? "Media loads when this moment approaches the viewport."
+              : "Loading this moment’s media…"}
+          </span>
         )}
       </div>
       <div className="moment-content">

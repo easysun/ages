@@ -1408,14 +1408,42 @@ progress::-moz-progress-bar {
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
-.moment-media img,
-.moment-media video {
+.moment-media {
+  align-self: start;
   width: 100%;
-  height: auto;
+  min-width: 0;
+  min-height: 220px;
   max-height: 460px;
-  object-fit: contain;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
   background: #eeeee5;
   border-radius: 3px;
+}
+.moment-media.has-aspect-ratio {
+  min-height: 0;
+}
+.moment-media img,
+.moment-media video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.moment-media-load {
+  max-width: 100%;
+}
+.moment-media .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .moment-content {
   min-width: 0;
@@ -1568,8 +1596,7 @@ progress::-moz-progress-bar {
   .moment {
     grid-template-columns: minmax(0, 1fr);
   }
-  .moment-media img,
-  .moment-media video {
+  .moment-media {
     max-height: 340px;
   }
 }

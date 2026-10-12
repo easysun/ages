@@ -1,6 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   e2eOrigin,
+  executeFixtureSql,
   photo,
   putFixture,
   seedLargeTimeline,
@@ -106,6 +107,35 @@ test("10,000-item editor reads a lightweight index and bounded detail windows", 
   await expect(
     page.getByRole("heading", { name: "A large story", exact: true }),
   ).toBeVisible();
+  const map = page.getByRole("region", { name: "Story viewport" });
+  await expect(map).toBeVisible();
+  await expect
+    .poll(async () => (await viewport(page)).extent)
+    .toBeGreaterThan(0);
+  const initialFrame = await viewport(page);
+  expect(initialFrame.center - initialFrame.span / 2).toBeLessThanOrEqual(0);
+  expect(initialFrame.center + initialFrame.span / 2).toBeGreaterThanOrEqual(
+    99_990,
+  );
+  await page.getByRole("button", { name: "Fit all", exact: true }).click();
+  const markerGroups = map.locator("svg g");
+  await expect(markerGroups.first()).toHaveAttribute("data-first-ordinal", "1");
+  await expect(markerGroups.last()).toHaveAttribute(
+    "data-last-ordinal",
+    "10000",
+  );
+  const markerSummary = await markerGroups.evaluateAll((groups) => ({
+    count: groups.length,
+    moments: groups.reduce(
+      (total, group) =>
+        total + Number(group.getAttribute("data-moment-count") ?? 0),
+      0,
+    ),
+  }));
+  expect(markerSummary.moments).toBe(10_000);
+  expect(markerSummary.count).toBeLessThanOrEqual(
+    Math.ceil(initialFrame.extent / 48) + 2,
+  );
   await expect(
     page.getByRole("heading", { name: "Moments 1–100 of 10000" }),
   ).toBeVisible();
@@ -1260,7 +1290,8 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   const { owner, ids } = await seedLibrary(context);
-  const { id } = seedTimeline(owner, ids, 100);
+  const { id } = seedTimeline(owner, ids, 250);
+  seedTimeline(owner, ids, 3, "Another story");
   const before = await (
     await context.request.get(`/api/timelines/${id}`)
   ).json();
@@ -1271,7 +1302,8 @@ test("anchored navigation stays readable, preserves data and manual framing, and
     .poll(async () => (await viewport(page)).extent)
     .toBeGreaterThan(0);
   const initial = await viewport(page);
-  expect(initial.span).toBeLessThan(10);
+  expect(initial.center - initial.span / 2).toBeLessThanOrEqual(0);
+  expect(initial.center + initial.span / 2).toBeGreaterThanOrEqual(249);
   const bounds = await map.boundingBox();
   expect(bounds).not.toBeNull();
   const pointerX = Math.round((bounds?.x ?? 0) + (bounds?.width ?? 0) * 0.25);
@@ -1293,6 +1325,18 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   await expect(
     page.getByRole("button", { name: "Pan later", exact: true }),
   ).toBeFocused();
+  const manualBeforePage = await viewport(page);
+  await page.getByLabel("Go to moment").fill("101");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 101–200 of 250" }),
+  ).toBeFocused();
+  const afterPage = await viewport(page);
+  expect(afterPage.center).toBeCloseTo(manualBeforePage.center, 5);
+  expect(afterPage.span).toBeCloseTo(manualBeforePage.span, 5);
+  expect(
+    await (await context.request.get(`/api/timelines/${id}`)).json(),
+  ).toEqual(before);
   const manual = await viewport(page);
   const oldSize = page.viewportSize();
   await page.setViewportSize({
@@ -1308,6 +1352,13 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   ).toEqual(before);
   await addMoments(page, ["Coastal light.png"]);
   expect((await viewport(page)).center).toBeCloseTo(manual.center, 5);
+  const afterAppend = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(afterAppend.timeline.version).toBe(before.timeline.version + 1);
+  expect(afterAppend.timeline.items.at(-1).position).toBe(
+    before.timeline.items.at(-1).position + 1,
+  );
   await page.getByRole("button", { name: "Fit all", exact: true }).click();
   await expect
     .poll(async () => (await viewport(page)).span)
@@ -1323,6 +1374,18 @@ test("anchored navigation stays readable, preserves data and manual framing, and
       () => matchMedia("(prefers-reduced-motion: reduce)").matches,
     ),
   ).toBe(true);
+  const firstTimelineFit = await viewport(page);
+  await page.getByRole("link", { name: "Timelines", exact: true }).click();
+  await page.getByRole("link", { name: /Another story/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Another story", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(async () => (await viewport(page)).extent)
+    .toBeGreaterThan(0);
+  const secondTimelineFit = await viewport(page);
+  expect(secondTimelineFit.center).toBeCloseTo(1, 0);
+  expect(secondTimelineFit.center).not.toBeCloseTo(firstTimelineFit.center, 0);
   await page.getByRole("link", { name: "Library", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Your library" }),
@@ -1341,6 +1404,119 @@ test("anchored navigation stays readable, preserves data and manual framing, and
           .__activeViewportListeners,
     ),
   ).toBe(0);
+});
+
+test("100-card stories mount media in the viewport band and unmount it after scrolling", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedTimeline(owner, ids, 100);
+  await page.goto(`/timelines/${id}`);
+
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const last = page.getByRole("group", { name: "Moment 100", exact: true });
+  await expect(last).toBeAttached();
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  const firstBand = await page
+    .locator(".story-items li")
+    .evaluateAll((items) => {
+      const height = window.innerHeight;
+      const inBand = (item: Element) => {
+        const rect = item.getBoundingClientRect();
+        return rect.bottom >= -height && rect.top <= 2 * height;
+      };
+      const mounted = items.filter((item) =>
+        item.querySelector(".moment-media img, .moment-media video"),
+      );
+      return {
+        count: mounted.length,
+        outOfBand: mounted.filter((item) => !inBand(item)).length,
+      };
+    });
+  expect(firstBand.count).toBeLessThan(100);
+  expect(firstBand.count).toBeGreaterThan(0);
+  expect(firstBand.outOfBand).toBe(0);
+
+  await last.scrollIntoViewIfNeeded();
+  await expect(last.locator(".moment-media img")).toHaveCount(1);
+  await expect(
+    first.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(0);
+});
+
+test("media placeholders preserve asset proportions and size assets without dimensions", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const missingDimensionsAsset = ids[2];
+  if (!missingDimensionsAsset) throw new Error("Missing seeded asset ID.");
+  executeFixtureSql(
+    `UPDATE assets SET width=NULL,height=NULL WHERE id='${missingDimensionsAsset}'`,
+  );
+  const { id } = seedTimeline(owner, ids, 3);
+  await page.goto(`/timelines/${id}`);
+
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const second = page.getByRole("group", { name: "Moment 2", exact: true });
+  const third = page.getByRole("group", { name: "Moment 3", exact: true });
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  expect(
+    await first
+      .locator(".moment-media")
+      .evaluate((element) => (element as HTMLElement).style.aspectRatio),
+  ).toBe("600 / 400");
+  expect(
+    await second
+      .locator(".moment-media")
+      .evaluate((element) => (element as HTMLElement).style.aspectRatio),
+  ).toBe("400 / 600");
+  const fallbackBox = await third
+    .locator(".moment-media")
+    .evaluate((element) => ({
+      aspectRatio: (element as HTMLElement).style.aspectRatio,
+      minHeight: Number.parseFloat(getComputedStyle(element).minHeight),
+    }));
+  expect(fallbackBox.aspectRatio).toBe("");
+  expect(fallbackBox.minHeight).toBeGreaterThanOrEqual(160);
+  await third.scrollIntoViewIfNeeded();
+  await expect(third.locator(".moment-media img")).toHaveCount(1);
+});
+
+test("media stays unmounted without IntersectionObserver until explicitly loaded", async ({
+  page,
+  context,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "IntersectionObserver", {
+      value: undefined,
+      configurable: true,
+    });
+  });
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedTimeline(owner, ids, 3);
+  await page.goto(`/timelines/${id}`);
+
+  await expect(
+    page.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(0);
+  const loadButtons = page.getByRole("button", {
+    name: "Load media",
+    exact: true,
+  });
+  await expect(loadButtons).toHaveCount(3);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const loadFirst = first.getByRole("button", { name: "Load media" });
+  await loadFirst.focus();
+  await expect(loadFirst).toBeFocused();
+  await loadFirst.click();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  await expect(
+    page.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(1);
 });
 
 test("mobile native touch pan and pinch navigate the story without disabling page magnification", async ({

@@ -8,10 +8,10 @@ import {
 } from "react";
 import {
   fitViewport,
+  groupPositionsByScreenBin,
   panViewport,
   resizeViewport,
   type Viewport,
-  worldToScreen,
   zoomViewport,
 } from "../timeline/viewport";
 
@@ -51,12 +51,11 @@ export function StoryViewport({ positions }: { positions: number[] }) {
       const view =
         manual.current && previous.view && previous.extent > 0
           ? resizeViewport(previous.view, previous.extent, extent, limits)
-          : fitViewport(
-              positions.length
-                ? { start, end: Math.min(end, start + 5) }
-                : null,
-              { ...limits, extent, padding: 35 },
-            );
+          : fitViewport(positions.length ? { start, end } : null, {
+              ...limits,
+              extent,
+              padding: 35,
+            });
       const next = { view, extent };
       current.current = next;
       setModel(next);
@@ -179,30 +178,11 @@ export function StoryViewport({ positions }: { positions: number[] }) {
     pointers.current.delete(event.pointerId);
     pinch.current = null;
   }
-  const groups = new Map<
-    number,
-    { sum: number; first: number; last: number; count: number }
-  >();
   const view = model.view;
-  if (view && model.extent > 0) {
-    positions.forEach((position, index) => {
-      const x = worldToScreen(view, position, model.extent);
-      if (x < -12 || x > model.extent + 12) return;
-      const bin = Math.floor(x / 48);
-      const group = groups.get(bin);
-      if (group) {
-        group.sum += x;
-        group.last = index + 1;
-        group.count++;
-      } else
-        groups.set(bin, {
-          sum: x,
-          first: index + 1,
-          last: index + 1,
-          count: 1,
-        });
-    });
-  }
+  const groups =
+    view && model.extent > 0
+      ? groupPositionsByScreenBin(positions, view, model.extent)
+      : [];
   return (
     <section className="story-navigation" aria-label="Story navigation">
       <div className="viewport-toolbar">
@@ -265,10 +245,16 @@ export function StoryViewport({ positions }: { positions: number[] }) {
         >
           <title>Narrative order overview</title>
           <line x1="0" x2={model.extent} y1="75" y2="75" />
-          {[...groups].map(([bin, group]) => {
-            const x = group.sum / group.count;
+          {groups.map((group) => {
+            const x = (group.bin + 0.5) * 48;
             return (
-              <g key={bin} data-moment-count={group.count}>
+              <g
+                key={group.bin}
+                data-bin={group.bin}
+                data-first-ordinal={group.first}
+                data-last-ordinal={group.last}
+                data-moment-count={group.count}
+              >
                 <title>
                   {group.count === 1
                     ? `Moment ${group.first}`
