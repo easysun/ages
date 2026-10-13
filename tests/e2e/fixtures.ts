@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { deflateSync } from "node:zlib";
 import type { BrowserContext } from "@playwright/test";
+import type { EventAt } from "../../src/timeline/validation";
 
 export const e2eOrigin = `http://127.0.0.1:${process.env.AGES_E2E_PORT ?? "8797"}`;
 export const e2eTrackingOrigin = `http://localhost:${process.env.AGES_E2E_TRACKING_PORT ?? "8798"}`;
@@ -206,11 +207,31 @@ export function seedTimeline(
   return { id, itemIds };
 }
 
+export function setTimelineEventTimes(
+  itemIds: readonly string[],
+  events: readonly (EventAt | null)[],
+) {
+  if (itemIds.length !== events.length)
+    throw new RangeError("Each timeline item needs one event-time fixture.");
+  const sql = itemIds.map((itemId, index) => {
+    const event = events[index];
+    const value =
+      event === null
+        ? "NULL"
+        : `'${JSON.stringify(event).replaceAll("'", "''")}'`;
+    return `UPDATE timeline_items SET event_at=${value} WHERE id='${itemId}';`;
+  });
+  executeFixtureSql(sql.join("\n"));
+}
+
+export type LargeTimelineEventPattern = "mixed" | "chooser-groups";
+
 export function seedLargeTimeline(
   owner: string,
   assetId: string,
   count = 10_000,
   title = "A large story",
+  eventPattern?: LargeTimelineEventPattern,
 ) {
   if (!Number.isInteger(count) || count < 0 || count > 10_000)
     throw new RangeError("count must be an integer from 0 through 10,000");
@@ -222,9 +243,25 @@ export function seedLargeTimeline(
     (_, ordinal) => `ti_${suffix}_${String(ordinal).padStart(5, "0")}`,
   );
   const digits = "(0),(1),(2),(3),(4),(5),(6),(7),(8),(9)";
+  const eventAt =
+    eventPattern === "mixed"
+      ? `CASE ordinal % 3
+          WHEN 0 THEN json_object('kind','date','date',date('2000-01-01',printf('+%d days',ordinal)),'time_zone','Pacific/Apia','calendar','iso8601')
+          WHEN 1 THEN json_object('kind','instant','instant',strftime('%Y-%m-%dT%H:%M:%fZ','2000-01-01',printf('+%d days',ordinal)),'time_zone','Asia/Taipei')
+          ELSE NULL END`
+      : eventPattern === "chooser-groups"
+        ? `CASE ordinal % 3
+            WHEN 0 THEN json_object('kind','date','date','2024-02-29','time_zone','Asia/Taipei','calendar','iso8601')
+            WHEN 1 THEN json_object('kind','instant','instant','2024-02-29T00:00:00.000Z','time_zone','Asia/Taipei')
+            ELSE NULL END`
+        : null;
+  const columns =
+    "id,timeline_id,owner_id,asset_id,position,caption,created_at,updated_at" +
+    (eventAt ? ",event_at" : "");
+  const eventAtSelect = eventAt ? `,${eventAt}` : "";
   const sql = [
     `INSERT INTO timelines (id,owner_id,title,created_at,updated_at) VALUES ('${id}','${owner}','${title.replaceAll("'", "''")}','${now}','${now}');`,
-    `WITH d0(d) AS (VALUES ${digits}), d1(d) AS (VALUES ${digits}), d2(d) AS (VALUES ${digits}), d3(d) AS (VALUES ${digits}), ordinals AS (SELECT d0.d + d1.d*10 + d2.d*100 + d3.d*1000 AS ordinal FROM d0 CROSS JOIN d1 CROSS JOIN d2 CROSS JOIN d3) INSERT INTO timeline_items (id,timeline_id,owner_id,asset_id,position,caption,created_at,updated_at) SELECT 'ti_${suffix}_' || printf('%05d', ordinal), '${id}', '${owner}', '${assetId}', ordinal*10, 'Moment ' || (ordinal+1), '${now}', '${now}' FROM ordinals WHERE ordinal < ${count};`,
+    `WITH d0(d) AS (VALUES ${digits}), d1(d) AS (VALUES ${digits}), d2(d) AS (VALUES ${digits}), d3(d) AS (VALUES ${digits}), ordinals AS (SELECT d0.d + d1.d*10 + d2.d*100 + d3.d*1000 AS ordinal FROM d0 CROSS JOIN d1 CROSS JOIN d2 CROSS JOIN d3) INSERT INTO timeline_items (${columns}) SELECT 'ti_${suffix}_' || printf('%05d', ordinal), '${id}', '${owner}', '${assetId}', ordinal*10, 'Moment ' || (ordinal+1), '${now}', '${now}'${eventAtSelect} FROM ordinals WHERE ordinal < ${count};`,
   ];
   const path = resolve(artifacts, `${id}.sql`);
   writeFileSync(path, sql.join("\n"));
