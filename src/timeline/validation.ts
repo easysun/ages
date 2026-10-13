@@ -90,4 +90,64 @@ export const cursorSchema = z.strictObject({
   created_at: z.iso.datetime(),
   id,
 });
+
+const readVersion = z.coerce
+  .number()
+  .int()
+  .positive()
+  .max(Number.MAX_SAFE_INTEGER);
+const readPosition = z.coerce
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
+const readSelectors = {
+  cursor: z.string().min(1).max(1000).optional(),
+  from_position: readPosition.optional(),
+  from_id: id.optional(),
+};
+
+function validateReadSelectors(
+  value: {
+    version?: number | undefined;
+    cursor?: string | undefined;
+    from_position?: number | undefined;
+    from_id?: string | undefined;
+  },
+  context: z.RefinementCtx,
+) {
+  const hasCursor = value.cursor !== undefined;
+  const hasPosition = value.from_position !== undefined;
+  const hasId = value.from_id !== undefined;
+  if (hasPosition !== hasId)
+    context.addIssue({ code: "custom", path: ["from_id"] });
+  if (hasCursor && (hasPosition || hasId))
+    context.addIssue({ code: "custom", path: ["cursor"] });
+  if ((hasCursor || hasPosition || hasId) && value.version === undefined)
+    context.addIssue({ code: "custom", path: ["version"] });
+}
+
+export const timelineOverviewQuerySchema = z
+  .strictObject({
+    limit: z.coerce.number().int().min(1).max(1000).default(1000),
+    version: readVersion.optional(),
+    ...readSelectors,
+  })
+  .superRefine(validateReadSelectors);
+
+export const timelineItemsQuerySchema = z
+  .strictObject({
+    version: readVersion,
+    limit: z.coerce.number().int().min(1).max(100).default(100),
+    ...readSelectors,
+  })
+  .superRefine(validateReadSelectors);
+
+export const timelineReadCursorSchema = z.strictObject({
+  v: z.literal(1),
+  timeline_id: id,
+  position: readPosition,
+  id,
+});
+export type TimelineReadCursor = z.infer<typeof timelineReadCursorSchema>;
 export type EventAt = z.output<typeof eventAtSchema>;

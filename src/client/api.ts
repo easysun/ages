@@ -155,10 +155,11 @@ export class RequestError extends Error {
   }
 }
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const requestOptions = {
     ...options,
-    credentials: "same-origin",
-  });
+    credentials: "same-origin" as const,
+  };
+  const response = await fetch(path, requestOptions);
   if (!response.ok) {
     let payload: unknown = null;
     try {
@@ -180,6 +181,7 @@ export async function api<T>(path: string, options?: RequestInit): Promise<T> {
       response.status,
     );
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 export function jsonBody(value: unknown) {

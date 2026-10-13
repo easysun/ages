@@ -1,8 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 import {
   e2eOrigin,
+  executeFixtureSql,
   photo,
   putFixture,
+  seedLargeTimeline,
   seedLibrary,
   seedTimeline,
 } from "./fixtures";
@@ -15,6 +17,1290 @@ async function addMoments(page: Page, names: string[]) {
   await dialog.getByRole("button", { name: "Add selected moments" }).click();
   await expect(dialog).toHaveCount(0);
 }
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function deferredSignal() {
+  const gate = deferred();
+  const signal = deferred();
+  return {
+    promise: gate.promise,
+    release: gate.resolve,
+    started: signal.promise,
+    signal: signal.resolve,
+  };
+}
+
+test("10,000-item editor reads a lightweight index and bounded detail windows", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string);
+  const overviewRequests: URL[] = [];
+  const detailRequests: URL[] = [];
+  const fullDetailRequests: URL[] = [];
+  const assetDetailRequests: URL[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET") return;
+    const url = new URL(request.url());
+    if (url.pathname === `/api/timelines/${id}/overview`)
+      overviewRequests.push(url);
+    else if (url.pathname === `/api/timelines/${id}/items`)
+      detailRequests.push(url);
+    else if (url.pathname === `/api/timelines/${id}`)
+      fullDetailRequests.push(url);
+    else if (/^\/api\/assets\/[^/]+$/.test(url.pathname))
+      assetDetailRequests.push(url);
+  });
+  await page.route("**/api/assets**", async (route) => {
+    if (new URL(route.request().url()).pathname === "/api/assets")
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ assets: [], next_cursor: null }),
+      });
+    else await route.continue();
+  });
+  await page.route(`**/api/timelines/${id}`, async (route) => {
+    const now = new Date().toISOString();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        timeline: {
+          id,
+          owner_id: owner,
+          title: "A large story",
+          visibility: "private",
+          cover_asset_id: null,
+          version: 1,
+          created_at: now,
+          updated_at: now,
+          items: [
+            {
+              id: itemIds[0],
+              asset_id: ids[0],
+              position: 0,
+              caption: "Moment 1",
+              event_at: null,
+            },
+            {
+              id: itemIds[1],
+              asset_id: ids[0],
+              position: 10,
+              caption: "Moment 2",
+              event_at: null,
+            },
+          ],
+        },
+      }),
+    });
+  });
+  await page.goto(`/timelines/${id}`);
+  await expect(
+    page.getByRole("heading", { name: "A large story", exact: true }),
+  ).toBeVisible();
+  const map = page.getByRole("region", { name: "Story viewport" });
+  await expect(map).toBeVisible();
+  await expect
+    .poll(async () => (await viewport(page)).extent)
+    .toBeGreaterThan(0);
+  const initialFrame = await viewport(page);
+  expect(initialFrame.center - initialFrame.span / 2).toBeLessThanOrEqual(0);
+  expect(initialFrame.center + initialFrame.span / 2).toBeGreaterThanOrEqual(
+    99_990,
+  );
+  await page.getByRole("button", { name: "Fit all", exact: true }).click();
+  const markerGroups = map.locator("svg g");
+  await expect(markerGroups.first()).toHaveAttribute("data-first-ordinal", "1");
+  await expect(markerGroups.last()).toHaveAttribute(
+    "data-last-ordinal",
+    "10000",
+  );
+  const markerSummary = await markerGroups.evaluateAll((groups) => ({
+    count: groups.length,
+    moments: groups.reduce(
+      (total, group) =>
+        total + Number(group.getAttribute("data-moment-count") ?? 0),
+      0,
+    ),
+  }));
+  expect(markerSummary.moments).toBe(10_000);
+  expect(markerSummary.count).toBeLessThanOrEqual(
+    Math.ceil(initialFrame.extent / 48) + 2,
+  );
+  await expect(
+    page.getByRole("heading", { name: "Moments 1–100 of 10000" }),
+  ).toBeVisible();
+  const firstMoment = page.getByRole("group", {
+    name: "Moment 1",
+    exact: true,
+  });
+  const firstListItem = page.getByRole("listitem").filter({ has: firstMoment });
+  await expect(firstListItem).toHaveAttribute("aria-posinset", "1");
+  await expect(firstListItem).toHaveAttribute("aria-setsize", "10000");
+
+  const goToMoment = page.getByLabel("Go to moment");
+  await goToMoment.fill("5001");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 5001–5100 of 10000" }),
+  ).toBeFocused();
+  await expect(
+    page.getByRole("heading", { name: "Moments 5001–5100 of 10000" }),
+  ).toBeVisible();
+  const middleListItem = page.getByRole("listitem").filter({
+    has: page.getByRole("group", { name: "Moment 5001", exact: true }),
+  });
+  await expect(middleListItem).toHaveAttribute("aria-posinset", "5001");
+
+  await goToMoment.fill("10000");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 9901–10000 of 10000" }),
+  ).toBeVisible();
+  const lastListItem = page.getByRole("listitem").filter({
+    has: page.getByRole("group", { name: "Moment 10000", exact: true }),
+  });
+  await expect(lastListItem).toHaveAttribute("aria-setsize", "10000");
+
+  expect(fullDetailRequests).toEqual([]);
+  expect(assetDetailRequests).toEqual([]);
+  expect(overviewRequests).toHaveLength(10);
+  expect(overviewRequests[0]?.searchParams.get("version")).toBeNull();
+  expect(
+    overviewRequests
+      .slice(1)
+      .every(
+        (url) =>
+          url.searchParams.get("version") === "1" &&
+          url.searchParams.get("cursor") !== null,
+      ),
+  ).toBe(true);
+  expect(
+    overviewRequests.every(
+      (url) => Number(url.searchParams.get("limit")) <= 1000,
+    ),
+  ).toBe(true);
+  expect(detailRequests).toHaveLength(3);
+  expect(
+    detailRequests.every((url) => url.searchParams.get("version") === "1"),
+  ).toBe(true);
+  expect(
+    detailRequests.every((url) => Number(url.searchParams.get("limit")) <= 100),
+  ).toBe(true);
+  expect(
+    detailRequests.map((url) => url.searchParams.get("from_position")),
+  ).toEqual(["0", "50000", "99000"]);
+});
+
+test("late detail responses cannot replace a newer range or timeline", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const first = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    250,
+    "First large story",
+  );
+  const second = seedTimeline(owner, ids, 3, "Second story");
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    const settledUrls: string[] = [];
+    Object.defineProperty(window, "__timelineFetchSettled", {
+      value: settledUrls,
+    });
+    window.fetch = (input, init) => {
+      const url =
+        typeof input === "string"
+          ? new URL(input, location.href)
+          : input instanceof URL
+            ? input
+            : new URL(input.url, location.href);
+      if (/^\/api\/timelines\/[^/]+\/items$/.test(url.pathname)) {
+        const options = { ...init };
+        delete options.signal;
+        return nativeFetch(input, options).then(async (response) => {
+          await response.clone().arrayBuffer();
+          settledUrls.push(url.href);
+          return response;
+        });
+      }
+      return nativeFetch(input, init);
+    };
+  });
+
+  const oldRangeSuccess = deferred();
+  const oldRangeSuccessStarted = deferred();
+  const oldTimelineError = deferred();
+  const oldTimelineErrorStarted = deferred();
+  let holdRangeSuccess = true;
+  let holdTimelineError = true;
+  await page.route(`**/api/timelines/${first.id}/items?**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("from_position") === "1000" && holdRangeSuccess) {
+      holdRangeSuccess = false;
+      oldRangeSuccessStarted.resolve();
+      await oldRangeSuccess.promise;
+      await route.continue();
+      return;
+    }
+    await route.continue();
+  });
+  await page.route(`**/api/timelines/${second.id}/items?**`, async (route) => {
+    if (holdTimelineError) {
+      holdTimelineError = false;
+      oldTimelineErrorStarted.resolve();
+      await oldTimelineError.promise;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto(`/timelines/${first.id}`);
+  const goToMoment = page.getByLabel("Go to moment");
+  await goToMoment.fill("101");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await oldRangeSuccessStarted.promise;
+  await goToMoment.fill("201");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 201–250 of 250" }),
+  ).toBeVisible();
+  const lateRangeResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === `/api/timelines/${first.id}/items` &&
+      url.searchParams.get("from_position") === "1000"
+    );
+  });
+  oldRangeSuccess.resolve();
+  await (await lateRangeResponse).finished();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (timelineId) =>
+          (
+            window as unknown as {
+              __timelineFetchSettled?: string[];
+            }
+          ).__timelineFetchSettled?.some((url) =>
+            url.includes(`/api/timelines/${timelineId}/items?`),
+          ) ?? false,
+        first.id,
+      ),
+    )
+    .toBe(true);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(
+    page.getByRole("heading", { name: "Moments 201–250 of 250" }),
+  ).toBeFocused();
+  await expect(
+    page.getByRole("group", { name: "Moment 201", exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("link", { name: "Timelines", exact: true }).click();
+  await page.getByRole("link", { name: /Second story/ }).click();
+  await oldTimelineErrorStarted.promise;
+  await page.getByRole("link", { name: "Timelines", exact: true }).click();
+  await page.getByRole("link", { name: /First large story/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "First large story", exact: true }),
+  ).toBeVisible();
+  const oldTimelineRequestFailed = page.waitForEvent(
+    "requestfailed",
+    (request) => {
+      const url = new URL(request.url());
+      return url.pathname === `/api/timelines/${second.id}/items`;
+    },
+  );
+  oldTimelineError.resolve();
+  await oldTimelineRequestFailed;
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(
+    page.getByRole("heading", { name: "First large story", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("caption and date drafts stay attached to their items when leaving a window", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedLargeTimeline(owner, ids[0] as string, 250);
+  await page.goto(`/timelines/${id}`);
+
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Draft on page one");
+  await first.getByLabel("Date type").selectOption("date");
+  await first.getByLabel("Event date", { exact: true }).fill("2024-02-29");
+  await first.getByLabel("Time zone").fill("Asia/Taipei");
+
+  const goToMoment = page.getByLabel("Go to moment");
+  await goToMoment.fill("151");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 101–200 of 250" }),
+  ).toBeFocused();
+  await goToMoment.fill("1");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+
+  await expect(first.getByRole("textbox", { name: "Caption" })).toHaveValue(
+    "Draft on page one",
+  );
+  await expect(first.getByLabel("Event date", { exact: true })).toHaveValue(
+    "2024-02-29",
+  );
+  await expect(first.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+});
+
+test("a pending save clears only its submitted fields and keeps newer typing focused", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const response = deferredSignal();
+  const responseDelivered = deferredSignal();
+  await page.addInitScript(
+    ({ timelineId, itemId }) => {
+      const nativeFetch = window.fetch.bind(window);
+      const settled: string[] = [];
+      Object.defineProperty(window, "__timelineMutationSettled", {
+        value: settled,
+      });
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === "string"
+            ? new URL(input, location.href)
+            : input instanceof URL
+              ? input
+              : new URL(input.url, location.href);
+        if (
+          url.pathname === `/api/timelines/${timelineId}/items/${itemId}` &&
+          init?.method === "PATCH"
+        )
+          return nativeFetch(input, init).then(async (result) => {
+            await result.clone().arrayBuffer();
+            settled.push(url.href);
+            return result;
+          });
+        return nativeFetch(input, init);
+      };
+    },
+    { timelineId: id, itemId },
+  );
+  let held = true;
+  await page.route(`**/api/timelines/${id}/items/${itemId}`, async (route) => {
+    if (held && route.request().method() === "PATCH") {
+      held = false;
+      const result = await route.fetch();
+      response.signal();
+      await response.promise;
+      await route.fulfill({ response: result }).catch(() => undefined);
+      responseDelivered.signal();
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  const caption = moment.getByRole("textbox", { name: "Caption" });
+  await caption.fill("Committed snapshot");
+  await moment.getByLabel("Date type").selectOption("date");
+  await moment.getByLabel("Event date", { exact: true }).fill("2024-02-29");
+  await moment.getByLabel("Time zone").fill("Asia/Taipei");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await response.started;
+  await caption.fill("Newer typing during save");
+  response.release();
+  await responseDelivered.started;
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (itemId) =>
+          (
+            window as unknown as {
+              __timelineMutationSettled?: string[];
+            }
+          ).__timelineMutationSettled?.some((url) => url.endsWith(itemId)) ??
+          false,
+        itemId,
+      ),
+    )
+    .toBe(true);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await expect(caption).toHaveValue("Newer typing during save");
+  await expect(moment.getByLabel("Event date", { exact: true })).toHaveValue(
+    "2024-02-29",
+  );
+  await expect(moment.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+  await expect(caption).toBeFocused();
+  await expect(
+    moment.getByRole("button", { name: "Save moment" }),
+  ).toBeEnabled();
+
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0]).toMatchObject({
+    id: itemIds[0],
+    caption: "Newer typing during save",
+    event_at: {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+    },
+  });
+});
+
+test("drafts follow stable item IDs through a remote reorder and conflict refresh", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Follow this item");
+  await first.getByLabel("Date type").selectOption("instant");
+  await first.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
+  await first.getByLabel("Time zone").fill("Asia/Taipei");
+
+  const reordered = [...itemIds.slice(1), itemIds[0]];
+  const external = await context.request.put(`/api/timelines/${id}/order`, {
+    headers: { Origin: e2eOrigin },
+    data: { expected_version: 1, item_ids: reordered },
+  });
+  expect(external.ok()).toBe(true);
+
+  await first.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Moments 201–250 of 250" }),
+  ).toBeVisible();
+  const moved = page.getByRole("group", { name: "Moment 250", exact: true });
+  const caption = moved.getByRole("textbox", { name: "Caption" });
+  await expect(caption).toHaveValue("Follow this item");
+  await expect(moved.getByLabel("Time zone")).toBeFocused();
+  await expect(moved.getByLabel("Event instant")).toHaveValue(
+    "2026-10-04T10:30:00+08:00",
+  );
+  await expect(moved.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+
+  await moved.getByRole("button", { name: "Save moment" }).click();
+  await expect(moved.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  const storedMoment = stored.timeline.items.at(-1);
+  expect(storedMoment).toMatchObject({
+    id: itemIds[0],
+    caption: "Follow this item",
+    event_at: {
+      kind: "instant",
+      time_zone: "Asia/Taipei",
+    },
+  });
+  expect(Date.parse(storedMoment.event_at.instant)).toBe(
+    Date.parse("2026-10-04T10:30:00+08:00"),
+  );
+});
+
+test("caption-only conflict drafts rebase clean event fields to the canonical instant", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "instant",
+          instant: "2024-01-02T03:04:05+00:00",
+          time_zone: "UTC",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
+
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 2,
+        event_at: {
+          kind: "instant",
+          instant: "2025-07-16T15:30:00+08:00",
+          time_zone: "Asia/Taipei",
+        },
+      },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+
+  const instant = moment.getByLabel("Event instant");
+  await expect
+    .poll(async () => Date.parse(await instant.inputValue()))
+    .toBe(Date.parse("2025-07-16T07:30:00.000Z"));
+  await expect(moment.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+  await moment.getByLabel("Time zone").fill("Asia/Tokyo");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0]).toMatchObject({
+    caption: "Local caption",
+    event_at: { time_zone: "Asia/Tokyo" },
+  });
+  expect(Date.parse(stored.timeline.items[0].event_at.instant)).toBe(
+    Date.parse("2025-07-16T07:30:00.000Z"),
+  );
+});
+
+test("event-only conflict drafts rebase clean captions before a later event edit", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Time zone").fill("Asia/Taipei");
+
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: { expected_version: 2, caption: "Remote caption" },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  const caption = moment.getByRole("textbox", { name: "Caption" });
+  await expect(caption).toHaveValue("Remote caption");
+
+  await moment.getByLabel("Time zone").fill("Asia/Tokyo");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0]).toMatchObject({
+    caption: "Remote caption",
+    event_at: {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Tokyo",
+    },
+  });
+});
+
+test("confirmed removal after caption-only conflict does not resurrect its clean event baseline", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 2,
+        event_at: {
+          kind: "date",
+          date: "2025-07-16",
+          time_zone: "Asia/Taipei",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(moment.getByLabel("Event date", { exact: true })).toHaveValue(
+    "2025-07-16",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await moment.getByRole("button", { name: "Remove moment" }).click();
+  await expect(page.locator(`#item-${itemId}-caption`)).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Unresolved drafts" }),
+  ).toHaveCount(0);
+});
+
+test("confirmed removal after event-only conflict does not resurrect its clean caption baseline", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Time zone").fill("Asia/Taipei");
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: { expected_version: 2, caption: "Remote caption" },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(moment.getByRole("textbox", { name: "Caption" })).toHaveValue(
+    "Remote caption",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await moment.getByRole("button", { name: "Remove moment" }).click();
+  await expect(page.locator(`#item-${itemId}-caption`)).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Unresolved drafts" }),
+  ).toHaveCount(0);
+});
+
+test("fields typed during pending removal remain unresolved until explicitly handled", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 2);
+  const cleanRemoval = itemIds[0];
+  const confirmedRemoval = itemIds[1];
+  if (!cleanRemoval || !confirmedRemoval)
+    throw new Error("The seeded timeline items are missing.");
+  const holds = new Map([
+    [cleanRemoval, deferredSignal()],
+    [confirmedRemoval, deferredSignal()],
+  ]);
+  for (const [itemId, hold] of holds) {
+    await page.route(
+      `**/api/timelines/${id}/items/${itemId}`,
+      async (route) => {
+        if (route.request().method() !== "DELETE") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        hold.signal();
+        await hold.promise;
+        await route.fulfill({ response });
+      },
+    );
+  }
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Remove moment" }).click();
+  await holds.get(cleanRemoval)?.started;
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Typed during clean removal");
+  holds.get(cleanRemoval)?.release();
+  const unresolved = page.getByRole("region", { name: "Unresolved drafts" });
+  await expect(unresolved).toContainText("Typed during clean removal");
+
+  const second = page.getByRole("group", { name: "Moment 1", exact: true });
+  await second
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Confirmed draft before removal");
+  await second.getByLabel("Date type").selectOption("date");
+  await second.getByLabel("Event date", { exact: true }).fill("2024-02-29");
+  page.once("dialog", (dialog) => dialog.accept());
+  await second.getByRole("button", { name: "Remove moment" }).click();
+  await holds.get(confirmedRemoval)?.started;
+  await second
+    .getByRole("textbox", { name: "Caption" })
+    .fill("New caption after confirmation");
+  await second.getByLabel("Event date", { exact: true }).fill("2025-07-16");
+  holds.get(confirmedRemoval)?.release();
+  await expect(unresolved).toContainText("New caption after confirmation");
+  await expect(unresolved).toContainText("2025-07-16");
+  await expect(unresolved).toContainText("Typed during clean removal");
+  const saveDraftButtons = unresolved.getByRole("button", {
+    name: "Save draft",
+  });
+  await expect(saveDraftButtons).toHaveCount(2);
+  await expect(saveDraftButtons.nth(0)).toBeDisabled();
+  await expect(saveDraftButtons.nth(1)).toBeDisabled();
+});
+
+test("a non-caption focused field survives Enter submission and a cross-window conflict", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByLabel("Date type").selectOption("instant");
+  await first.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
+  const zone = first.getByLabel("Time zone");
+  await zone.fill("Asia/Taipei");
+
+  const reordered = [...itemIds.slice(1), itemIds[0] as string];
+  const external = await context.request.put(`/api/timelines/${id}/order`, {
+    headers: { Origin: e2eOrigin },
+    data: { expected_version: 1, item_ids: reordered },
+  });
+  expect(external.ok()).toBe(true);
+  await zone.press("Enter");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  const moved = page.getByRole("group", { name: "Moment 250", exact: true });
+  await expect(moved.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+  await expect(moved.getByLabel("Time zone")).toBeFocused();
+});
+
+test("a held non-caption save preserves newer typing and restores that field focus", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const response = deferredSignal();
+  await page.route(`**/api/timelines/${id}/items/${itemId}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    const result = await route.fetch();
+    response.signal();
+    await response.promise;
+    await route.fulfill({ response: result });
+  });
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Date type").selectOption("instant");
+  await moment.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
+  const zone = moment.getByLabel("Time zone");
+  await zone.fill("Asia/Taipei");
+  await zone.press("Enter");
+  await response.started;
+  await zone.fill("Asia/Tokyo");
+  response.release();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  await expect(zone).toHaveValue("Asia/Tokyo");
+  await expect(zone).toBeFocused();
+  await zone.press("Enter");
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0].event_at.time_zone).toBe("Asia/Tokyo");
+});
+
+test("a remotely removed dirty moment remains copyable or discardable", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 2);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Keep this removed moment draft");
+  await first.getByLabel("Date type").selectOption("date");
+  await first.getByLabel("Event date", { exact: true }).fill("2025-07-16");
+  await first.getByLabel("Time zone").fill("UTC");
+
+  const removed = await context.request.delete(
+    `/api/timelines/${id}/items/${itemIds[0]}`,
+    { headers: { Origin: e2eOrigin }, data: { expected_version: 1 } },
+  );
+  expect(removed.ok()).toBe(true);
+  await first.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  const unresolved = page.getByRole("region", { name: "Unresolved drafts" });
+  await expect(unresolved).toBeVisible();
+  await expect(unresolved).toContainText("Keep this removed moment draft");
+  await expect(
+    unresolved.getByRole("button", { name: "Save draft" }),
+  ).toBeDisabled();
+  await unresolved.getByRole("button", { name: "Copy draft" }).click();
+  const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+  expect(clipboard).toContain("Keep this removed moment draft");
+  expect(clipboard).toContain("2025-07-16");
+  expect(clipboard).toContain("UTC");
+  await unresolved.getByRole("button", { name: "Discard draft" }).click();
+  await expect(unresolved).toHaveCount(0);
+});
+
+test("removing a dirty moment requires confirmation and discards only after acceptance", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 2);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("A draft that needs confirmation");
+  let dialogMessage = "";
+  const remove = first.getByRole("button", { name: "Remove moment" });
+  await expect(remove).toBeVisible();
+  page.once("dialog", async (dialog) => {
+    dialogMessage = dialog.message();
+    await dialog.dismiss();
+  });
+  await remove.click();
+  expect(dialogMessage).toContain("discard");
+  await expect(first.getByRole("textbox", { name: "Caption" })).toHaveValue(
+    "A draft that needs confirmation",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await remove.click();
+  await expect(page.locator(`#item-${itemIds[0]}-caption`)).toHaveCount(0);
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toBeVisible();
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items.map((item: { id: string }) => item.id)).toEqual([
+    itemIds[1],
+  ]);
+});
+
+test("empty and sparse appends reconcile one bounded pinned tail page", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const cases = [
+    {
+      timeline: seedLargeTimeline(owner, ids[0] as string, 0, "Empty story"),
+      assetName: "Coastal light.png",
+      priorCount: 0,
+    },
+    {
+      timeline: seedLargeTimeline(owner, ids[0] as string, 3, "Sparse story"),
+      assetName: "A quiet afternoon.png",
+      priorCount: 3,
+    },
+  ];
+
+  for (const { timeline, assetName, priorCount } of cases) {
+    const overviewRequests: URL[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "GET" &&
+        new URL(request.url()).pathname ===
+          `/api/timelines/${timeline.id}/overview`
+      )
+        overviewRequests.push(new URL(request.url()));
+    });
+    await page.goto(`/timelines/${timeline.id}`);
+    await expect(
+      page.getByRole("heading", {
+        name: priorCount ? "Sparse story" : "Empty story",
+      }),
+    ).toBeVisible();
+    overviewRequests.length = 0;
+    await addMoments(page, [assetName]);
+    const tail = overviewRequests.filter(
+      (url) =>
+        url.searchParams.get("version") === "2" &&
+        url.searchParams.get("limit") === "2",
+    );
+    expect(tail).toHaveLength(1);
+    if (priorCount) {
+      expect(tail[0]?.searchParams.get("from_position")).toBe("20");
+      expect(tail[0]?.searchParams.get("from_id")).toContain("_00002");
+    } else {
+      expect(tail[0]?.searchParams.get("from_position")).toBeNull();
+      expect(tail[0]?.searchParams.get("from_id")).toBeNull();
+    }
+    expect(
+      overviewRequests.filter(
+        (url) => url.searchParams.get("version") === null,
+      ),
+    ).toHaveLength(0);
+    const stored = await (
+      await context.request.get(`/api/timelines/${timeline.id}`)
+    ).json();
+    expect(stored.timeline.items).toHaveLength(priorCount + 1);
+    expect(stored.timeline.items.at(-1).position).toBe(priorCount ? 21 : 0);
+  }
+});
+
+test("failed or conflicted append tails stop the batch and resume only after fresh reads", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+
+  for (const failure of ["network", "conflict"] as const) {
+    const { id } = seedLargeTimeline(owner, ids[0] as string, 2);
+    const tail = deferredSignal();
+    const releaseTail = deferredSignal();
+    const freshOverview = deferredSignal();
+    const releaseOverview = deferredSignal();
+    const activeDetail = deferredSignal();
+    const releaseDetail = deferredSignal();
+    let injectTailFailure = true;
+    let holdOverview = true;
+    let holdDetail = true;
+    const appendPosts: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        request.url() === `${e2eOrigin}/api/timelines/${id}/items`
+      )
+        appendPosts.push(request.postDataJSON().asset_id);
+    });
+    await page.goto(`/timelines/${id}`);
+    const first = page.getByRole("group", { name: "Moment 1", exact: true });
+    const caption = first.getByRole("textbox", { name: "Caption" });
+    await caption.fill(`Draft survives ${failure}`);
+    await page.route(`**/api/timelines/${id}/overview?**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (
+        injectTailFailure &&
+        url.searchParams.get("version") === "2" &&
+        url.searchParams.get("limit") === "2"
+      ) {
+        injectTailFailure = false;
+        if (failure === "network") {
+          tail.signal();
+          await releaseTail.promise;
+          await route.abort("failed");
+        } else {
+          const changed = await context.request.patch(`/api/timelines/${id}`, {
+            headers: { Origin: e2eOrigin },
+            data: { expected_version: 2, title: "Changed during append" },
+          });
+          expect(changed.ok()).toBe(true);
+          const conflict = await route.fetch();
+          expect(conflict.status()).toBe(409);
+          tail.signal();
+          await releaseTail.promise;
+          await route.fulfill({ response: conflict }).catch(() => undefined);
+        }
+        return;
+      }
+      if (holdOverview && !url.searchParams.has("version")) {
+        holdOverview = false;
+        freshOverview.signal();
+        await releaseOverview.promise;
+        await route.continue();
+        return;
+      }
+      await route.continue();
+    });
+    await page.route(`**/api/timelines/${id}/items?**`, async (route) => {
+      if (holdDetail && route.request().method() === "GET") {
+        holdDetail = false;
+        activeDetail.signal();
+        await releaseDetail.promise;
+      }
+      await route.continue();
+    });
+
+    await page
+      .getByRole("button", { name: "Add moments", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Add moments" });
+    await dialog
+      .getByRole("checkbox", { name: "Select A quiet afternoon.png" })
+      .check();
+    await dialog
+      .getByRole("checkbox", { name: "Select Mountain air.png" })
+      .check();
+    const add = dialog.getByRole("button", {
+      name: /Add selected moments|Adding moments…/,
+    });
+    await add.click();
+    const firstRead = await Promise.race([
+      tail.started.then(() => "tail"),
+      freshOverview.started.then(() => "full refresh"),
+    ]);
+    expect(firstRead).toBe("tail");
+    await expect(
+      dialog.getByRole("checkbox", { name: "Select A quiet afternoon.png" }),
+    ).not.toBeChecked();
+    await expect(
+      dialog.getByRole("checkbox", { name: "Select Mountain air.png" }),
+    ).toBeChecked();
+    await expect(add).toBeDisabled();
+    expect(appendPosts).toEqual([ids[1]]);
+    releaseTail.release();
+
+    await freshOverview.started;
+    await expect(add).toBeDisabled();
+    releaseOverview.release();
+    await activeDetail.started;
+    await expect(add).toBeDisabled();
+    releaseDetail.release();
+    await expect(add).toBeEnabled();
+    await expect(caption).toHaveValue(`Draft survives ${failure}`);
+
+    await add.click();
+    await expect(dialog).toHaveCount(0);
+    expect(appendPosts).toEqual([ids[1], ids[2]]);
+    const stored = await (
+      await context.request.get(`/api/timelines/${id}`)
+    ).json();
+    expect(stored.timeline.items).toHaveLength(4);
+    expect(
+      stored.timeline.items.filter(
+        (item: { asset_id: string }) => item.asset_id === ids[1],
+      ),
+    ).toHaveLength(1);
+    expect(
+      stored.timeline.items.filter(
+        (item: { asset_id: string }) => item.asset_id === ids[2],
+      ),
+    ).toHaveLength(1);
+    expect(stored.timeline.items[0].caption).toBe("Moment 1");
+    await expect(caption).toHaveValue(`Draft survives ${failure}`);
+    await page.unroute(`**/api/timelines/${id}/overview?**`);
+    await page.unroute(`**/api/timelines/${id}/items?**`);
+  }
+});
+
+test("a held timeline conflict cannot update the editor after logout starts", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  await page.addInitScript(
+    ({ timelineId, itemId }) => {
+      const nativeFetch = window.fetch.bind(window);
+      const settled: string[] = [];
+      Object.defineProperty(window, "__timelineMutationSettled", {
+        value: settled,
+      });
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === "string"
+            ? new URL(input, location.href)
+            : input instanceof URL
+              ? input
+              : new URL(input.url, location.href);
+        if (
+          url.pathname === `/api/timelines/${timelineId}/items/${itemId}` &&
+          init?.method === "PATCH"
+        ) {
+          const options = { ...init };
+          delete options.signal;
+          return nativeFetch(input, options).then(async (response) => {
+            await response.clone().arrayBuffer();
+            settled.push(url.href);
+            return response;
+          });
+        }
+        return nativeFetch(input, init);
+      };
+    },
+    { timelineId: id, itemId: itemIds[0] },
+  );
+  const conflictResponse = deferredSignal();
+  const conflictRequestFinished = deferredSignal();
+  const logout = deferredSignal();
+  const logoutFinished = deferredSignal();
+  await page.route(
+    `**/api/timelines/${id}/items/${itemIds[0]}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      const response = await route.fetch();
+      expect(response.status()).toBe(409);
+      conflictResponse.signal();
+      await conflictResponse.promise;
+      await route.fulfill({ response }).catch(() => undefined);
+      conflictRequestFinished.signal();
+    },
+  );
+  await page.route("**/auth/logout", async (route) => {
+    logout.signal();
+    await logout.promise;
+    await route.fulfill({ status: 500, body: "logout failed" });
+    logoutFinished.signal();
+  });
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  const caption = moment.getByRole("textbox", { name: "Caption" });
+  await caption.fill("Keep draft while sign out is pending");
+  const changed = await context.request.patch(`/api/timelines/${id}`, {
+    headers: { Origin: e2eOrigin },
+    data: { expected_version: 1, title: "Another window changed this" },
+  });
+  expect(changed.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await conflictResponse.started;
+
+  try {
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await logout.started;
+    conflictResponse.release();
+    await conflictRequestFinished.started;
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (timelineId) =>
+            (
+              window as unknown as {
+                __timelineMutationSettled?: string[];
+              }
+            ).__timelineMutationSettled?.some((url) =>
+              url.includes(`/api/timelines/${timelineId}/items/`),
+            ) ?? false,
+          id,
+        ),
+      )
+      .toBe(true);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(
+      page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Sign out", exact: true }),
+    ).toBeVisible();
+  } finally {
+    conflictResponse.release();
+    logout.release();
+    await logoutFinished.started;
+  }
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Sign out could not be completed" }),
+  ).toBeVisible();
+});
 
 test("create, describe, share and append through simulated upload transport keep one canonical story", async ({
   page,
@@ -373,7 +1659,8 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
   const { owner, ids } = await seedLibrary(context);
-  const { id } = seedTimeline(owner, ids, 100);
+  const { id } = seedTimeline(owner, ids, 250);
+  seedTimeline(owner, ids, 3, "Another story");
   const before = await (
     await context.request.get(`/api/timelines/${id}`)
   ).json();
@@ -384,7 +1671,8 @@ test("anchored navigation stays readable, preserves data and manual framing, and
     .poll(async () => (await viewport(page)).extent)
     .toBeGreaterThan(0);
   const initial = await viewport(page);
-  expect(initial.span).toBeLessThan(10);
+  expect(initial.center - initial.span / 2).toBeLessThanOrEqual(0);
+  expect(initial.center + initial.span / 2).toBeGreaterThanOrEqual(249);
   const bounds = await map.boundingBox();
   expect(bounds).not.toBeNull();
   const pointerX = Math.round((bounds?.x ?? 0) + (bounds?.width ?? 0) * 0.25);
@@ -406,6 +1694,18 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   await expect(
     page.getByRole("button", { name: "Pan later", exact: true }),
   ).toBeFocused();
+  const manualBeforePage = await viewport(page);
+  await page.getByLabel("Go to moment").fill("101");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 101–200 of 250" }),
+  ).toBeFocused();
+  const afterPage = await viewport(page);
+  expect(afterPage.center).toBeCloseTo(manualBeforePage.center, 5);
+  expect(afterPage.span).toBeCloseTo(manualBeforePage.span, 5);
+  expect(
+    await (await context.request.get(`/api/timelines/${id}`)).json(),
+  ).toEqual(before);
   const manual = await viewport(page);
   const oldSize = page.viewportSize();
   await page.setViewportSize({
@@ -421,6 +1721,13 @@ test("anchored navigation stays readable, preserves data and manual framing, and
   ).toEqual(before);
   await addMoments(page, ["Coastal light.png"]);
   expect((await viewport(page)).center).toBeCloseTo(manual.center, 5);
+  const afterAppend = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(afterAppend.timeline.version).toBe(before.timeline.version + 1);
+  expect(afterAppend.timeline.items.at(-1).position).toBe(
+    before.timeline.items.at(-1).position + 1,
+  );
   await page.getByRole("button", { name: "Fit all", exact: true }).click();
   await expect
     .poll(async () => (await viewport(page)).span)
@@ -436,6 +1743,18 @@ test("anchored navigation stays readable, preserves data and manual framing, and
       () => matchMedia("(prefers-reduced-motion: reduce)").matches,
     ),
   ).toBe(true);
+  const firstTimelineFit = await viewport(page);
+  await page.getByRole("link", { name: "Timelines", exact: true }).click();
+  await page.getByRole("link", { name: /Another story/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Another story", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(async () => (await viewport(page)).extent)
+    .toBeGreaterThan(0);
+  const secondTimelineFit = await viewport(page);
+  expect(secondTimelineFit.center).toBeCloseTo(1, 0);
+  expect(secondTimelineFit.center).not.toBeCloseTo(firstTimelineFit.center, 0);
   await page.getByRole("link", { name: "Library", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Your library" }),
@@ -454,6 +1773,119 @@ test("anchored navigation stays readable, preserves data and manual framing, and
           .__activeViewportListeners,
     ),
   ).toBe(0);
+});
+
+test("100-card stories mount media in the viewport band and unmount it after scrolling", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedTimeline(owner, ids, 100);
+  await page.goto(`/timelines/${id}`);
+
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const last = page.getByRole("group", { name: "Moment 100", exact: true });
+  await expect(last).toBeAttached();
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  const firstBand = await page
+    .locator(".story-items li")
+    .evaluateAll((items) => {
+      const height = window.innerHeight;
+      const inBand = (item: Element) => {
+        const rect = item.getBoundingClientRect();
+        return rect.bottom >= -height && rect.top <= 2 * height;
+      };
+      const mounted = items.filter((item) =>
+        item.querySelector(".moment-media img, .moment-media video"),
+      );
+      return {
+        count: mounted.length,
+        outOfBand: mounted.filter((item) => !inBand(item)).length,
+      };
+    });
+  expect(firstBand.count).toBeLessThan(100);
+  expect(firstBand.count).toBeGreaterThan(0);
+  expect(firstBand.outOfBand).toBe(0);
+
+  await last.scrollIntoViewIfNeeded();
+  await expect(last.locator(".moment-media img")).toHaveCount(1);
+  await expect(
+    first.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(0);
+});
+
+test("media placeholders preserve asset proportions and size assets without dimensions", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const missingDimensionsAsset = ids[2];
+  if (!missingDimensionsAsset) throw new Error("Missing seeded asset ID.");
+  executeFixtureSql(
+    `UPDATE assets SET width=NULL,height=NULL WHERE id='${missingDimensionsAsset}'`,
+  );
+  const { id } = seedTimeline(owner, ids, 3);
+  await page.goto(`/timelines/${id}`);
+
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const second = page.getByRole("group", { name: "Moment 2", exact: true });
+  const third = page.getByRole("group", { name: "Moment 3", exact: true });
+  await first.scrollIntoViewIfNeeded();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  expect(
+    await first
+      .locator(".moment-media")
+      .evaluate((element) => (element as HTMLElement).style.aspectRatio),
+  ).toBe("600 / 400");
+  expect(
+    await second
+      .locator(".moment-media")
+      .evaluate((element) => (element as HTMLElement).style.aspectRatio),
+  ).toBe("400 / 600");
+  const fallbackBox = await third
+    .locator(".moment-media")
+    .evaluate((element) => ({
+      aspectRatio: (element as HTMLElement).style.aspectRatio,
+      minHeight: Number.parseFloat(getComputedStyle(element).minHeight),
+    }));
+  expect(fallbackBox.aspectRatio).toBe("");
+  expect(fallbackBox.minHeight).toBeGreaterThanOrEqual(160);
+  await third.scrollIntoViewIfNeeded();
+  await expect(third.locator(".moment-media img")).toHaveCount(1);
+});
+
+test("media stays unmounted without IntersectionObserver until explicitly loaded", async ({
+  page,
+  context,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "IntersectionObserver", {
+      value: undefined,
+      configurable: true,
+    });
+  });
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedTimeline(owner, ids, 3);
+  await page.goto(`/timelines/${id}`);
+
+  await expect(
+    page.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(0);
+  const loadButtons = page.getByRole("button", {
+    name: "Load media",
+    exact: true,
+  });
+  await expect(loadButtons).toHaveCount(3);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const loadFirst = first.getByRole("button", { name: "Load media" });
+  await loadFirst.focus();
+  await expect(loadFirst).toBeFocused();
+  await loadFirst.click();
+  await expect(first.locator(".moment-media img")).toHaveCount(1);
+  await expect(
+    page.locator(".moment-media img, .moment-media video"),
+  ).toHaveCount(1);
 });
 
 test("mobile native touch pan and pinch navigate the story without disabling page magnification", async ({
@@ -639,30 +2071,29 @@ test("adding from the keyboard restores focus to its surviving Add moments opene
   await expect(opener).toBeFocused();
 });
 
-test("failed media metadata reads show a retry instead of remaining in a loading state", async ({
+test("failed detail window reads show a retry instead of remaining in a loading state", async ({
   page,
   context,
 }) => {
   const { owner, ids } = await seedLibrary(context);
   const { id } = seedTimeline(owner, ids);
   let fail = true;
-  await page.route("**/api/assets**", async (route) => {
-    if (fail && route.request().method() === "GET")
-      return route.abort("failed");
+  await page.route(`**/api/timelines/${id}/items?**`, async (route) => {
+    if (fail) return route.abort("failed");
     await route.continue();
   });
   await page.goto(`/timelines/${id}`);
   await expect(
-    page.getByRole("button", { name: "Retry media details" }),
+    page.getByRole("button", { name: "Retry moments" }),
   ).toBeVisible();
   fail = false;
-  await page.getByRole("button", { name: "Retry media details" }).click();
+  await page.getByRole("button", { name: "Retry moments" }).click();
   await expect(
     page.getByRole("img", { name: "Coastal light.png" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Retry media details" }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Retry moments" })).toHaveCount(
+    0,
+  );
 });
 
 test("Escape dismisses the picker synchronously when its native close notification is held", async ({

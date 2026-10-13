@@ -25,6 +25,31 @@ type Timeline = {
   version: number;
   items: Item[];
 };
+type OverviewPage = {
+  timeline: Omit<Timeline, "items">;
+  total_items: number;
+  items: { id: string; position: number }[];
+  next_cursor: string | null;
+};
+type DetailPage = {
+  version: number;
+  items: {
+    id: string;
+    asset_id: string;
+    position: number;
+    caption: string;
+    event_at: unknown;
+    asset: {
+      id: string;
+      kind: string;
+      original_name: string;
+      width: number | null;
+      height: number | null;
+      duration_ms: number | null;
+    };
+  }[];
+  next_cursor: string | null;
+};
 beforeEach(async () => {
   await reset();
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -39,6 +64,7 @@ function request(
   body?: unknown,
   cookie = session,
   requestOrigin = origin,
+  extraHeaders: Record<string, string> = {},
 ) {
   return app.request(
     `${origin}/api/timelines${path}`,
@@ -48,6 +74,7 @@ function request(
         Cookie: cookie,
         Origin: requestOrigin,
         "Content-Type": "application/json",
+        ...extraHeaders,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     },
@@ -94,6 +121,681 @@ async function snapshot(id: string) {
     ).bind(id),
   ]).then((rows) => rows.map((row) => row.results));
 }
+
+async function seedLargeTimeline(timelineId: string) {
+  const now = new Date().toISOString();
+  await env.DB.prepare(`WITH digits(n) AS (
+      VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+    ), sequence(item_number) AS (
+      SELECT thousands.n * 1000 + hundreds.n * 100 + tens.n * 10 + ones.n
+      FROM digits thousands
+      CROSS JOIN digits hundreds
+      CROSS JOIN digits tens
+      CROSS JOIN digits ones
+    )
+    INSERT INTO timeline_items
+      (id, timeline_id, owner_id, asset_id, position, caption, created_at, updated_at)
+    SELECT ? || '-item-' || printf('%05d', item_number), ?, 'owner_a', 'asset_a',
+      item_number * 3 + 1, printf('Caption %05d', item_number), ?, ?
+    FROM sequence ORDER BY item_number`)
+    .bind(timelineId, timelineId, now, now)
+    .run();
+}
+
+function captureD1Batches() {
+  const sqlByStatement = new WeakMap<object, string>();
+  const batches: string[][] = [];
+  const originalPrepare = env.DB.prepare.bind(env.DB);
+  const originalBatch = env.DB.batch.bind(env.DB);
+  const prepareSpy = vi.spyOn(env.DB, "prepare").mockImplementation((sql) => {
+    const statement = originalPrepare(sql);
+    sqlByStatement.set(statement, sql);
+    const bind = statement.bind.bind(statement);
+    return new Proxy(statement, {
+      get(target, property) {
+        if (property === "bind")
+          return (...values: Parameters<typeof statement.bind>) => {
+            const bound = bind(...values);
+            sqlByStatement.set(bound, sql);
+            return bound;
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  });
+  const batchSpy = vi
+    .spyOn(env.DB, "batch")
+    .mockImplementation((statements) => {
+      batches.push(
+        statements.map(
+          (statement) =>
+            sqlByStatement.get(statement)?.replace(/\s+/g, " ").trim() ??
+            "unmatched",
+        ),
+      );
+      return originalBatch(statements);
+    });
+  return {
+    batches,
+    restore() {
+      prepareSpy.mockRestore();
+      batchSpy.mockRestore();
+    },
+  };
+}
+
+function expectOverviewBatch(sql: string[]) {
+  expect(sql).toHaveLength(3);
+  expect(sql[0]).toMatch(
+    /SELECT \* FROM timelines WHERE id = \? AND owner_id = \?/,
+  );
+  expect(sql[1]).toMatch(
+    /SELECT id, position FROM timeline_items\s+WHERE timeline_id = \? AND owner_id = \?/,
+  );
+  expect(sql[2]).toMatch(
+    /SELECT COUNT\(\*\) AS total_items FROM timeline_items\s+WHERE timeline_id = \? AND owner_id = \?/,
+  );
+}
+
+function expectDetailBatch(sql: string[]) {
+  expect(sql).toHaveLength(2);
+  expect(sql[0]).toMatch(
+    /SELECT \* FROM timelines WHERE id = \? AND owner_id = \?/,
+  );
+  expect(sql[1]).toMatch(
+    /FROM timeline_items i JOIN assets a ON a\.id = i\.asset_id AND a\.owner_id = i\.owner_id/,
+  );
+}
+
+async function expectConflictWithoutRows(response: Response) {
+  expect(response.status).toBe(409);
+  const body = await response.json();
+  expect(body).toMatchObject({ error: { code: "CONFLICT" } });
+  expect(body).not.toHaveProperty("items");
+}
+
+describe("Paged Timeline reads", () => {
+  it("returns bounded exclusive and inclusive pages with safe joined detail in one read batch", async () => {
+    await ready();
+    const firstEvent = {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    };
+    let timeline = await append(await create(), "asset_a", {
+      caption: "First caption",
+      event_at: firstEvent,
+    });
+    timeline = await append(timeline, "asset_a", { caption: "Second caption" });
+    await env.DB.prepare("UPDATE timeline_items SET position = 4 WHERE id = ?")
+      .bind(timeline.items[0]?.id)
+      .run();
+    await env.DB.prepare("UPDATE timeline_items SET position = 20 WHERE id = ?")
+      .bind(timeline.items[1]?.id)
+      .run();
+    await env.DB.prepare(
+      "UPDATE assets SET width = 640, height = 360, duration_ms = 1200 WHERE id = 'asset_a'",
+    ).run();
+
+    const capture = captureD1Batches();
+    try {
+      const firstResponse = await request(`/${timeline.id}/overview?limit=1`);
+      expect(firstResponse.status).toBe(200);
+      expect(firstResponse.headers.get("Cache-Control")).toContain("no-store");
+      const first = await firstResponse.json<OverviewPage>();
+      expect(first).toMatchObject({
+        timeline: { id: timeline.id, version: timeline.version },
+        total_items: 2,
+        items: [{ id: timeline.items[0]?.id, position: 4 }],
+      });
+      expect(first.next_cursor).toBeTruthy();
+      expect(Object.keys(first.items[0] ?? {}).sort()).toEqual([
+        "id",
+        "position",
+      ]);
+      expect(first.timeline).not.toHaveProperty("owner_id");
+      expect(first.timeline).not.toHaveProperty("moderation_blocked");
+      expectOverviewBatch(capture.batches[0] ?? []);
+
+      const secondResponse = await request(
+        `/${timeline.id}/overview?version=${timeline.version}&limit=1&cursor=${encodeURIComponent(first.next_cursor ?? "")}`,
+      );
+      expect(secondResponse.status).toBe(200);
+      const second = await secondResponse.json<OverviewPage>();
+      expect(second.items).toEqual([
+        { id: timeline.items[1]?.id, position: 20 },
+      ]);
+      expect(second.total_items).toBe(2);
+      expect(second.next_cursor).toBeNull();
+      expectOverviewBatch(capture.batches[1] ?? []);
+
+      const inclusiveResponse = await request(
+        `/${timeline.id}/overview?version=${timeline.version}&from_position=4&from_id=${timeline.items[0]?.id}`,
+      );
+      expect(inclusiveResponse.status).toBe(200);
+      const inclusive = await inclusiveResponse.json<OverviewPage>();
+      expect(inclusive.items).toEqual([
+        { id: timeline.items[0]?.id, position: 4 },
+        { id: timeline.items[1]?.id, position: 20 },
+      ]);
+      expectOverviewBatch(capture.batches[2] ?? []);
+
+      const detailResponse = await request(
+        `/${timeline.id}/items?version=${timeline.version}&limit=1`,
+      );
+      expect(detailResponse.status).toBe(200);
+      const detail = await detailResponse.json<DetailPage>();
+      expect(detail.version).toBe(timeline.version);
+      expect(detail.items).toHaveLength(1);
+      expect(detail.items[0]).toMatchObject({
+        id: timeline.items[0]?.id,
+        asset_id: "asset_a",
+        position: 4,
+        caption: "First caption",
+        event_at: firstEvent,
+        asset: {
+          id: "asset_a",
+          kind: "image",
+          original_name: "synthetic.png",
+          width: 640,
+          height: 360,
+          duration_ms: 1200,
+        },
+      });
+      expect(Object.keys(detail.items[0] ?? {}).sort()).toEqual([
+        "asset",
+        "asset_id",
+        "caption",
+        "event_at",
+        "id",
+        "position",
+      ]);
+      expect(Object.keys(detail.items[0]?.asset ?? {}).sort()).toEqual([
+        "duration_ms",
+        "height",
+        "id",
+        "kind",
+        "original_name",
+        "width",
+      ]);
+      expect(detail.next_cursor).toBeTruthy();
+      expectDetailBatch(capture.batches[3] ?? []);
+
+      const inclusiveDetail = await request(
+        `/${timeline.id}/items?version=${timeline.version}&limit=1&from_position=4&from_id=${timeline.items[0]?.id}`,
+      );
+      expect(inclusiveDetail.status).toBe(200);
+      expect((await inclusiveDetail.json<DetailPage>()).items).toMatchObject([
+        { id: timeline.items[0]?.id, position: 4, caption: "First caption" },
+      ]);
+      expectDetailBatch(capture.batches[4] ?? []);
+
+      const detailContinuation = await request(
+        `/${timeline.id}/items?version=${timeline.version}&limit=1&cursor=${encodeURIComponent(detail.next_cursor ?? "")}`,
+      );
+      expect(detailContinuation.status).toBe(200);
+      expect((await detailContinuation.json<DetailPage>()).items).toMatchObject(
+        [
+          {
+            id: timeline.items[1]?.id,
+            position: 20,
+            caption: "Second caption",
+          },
+        ],
+      );
+      expectDetailBatch(capture.batches[5] ?? []);
+      expect(capture.batches).toHaveLength(6);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("rejects invalid selectors, unpinned continuations, duplicate parameters, and foreign cursors", async () => {
+    await ready();
+    let firstTimeline = await append(await create("First"));
+    firstTimeline = await append(firstTimeline);
+    let otherTimeline = await append(await create("Second"));
+    otherTimeline = await append(otherTimeline);
+    const firstPage = await request(`/${firstTimeline.id}/overview?limit=1`);
+    const first = await firstPage.json<OverviewPage>();
+    expect(first.next_cursor).toBeTruthy();
+    const firstDetail = await (
+      await request(
+        `/${firstTimeline.id}/items?version=${firstTimeline.version}&limit=1`,
+      )
+    ).json<DetailPage>();
+    expect(firstDetail.next_cursor).toBeTruthy();
+    const invalidPaths = [
+      `/${firstTimeline.id}/overview?cursor=${encodeURIComponent(first.next_cursor ?? "token")}`,
+      `/${firstTimeline.id}/overview?from_position=0&from_id=${firstTimeline.items[0]?.id}`,
+      `/${firstTimeline.id}/overview?version=${firstTimeline.version}&from_position=0`,
+      `/${firstTimeline.id}/overview?version=${firstTimeline.version}&from_id=${firstTimeline.items[0]?.id}`,
+      `/${firstTimeline.id}/overview?version=${firstTimeline.version}&cursor=x&from_position=0&from_id=${firstTimeline.items[0]?.id}`,
+      `/${firstTimeline.id}/overview?limit=0`,
+      `/${firstTimeline.id}/overview?limit=1001`,
+      `/${firstTimeline.id}/overview?limit=1&limit=2`,
+      `/${firstTimeline.id}/items`,
+      `/${firstTimeline.id}/items?version=${firstTimeline.version}&from_position=0`,
+      `/${firstTimeline.id}/items?version=${firstTimeline.version}&from_id=${firstTimeline.items[0]?.id}`,
+      `/${firstTimeline.id}/items?version=${firstTimeline.version}&cursor=x&from_position=0&from_id=${firstTimeline.items[0]?.id}`,
+      `/${firstTimeline.id}/items?version=${firstTimeline.version}&limit=0`,
+      `/${firstTimeline.id}/items?version=${firstTimeline.version}&limit=101`,
+      `/${firstTimeline.id}/items?version=9007199254740992`,
+    ];
+    for (const path of invalidPaths) {
+      const response = await request(path);
+      expect(response.status, path).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "INVALID_REQUEST" },
+      });
+    }
+
+    const foreignCursor = await request(
+      `/${otherTimeline.id}/overview?version=${first.timeline.version}&cursor=${encodeURIComponent(first.next_cursor ?? "")}`,
+    );
+    expect(foreignCursor.status).toBe(400);
+    expect(await foreignCursor.json()).toMatchObject({
+      error: { code: "INVALID_REQUEST" },
+    });
+    const foreignDetailCursor = await request(
+      `/${otherTimeline.id}/items?version=${firstDetail.version}&cursor=${encodeURIComponent(firstDetail.next_cursor ?? "")}`,
+    );
+    expect(foreignDetailCursor.status).toBe(400);
+    expect(await foreignDetailCursor.json()).toMatchObject({
+      error: { code: "INVALID_REQUEST" },
+    });
+  });
+
+  it("keeps private and unlisted reads owner-scoped", async () => {
+    await ready();
+    for (const visibility of ["private", "unlisted"]) {
+      const timeline = await append(await create(visibility));
+      await env.DB.prepare("UPDATE timelines SET visibility = ? WHERE id = ?")
+        .bind(visibility, timeline.id)
+        .run();
+
+      const ownerOverview = await request(`/${timeline.id}/overview`);
+      expect(ownerOverview.status).toBe(200);
+      expect(
+        (await ownerOverview.json<OverviewPage>()).timeline.visibility,
+      ).toBe(visibility);
+      expect(
+        (await request(`/${timeline.id}/items?version=${timeline.version}`))
+          .status,
+      ).toBe(200);
+      expect(
+        (await request(`/${timeline.id}/overview`, "GET", undefined, other))
+          .status,
+      ).toBe(404);
+      expect(
+        (
+          await request(
+            `/${timeline.id}/items?version=${timeline.version}`,
+            "GET",
+            undefined,
+            other,
+          )
+        ).status,
+      ).toBe(404);
+    }
+  });
+
+  it("returns 409 with no page rows when a pinned overview or detail version is stale", async () => {
+    await ready();
+    let timeline = await append(await create());
+    timeline = await append(timeline);
+    const first = await (
+      await request(`/${timeline.id}/overview?limit=1`)
+    ).json<OverviewPage>();
+    const capture = captureD1Batches();
+    try {
+      await env.DB.prepare(
+        "UPDATE timelines SET version = version + 1 WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .run();
+      const staleCursor = await request(
+        `/${timeline.id}/overview?version=${timeline.version}&limit=1&cursor=${encodeURIComponent(first.next_cursor ?? "")}`,
+      );
+      await expectConflictWithoutRows(staleCursor);
+      expectOverviewBatch(capture.batches[0] ?? []);
+
+      const currentVersion = timeline.version + 1;
+      await env.DB.prepare(
+        "UPDATE timelines SET version = version + 1 WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .run();
+      const staleInclusive = await request(
+        `/${timeline.id}/overview?version=${currentVersion}&from_position=0&from_id=${timeline.items[0]?.id}`,
+      );
+      await expectConflictWithoutRows(staleInclusive);
+      expectOverviewBatch(capture.batches[1] ?? []);
+
+      const latestVersion = timeline.version + 2;
+      await env.DB.prepare(
+        "UPDATE timelines SET version = version + 1 WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .run();
+      const staleDetail = await request(
+        `/${timeline.id}/items?version=${latestVersion}&limit=1`,
+      );
+      await expectConflictWithoutRows(staleDetail);
+      expectDetailBatch(capture.batches[2] ?? []);
+      expect(capture.batches).toHaveLength(3);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("paginates 10,000 sparse rows in bounded overview pages without item payloads", async () => {
+    await ready();
+    const timeline = await create("Large story");
+    await seedLargeTimeline(timeline.id);
+    const allItems: { id: string; position: number }[] = [];
+    let version: number | undefined;
+    let cursor: string | null = null;
+    const totals = new Set<number>();
+
+    do {
+      const query = new URLSearchParams({ limit: "1000" });
+      if (version !== undefined) query.set("version", String(version));
+      if (cursor) query.set("cursor", cursor);
+      const response = await request(`/${timeline.id}/overview?${query}`);
+      expect(response.status).toBe(200);
+      const page = await response.json<OverviewPage>();
+      version ??= page.timeline.version;
+      expect(page.timeline.version).toBe(version);
+      expect(page.total_items).toBe(10_000);
+      totals.add(page.total_items);
+      expect(page.items.length).toBeLessThanOrEqual(1000);
+      expect(
+        page.items.every(
+          (item) => Object.keys(item).sort().join(",") === "id,position",
+        ),
+      ).toBe(true);
+      allItems.push(...page.items);
+      cursor = page.next_cursor;
+    } while (cursor);
+
+    expect(totals).toEqual(new Set([10_000]));
+    expect(allItems).toHaveLength(10_000);
+    expect(new Set(allItems.map((item) => item.id)).size).toBe(10_000);
+    expect(allItems[0]).toEqual({
+      id: `${timeline.id}-item-00000`,
+      position: 1,
+    });
+    expect(allItems.at(-1)).toEqual({
+      id: `${timeline.id}-item-09999`,
+      position: 29_998,
+    });
+    for (let index = 0; index < allItems.length; index++) {
+      const item = allItems[index];
+      expect(item?.id).toBe(
+        `${timeline.id}-item-${String(index).padStart(5, "0")}`,
+      );
+      expect(item?.position).toBe(index * 3 + 1);
+      if (index > 0)
+        expect(item?.position).toBeGreaterThan(
+          allItems[index - 1]?.position ?? -1,
+        );
+    }
+
+    const detailResponse = await request(
+      `/${timeline.id}/items?version=${version}&limit=100`,
+    );
+    expect(detailResponse.status).toBe(200);
+    const detail = await detailResponse.json<DetailPage>();
+    expect(detail.items).toHaveLength(100);
+    expect(detail.next_cursor).toBeTruthy();
+  });
+});
+
+describe("Minimal timeline mutation responses", () => {
+  it("keeps full JSON responses for default writes and non-exact preferences", async () => {
+    await ready();
+    let timeline = await create();
+    const appendResponse = await request(
+      `/${timeline.id}/items`,
+      "POST",
+      {
+        expected_version: timeline.version,
+        asset_id: "asset_a",
+        caption: "First",
+      },
+      session,
+      origin,
+      { Prefer: "return=minimal, wait=1" },
+    );
+    expect(appendResponse.status).toBe(201);
+    const first = await appendResponse.json<{ timeline: Timeline }>();
+    expect(first.timeline).toMatchObject({
+      version: 2,
+      items: [
+        {
+          asset_id: "asset_a",
+          position: 0,
+          caption: "First",
+          event_at: null,
+        },
+      ],
+    });
+    timeline = await append(first.timeline, "asset_a", { caption: "Second" });
+    expect(timeline.version).toBe(3);
+    expect(timeline.items).toHaveLength(2);
+    const [firstItem, secondItem] = timeline.items;
+    if (!firstItem || !secondItem) throw new Error("Expected two story items");
+
+    const editResponse = await request(
+      `/${timeline.id}/items/${firstItem.id}`,
+      "PATCH",
+      { expected_version: timeline.version, caption: "Edited" },
+    );
+    expect(editResponse.status).toBe(200);
+    const edited = await editResponse.json<{ timeline: Timeline }>();
+    expect(edited.timeline).toMatchObject({
+      version: 4,
+      items: [
+        { id: firstItem.id, caption: "Edited" },
+        { id: secondItem.id, caption: "Second" },
+      ],
+    });
+
+    const removeResponse = await request(
+      `/${timeline.id}/items/${secondItem.id}`,
+      "DELETE",
+      { expected_version: edited.timeline.version },
+    );
+    expect(removeResponse.status).toBe(200);
+    const removed = await removeResponse.json<{ timeline: Timeline }>();
+    expect(removed.timeline).toMatchObject({
+      version: 5,
+      items: [{ id: firstItem.id, position: 0, caption: "Edited" }],
+    });
+
+    const orderResponse = await request(`/${timeline.id}/order`, "PUT", {
+      expected_version: removed.timeline.version,
+      item_ids: [firstItem.id],
+    });
+    expect(orderResponse.status).toBe(200);
+    expect(await orderResponse.json<{ timeline: Timeline }>()).toMatchObject({
+      timeline: {
+        version: 6,
+        items: [{ id: firstItem.id, position: 0, caption: "Edited" }],
+      },
+    });
+  });
+
+  it("commits preferred metadata and item writes with empty 204 responses and no full item query", async () => {
+    await ready();
+    let timeline = await append(await create());
+    timeline = await append(timeline);
+    const [firstItem, secondItem] = timeline.items;
+    if (!firstItem || !secondItem) throw new Error("Expected two story items");
+    const initialVersion = timeline.version;
+    let expectedVersion = initialVersion;
+    const capture = captureD1Batches();
+
+    async function expectMinimalWrite(
+      path: string,
+      method: string,
+      body: unknown,
+    ) {
+      const response = await request(path, method, body, session, origin, {
+        Prefer: "return=minimal",
+      });
+      expect.soft(response.status).toBe(204);
+      expect.soft(await response.text()).toBe("");
+      const current = await env.DB.prepare(
+        "SELECT version FROM timelines WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .first<{ version: number }>();
+      expect.soft(current?.version).toBe(expectedVersion + 1);
+      expectedVersion = current?.version ?? expectedVersion;
+    }
+
+    let appendedId = "";
+    try {
+      await expectMinimalWrite(`/${timeline.id}`, "PATCH", {
+        expected_version: expectedVersion,
+        title: "Minimal title",
+      });
+      await expectMinimalWrite(`/${timeline.id}/items`, "POST", {
+        expected_version: expectedVersion,
+        asset_id: "asset_a",
+        caption: "Third",
+      });
+      const appended = await env.DB.prepare(
+        "SELECT id FROM timeline_items WHERE timeline_id = ? AND caption = ?",
+      )
+        .bind(timeline.id, "Third")
+        .first<{ id: string }>();
+      expect(appended).toBeTruthy();
+      appendedId = appended?.id ?? "";
+
+      await expectMinimalWrite(
+        `/${timeline.id}/items/${firstItem.id}`,
+        "PATCH",
+        { expected_version: expectedVersion, caption: "Edited first" },
+      );
+      await expectMinimalWrite(
+        `/${timeline.id}/items/${secondItem.id}`,
+        "DELETE",
+        { expected_version: expectedVersion },
+      );
+      await expectMinimalWrite(`/${timeline.id}/order`, "PUT", {
+        expected_version: expectedVersion,
+        item_ids: [appendedId, firstItem.id],
+      });
+
+      expect.soft(capture.batches).toHaveLength(5);
+      for (const statements of capture.batches) {
+        expect
+          .soft(statements.at(-1))
+          .toMatch(
+            /^SELECT version FROM timelines WHERE id = \? AND owner_id = \?$/,
+          );
+        expect
+          .soft(
+            statements.some((sql) =>
+              /^SELECT \* FROM timelines WHERE id = \? AND EXISTS/.test(sql),
+            ),
+          )
+          .toBe(true);
+        expect
+          .soft(
+            statements.some((sql) =>
+              /^SELECT \* FROM timeline_items WHERE timeline_id = \?/.test(sql),
+            ),
+          )
+          .toBe(false);
+      }
+    } finally {
+      capture.restore();
+    }
+
+    const timelineRow = await env.DB.prepare(
+      "SELECT title, version FROM timelines WHERE id = ?",
+    )
+      .bind(timeline.id)
+      .first<{ title: string; version: number }>();
+    expect(timelineRow).toEqual({
+      title: "Minimal title",
+      version: initialVersion + 5,
+    });
+    const items = await env.DB.prepare(
+      "SELECT id, position, caption FROM timeline_items WHERE timeline_id = ? ORDER BY position, id",
+    )
+      .bind(timeline.id)
+      .all<{ id: string; position: number; caption: string }>();
+    expect(items.results).toEqual([
+      { id: appendedId, position: 0, caption: "Third" },
+      { id: firstItem.id, position: 1, caption: "Edited first" },
+    ]);
+  });
+
+  it("keeps stale preferred writes at 409 without changing timeline or items", async () => {
+    await ready();
+    const timeline = await append(await create());
+    const item = timeline.items[0];
+    if (!item) throw new Error("Expected a story item");
+    const before = await snapshot(timeline.id);
+    const staleWrites: [string, string, unknown][] = [
+      [`/${timeline.id}`, "PATCH", { expected_version: 1, title: "Stale" }],
+      [
+        `/${timeline.id}/items`,
+        "POST",
+        { expected_version: 1, asset_id: "asset_a" },
+      ],
+      [
+        `/${timeline.id}/items/${item.id}`,
+        "PATCH",
+        { expected_version: 1, caption: "Stale" },
+      ],
+      [`/${timeline.id}/items/${item.id}`, "DELETE", { expected_version: 1 }],
+      [
+        `/${timeline.id}/order`,
+        "PUT",
+        { expected_version: 1, item_ids: [item.id] },
+      ],
+    ];
+
+    for (const [path, method, body] of staleWrites) {
+      const response = await request(path, method, body, session, origin, {
+        Prefer: "return=minimal",
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: { code: "CONFLICT" },
+      });
+      expect(await snapshot(timeline.id)).toEqual(before);
+    }
+  });
+
+  it("does not return 204 when a preferred write fails inside its D1 batch", async () => {
+    await ready();
+    const timeline = await create();
+    const before = await snapshot(timeline.id);
+    await env.DB.exec(
+      `CREATE TRIGGER inject_minimal_item_failure BEFORE INSERT ON timeline_items BEGIN SELECT RAISE(ABORT, 'injected_failure'); END;`,
+    );
+
+    const response = await request(
+      `/${timeline.id}/items`,
+      "POST",
+      { expected_version: timeline.version, asset_id: "asset_a" },
+      session,
+      origin,
+      { Prefer: "return=minimal" },
+    );
+    expect(response.status).toBe(500);
+    expect(await snapshot(timeline.id)).toEqual(before);
+  });
+});
 
 describe("Owner-scoped timelines", () => {
   it("creates private stable timelines, paginates without exposing internal state, and hides other owners", async () => {
