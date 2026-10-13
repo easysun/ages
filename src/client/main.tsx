@@ -37,6 +37,7 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [logoutError, setLogoutError] = useState("");
   const [profileRequest, setProfileRequest] = useState({ path: "/api/me" });
   const authGeneration = useRef(0);
   const [authGenerationRevision, setAuthGenerationRevision] = useState(0);
@@ -81,6 +82,7 @@ function App() {
     };
   }, [profileRequest]);
   async function logout() {
+    setLogoutError("");
     authGeneration.current++;
     setAuthGenerationRevision(authGeneration.current);
     try {
@@ -91,7 +93,7 @@ function App() {
       if (!response.ok) throw new Error();
       setProfile(null);
     } catch {
-      setError("Sign out could not be completed. Please try again.");
+      setLogoutError("Sign out could not be completed. Please try again.");
     }
   }
   const generation = authGenerationRevision;
@@ -114,6 +116,11 @@ function App() {
           <span className="private-label">Made to keep</span>
         )}
       </header>
+      {logoutError ? (
+        <p className="error logout-notice" role="alert">
+          {logoutError}
+        </p>
+      ) : null}
       {profile ? (
         <nav className="client-nav" aria-label="Your collections">
           <a

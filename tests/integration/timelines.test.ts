@@ -28,7 +28,7 @@ type Timeline = {
 type OverviewPage = {
   timeline: Omit<Timeline, "items">;
   total_items: number;
-  items: { id: string; position: number }[];
+  items: { id: string; position: number; event_at?: unknown }[];
   next_cursor: string | null;
 };
 type DetailPage = {
@@ -122,7 +122,7 @@ async function snapshot(id: string) {
   ]).then((rows) => rows.map((row) => row.results));
 }
 
-async function seedLargeTimeline(timelineId: string) {
+async function seedLargeTimeline(timelineId: string, count = 10_000) {
   const now = new Date().toISOString();
   await env.DB.prepare(`WITH digits(n) AS (
       VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
@@ -132,13 +132,19 @@ async function seedLargeTimeline(timelineId: string) {
       CROSS JOIN digits hundreds
       CROSS JOIN digits tens
       CROSS JOIN digits ones
+      UNION ALL SELECT 10000
     )
     INSERT INTO timeline_items
-      (id, timeline_id, owner_id, asset_id, position, caption, created_at, updated_at)
+      (id, timeline_id, owner_id, asset_id, position, caption, event_at, created_at, updated_at)
     SELECT ? || '-item-' || printf('%05d', item_number), ?, 'owner_a', 'asset_a',
-      item_number * 3 + 1, printf('Caption %05d', item_number), ?, ?
-    FROM sequence ORDER BY item_number`)
-    .bind(timelineId, timelineId, now, now)
+      item_number * 3 + 1, printf('Caption %05d', item_number),
+      CASE item_number % 3
+        WHEN 0 THEN '{"kind":"date","date":"2024-02-29","time_zone":"Asia/Taipei","calendar":"iso8601"}'
+        WHEN 1 THEN '{"kind":"instant","instant":"2024-01-01T00:30:00+08:00","time_zone":"Asia/Taipei"}'
+        ELSE NULL
+      END, ?, ?
+    FROM sequence WHERE item_number < ? ORDER BY item_number`)
+    .bind(timelineId, timelineId, now, now, count)
     .run();
 }
 
@@ -185,17 +191,28 @@ function captureD1Batches() {
   };
 }
 
-function expectOverviewBatch(sql: string[]) {
+function expectOverviewBatch(
+  sql: string[],
+  projection: "default" | "chronological" = "default",
+) {
   expect(sql).toHaveLength(3);
   expect(sql[0]).toMatch(
     /SELECT \* FROM timelines WHERE id = \? AND owner_id = \?/,
   );
-  expect(sql[1]).toMatch(
-    /SELECT id, position FROM timeline_items\s+WHERE timeline_id = \? AND owner_id = \?/,
+  const columns =
+    projection === "chronological" ? "id, position, event_at" : "id, position";
+  expect(sql[1]).toContain(
+    `SELECT ${columns} FROM timeline_items WHERE timeline_id = ? AND owner_id = ?`,
   );
   expect(sql[2]).toMatch(
     /SELECT COUNT\(\*\) AS total_items FROM timeline_items\s+WHERE timeline_id = \? AND owner_id = \?/,
   );
+}
+
+function decodeReadCursor(cursor: string) {
+  const base64 = cursor.replaceAll("-", "+").replaceAll("_", "/");
+  const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+  return JSON.parse(atob(padded)) as Record<string, unknown>;
 }
 
 function expectDetailBatch(sql: string[]) {
@@ -251,6 +268,21 @@ describe("Paged Timeline reads", () => {
         items: [{ id: timeline.items[0]?.id, position: 4 }],
       });
       expect(first.next_cursor).toBeTruthy();
+      const expectedDefaultCursor = {
+        v: 1,
+        timeline_id: timeline.id,
+        position: 4,
+        id: timeline.items[0]?.id,
+      };
+      expect(decodeReadCursor(first.next_cursor ?? "")).toEqual(
+        expectedDefaultCursor,
+      );
+      expect(first.next_cursor).toBe(
+        btoa(JSON.stringify(expectedDefaultCursor))
+          .replaceAll("+", "-")
+          .replaceAll("/", "_")
+          .replace(/=+$/, ""),
+      );
       expect(Object.keys(first.items[0] ?? {}).sort()).toEqual([
         "id",
         "position",
@@ -347,6 +379,225 @@ describe("Paged Timeline reads", () => {
       );
       expectDetailBatch(capture.batches[5] ?? []);
       expect(capture.batches).toHaveLength(6);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("keeps_default_overview_shape_and_returns_event_at_only_for_chronological_projection", async () => {
+    await ready();
+    await ready("asset_b");
+    await ready("asset_c");
+    let timeline = await append(await create("Moderated story"), "asset_a", {
+      event_at: {
+        kind: "date",
+        date: "2024-02-29",
+        time_zone: "Asia/Taipei",
+        calendar: "iso8601",
+      },
+    });
+    timeline = await append(timeline, "asset_b", {
+      event_at: {
+        kind: "instant",
+        instant: "2024-01-01T00:30:00+08:00",
+        time_zone: "Asia/Taipei",
+      },
+    });
+    timeline = await append(timeline, "asset_c");
+    const dateItem = timeline.items[0];
+    const instantItem = timeline.items[1];
+    const undatedItem = timeline.items[2];
+    if (!dateItem || !instantItem || !undatedItem)
+      throw new Error("Expected date, instant, and undated items");
+
+    await env.DB.prepare("UPDATE timeline_items SET event_at = ? WHERE id = ?")
+      .bind(
+        JSON.stringify({
+          kind: "instant",
+          instant: "2024-01-01T00:30:00+08:00",
+          time_zone: "Asia/Taipei",
+        }),
+        instantItem.id,
+      )
+      .run();
+    await env.DB.prepare(
+      "UPDATE timelines SET moderation_blocked = 1 WHERE id = ?",
+    )
+      .bind(timeline.id)
+      .run();
+
+    const capture = captureD1Batches();
+    try {
+      const defaultResponse = await request(`/${timeline.id}/overview`);
+      expect(defaultResponse.status).toBe(200);
+      expect(defaultResponse.headers.get("Cache-Control")).toContain("private");
+      expect(defaultResponse.headers.get("Cache-Control")).toContain(
+        "no-store",
+      );
+      const defaultPage = await defaultResponse.json<OverviewPage>();
+      expect(Object.keys(defaultPage).sort()).toEqual([
+        "items",
+        "next_cursor",
+        "timeline",
+        "total_items",
+      ]);
+      expect(defaultPage.items).toEqual(
+        timeline.items.map(({ id, position }) => ({ id, position })),
+      );
+      expect(
+        defaultPage.items.every(
+          (item) => Object.keys(item).sort().join(",") === "id,position",
+        ),
+      ).toBe(true);
+
+      const chronologicalResponse = await request(
+        `/${timeline.id}/overview?projection=chronological`,
+      );
+      expect(chronologicalResponse.status).toBe(200);
+      expect(chronologicalResponse.headers.get("Cache-Control")).toContain(
+        "private",
+      );
+      expect(chronologicalResponse.headers.get("Cache-Control")).toContain(
+        "no-store",
+      );
+      const chronologicalPage =
+        await chronologicalResponse.json<OverviewPage>();
+      expect(Object.keys(chronologicalPage).sort()).toEqual([
+        "items",
+        "next_cursor",
+        "timeline",
+        "total_items",
+      ]);
+      expect(chronologicalPage.timeline).toEqual(defaultPage.timeline);
+      expect(chronologicalPage.total_items).toBe(defaultPage.total_items);
+      expect(chronologicalPage.next_cursor).toBeNull();
+      expect(chronologicalPage.items).toEqual([
+        {
+          id: dateItem.id,
+          position: dateItem.position,
+          event_at: {
+            kind: "date",
+            date: "2024-02-29",
+            time_zone: "Asia/Taipei",
+            calendar: "iso8601",
+          },
+        },
+        {
+          id: instantItem.id,
+          position: instantItem.position,
+          event_at: {
+            kind: "instant",
+            instant: "2023-12-31T16:30:00.000Z",
+            time_zone: "Asia/Taipei",
+          },
+        },
+        {
+          id: undatedItem.id,
+          position: undatedItem.position,
+          event_at: null,
+        },
+      ]);
+      expect(
+        chronologicalPage.items.every(
+          (item) =>
+            Object.keys(item).sort().join(",") === "event_at,id,position",
+        ),
+      ).toBe(true);
+      expect(chronologicalPage.timeline).not.toHaveProperty(
+        "moderation_blocked",
+      );
+      expectOverviewBatch(capture.batches[0] ?? []);
+      expectOverviewBatch(capture.batches[1] ?? [], "chronological");
+      expect(capture.batches).toHaveLength(2);
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it("binds_chronological_cursor_to_timeline_projection_and_snapshot_version", async () => {
+    await ready();
+    let timeline = await append(await create("Cursor story"));
+    timeline = await append(timeline);
+    const defaultFirstResponse = await request(
+      `/${timeline.id}/overview?limit=1`,
+    );
+    const defaultFirst = await defaultFirstResponse.json<OverviewPage>();
+    const chronologicalFirstResponse = await request(
+      `/${timeline.id}/overview?projection=chronological&limit=1`,
+    );
+    const chronologicalFirst =
+      await chronologicalFirstResponse.json<OverviewPage>();
+    expect(defaultFirst.next_cursor).toBeTruthy();
+    expect(chronologicalFirst.next_cursor).toBeTruthy();
+    expect(decodeReadCursor(defaultFirst.next_cursor ?? "")).toEqual({
+      v: 1,
+      timeline_id: timeline.id,
+      position: timeline.items[0]?.position,
+      id: timeline.items[0]?.id,
+    });
+    expect(decodeReadCursor(chronologicalFirst.next_cursor ?? "")).toEqual({
+      v: 1,
+      timeline_id: timeline.id,
+      position: timeline.items[0]?.position,
+      id: timeline.items[0]?.id,
+      projection: "chronological",
+    });
+
+    const anotherTimeline = await create("Another story");
+    const invalidPaths = [
+      `/${timeline.id}/overview?projection=unknown`,
+      `/${timeline.id}/overview?projection=chronological&projection=chronological`,
+      `/${timeline.id}/overview?version=${timeline.version}&limit=1&cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+      `/${timeline.id}/overview?cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+      `/${timeline.id}/overview?projection=chronological&version=${timeline.version}&limit=1&cursor=${encodeURIComponent(defaultFirst.next_cursor ?? "")}`,
+      `/${timeline.id}/overview?projection=chronological&cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+      `/${timeline.id}/overview?projection=chronological&from_position=0&from_id=${timeline.items[0]?.id}`,
+      `/${timeline.id}/items?version=${timeline.version}&limit=1&cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+      `/${anotherTimeline.id}/overview?projection=chronological&version=${anotherTimeline.version}&cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+    ];
+    for (const path of invalidPaths) {
+      const response = await request(path);
+      expect(response.status, path).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: "INVALID_REQUEST" },
+      });
+    }
+
+    const capture = captureD1Batches();
+    try {
+      const foreignOwner = await request(
+        `/${timeline.id}/overview?projection=chronological&version=${timeline.version}`,
+        "GET",
+        undefined,
+        other,
+      );
+      expect(foreignOwner.status).toBe(404);
+      expect(foreignOwner.headers.get("Cache-Control")).toContain("private");
+      expect(foreignOwner.headers.get("Cache-Control")).toContain("no-store");
+
+      await env.DB.prepare(
+        "UPDATE timelines SET version = version + 1 WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .run();
+      const staleContinuation = await request(
+        `/${timeline.id}/overview?projection=chronological&version=${timeline.version}&limit=1&cursor=${encodeURIComponent(chronologicalFirst.next_cursor ?? "")}`,
+      );
+      await expectConflictWithoutRows(staleContinuation);
+      expectOverviewBatch(capture.batches[1] ?? [], "chronological");
+
+      await env.DB.prepare(
+        "UPDATE timelines SET version = version + 1 WHERE id = ?",
+      )
+        .bind(timeline.id)
+        .run();
+      const staleLowerBound = await request(
+        `/${timeline.id}/overview?projection=chronological&version=${timeline.version + 1}&from_position=${timeline.items[0]?.position}&from_id=${timeline.items[0]?.id}`,
+      );
+      await expectConflictWithoutRows(staleLowerBound);
+      expectOverviewBatch(capture.batches[2] ?? [], "chronological");
+      expectOverviewBatch(capture.batches[0] ?? [], "chronological");
+      expect(capture.batches).toHaveLength(3);
     } finally {
       capture.restore();
     }
@@ -551,6 +802,113 @@ describe("Paged Timeline reads", () => {
     const detail = await detailResponse.json<DetailPage>();
     expect(detail.items).toHaveLength(100);
     expect(detail.next_cursor).toBeTruthy();
+  });
+
+  it("pages_all_10001_chronological_rows_without_a_10000_cap", async () => {
+    await ready();
+    const timeline = await create("Large chronological story");
+    await seedLargeTimeline(timeline.id, 10_001);
+    const allItems: { id: string; position: number; event_at: unknown }[] = [];
+    const pageSizes: number[] = [];
+    const cursorNullByPage: boolean[] = [];
+    let version: number | undefined;
+    let cursor: string | null = null;
+    let dateCount = 0;
+    let instantCount = 0;
+    let undatedCount = 0;
+    const capture = captureD1Batches();
+    try {
+      do {
+        const query = new URLSearchParams({
+          limit: "1000",
+          projection: "chronological",
+        });
+        if (version !== undefined) query.set("version", String(version));
+        if (cursor) query.set("cursor", cursor);
+        const response = await request(`/${timeline.id}/overview?${query}`);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("Cache-Control")).toContain("private");
+        expect(response.headers.get("Cache-Control")).toContain("no-store");
+        const page = await response.json<OverviewPage>();
+        version ??= page.timeline.version;
+        expect(page.timeline.version).toBe(version);
+        expect(page.total_items).toBe(10_001);
+        expect(page.items.length).toBeLessThanOrEqual(1000);
+        pageSizes.push(page.items.length);
+        cursorNullByPage.push(page.next_cursor === null);
+        for (const item of page.items) {
+          const index = allItems.length;
+          expect(item.id).toBe(
+            `${timeline.id}-item-${String(index).padStart(5, "0")}`,
+          );
+          expect(item.position).toBe(index * 3 + 1);
+          expect(Object.keys(item).sort()).toEqual([
+            "event_at",
+            "id",
+            "position",
+          ]);
+          if (index % 3 === 0) {
+            expect(item.event_at).toEqual({
+              kind: "date",
+              date: "2024-02-29",
+              time_zone: "Asia/Taipei",
+              calendar: "iso8601",
+            });
+            dateCount++;
+          } else if (index % 3 === 1) {
+            expect(item.event_at).toEqual({
+              kind: "instant",
+              instant: "2023-12-31T16:30:00.000Z",
+              time_zone: "Asia/Taipei",
+            });
+            instantCount++;
+          } else {
+            expect(item.event_at).toBeNull();
+            undatedCount++;
+          }
+          allItems.push(item as (typeof allItems)[number]);
+        }
+        cursor = page.next_cursor;
+        if (pageSizes.length < 11) expect(cursor).toBeTruthy();
+        else expect(cursor).toBeNull();
+      } while (cursor);
+
+      expect(pageSizes).toEqual([
+        1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1,
+      ]);
+      expect(cursorNullByPage).toEqual([
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+      ]);
+      expect(allItems).toHaveLength(10_001);
+      expect(new Set(allItems.map((item) => item.id)).size).toBe(10_001);
+      expect(dateCount).toBe(3334);
+      expect(instantCount).toBe(3334);
+      expect(undatedCount).toBe(3333);
+      expect(allItems.at(-1)).toMatchObject({
+        id: `${timeline.id}-item-10000`,
+        position: 30_001,
+        event_at: {
+          kind: "instant",
+          instant: "2023-12-31T16:30:00.000Z",
+          time_zone: "Asia/Taipei",
+        },
+      });
+      expect(capture.batches).toHaveLength(11);
+      for (const batch of capture.batches)
+        expectOverviewBatch(batch, "chronological");
+    } finally {
+      capture.restore();
+    }
   });
 });
 
