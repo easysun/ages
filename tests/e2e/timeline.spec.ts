@@ -518,7 +518,7 @@ test("drafts follow stable item IDs through a remote reorder and conflict refres
   const moved = page.getByRole("group", { name: "Moment 250", exact: true });
   const caption = moved.getByRole("textbox", { name: "Caption" });
   await expect(caption).toHaveValue("Follow this item");
-  await expect(caption).toBeFocused();
+  await expect(moved.getByLabel("Time zone")).toBeFocused();
   await expect(moved.getByLabel("Event instant")).toHaveValue(
     "2026-10-04T10:30:00+08:00",
   );
@@ -541,6 +541,375 @@ test("drafts follow stable item IDs through a remote reorder and conflict refres
   expect(Date.parse(storedMoment.event_at.instant)).toBe(
     Date.parse("2026-10-04T10:30:00+08:00"),
   );
+});
+
+test("caption-only conflict drafts rebase clean event fields to the canonical instant", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "instant",
+          instant: "2024-01-02T03:04:05+00:00",
+          time_zone: "UTC",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
+
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 2,
+        event_at: {
+          kind: "instant",
+          instant: "2025-07-16T15:30:00+08:00",
+          time_zone: "Asia/Taipei",
+        },
+      },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+
+  const instant = moment.getByLabel("Event instant");
+  await expect
+    .poll(async () => Date.parse(await instant.inputValue()))
+    .toBe(Date.parse("2025-07-16T07:30:00.000Z"));
+  await expect(moment.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+  await moment.getByLabel("Time zone").fill("Asia/Tokyo");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0]).toMatchObject({
+    caption: "Local caption",
+    event_at: { time_zone: "Asia/Tokyo" },
+  });
+  expect(Date.parse(stored.timeline.items[0].event_at.instant)).toBe(
+    Date.parse("2025-07-16T07:30:00.000Z"),
+  );
+});
+
+test("event-only conflict drafts rebase clean captions before a later event edit", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Time zone").fill("Asia/Taipei");
+
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: { expected_version: 2, caption: "Remote caption" },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  const caption = moment.getByRole("textbox", { name: "Caption" });
+  await expect(caption).toHaveValue("Remote caption");
+
+  await moment.getByLabel("Time zone").fill("Asia/Tokyo");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0]).toMatchObject({
+    caption: "Remote caption",
+    event_at: {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Tokyo",
+    },
+  });
+});
+
+test("confirmed removal after caption-only conflict does not resurrect its clean event baseline", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 2,
+        event_at: {
+          kind: "date",
+          date: "2025-07-16",
+          time_zone: "Asia/Taipei",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(moment.getByLabel("Event date", { exact: true })).toHaveValue(
+    "2025-07-16",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await moment.getByRole("button", { name: "Remove moment" }).click();
+  await expect(page.locator(`#item-${itemId}-caption`)).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Unresolved drafts" }),
+  ).toHaveCount(0);
+});
+
+test("confirmed removal after event-only conflict does not resurrect its clean caption baseline", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const initial = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: {
+        expected_version: 1,
+        event_at: {
+          kind: "date",
+          date: "2024-02-29",
+          time_zone: "UTC",
+          calendar: "iso8601",
+        },
+      },
+    },
+  );
+  expect(initial.ok()).toBe(true);
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Time zone").fill("Asia/Taipei");
+  const remote = await context.request.patch(
+    `/api/timelines/${id}/items/${itemId}`,
+    {
+      headers: { Origin: e2eOrigin },
+      data: { expected_version: 2, caption: "Remote caption" },
+    },
+  );
+  expect(remote.ok()).toBe(true);
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(moment.getByRole("textbox", { name: "Caption" })).toHaveValue(
+    "Remote caption",
+  );
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await moment.getByRole("button", { name: "Remove moment" }).click();
+  await expect(page.locator(`#item-${itemId}-caption`)).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Unresolved drafts" }),
+  ).toHaveCount(0);
+});
+
+test("fields typed during pending removal remain unresolved until explicitly handled", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 2);
+  const cleanRemoval = itemIds[0];
+  const confirmedRemoval = itemIds[1];
+  if (!cleanRemoval || !confirmedRemoval)
+    throw new Error("The seeded timeline items are missing.");
+  const holds = new Map([
+    [cleanRemoval, deferredSignal()],
+    [confirmedRemoval, deferredSignal()],
+  ]);
+  for (const [itemId, hold] of holds) {
+    await page.route(
+      `**/api/timelines/${id}/items/${itemId}`,
+      async (route) => {
+        if (route.request().method() !== "DELETE") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        hold.signal();
+        await hold.promise;
+        await route.fulfill({ response });
+      },
+    );
+  }
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Remove moment" }).click();
+  await holds.get(cleanRemoval)?.started;
+  await first
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Typed during clean removal");
+  holds.get(cleanRemoval)?.release();
+  const unresolved = page.getByRole("region", { name: "Unresolved drafts" });
+  await expect(unresolved).toContainText("Typed during clean removal");
+
+  const second = page.getByRole("group", { name: "Moment 1", exact: true });
+  await second
+    .getByRole("textbox", { name: "Caption" })
+    .fill("Confirmed draft before removal");
+  await second.getByLabel("Date type").selectOption("date");
+  await second.getByLabel("Event date", { exact: true }).fill("2024-02-29");
+  page.once("dialog", (dialog) => dialog.accept());
+  await second.getByRole("button", { name: "Remove moment" }).click();
+  await holds.get(confirmedRemoval)?.started;
+  await second
+    .getByRole("textbox", { name: "Caption" })
+    .fill("New caption after confirmation");
+  await second.getByLabel("Event date", { exact: true }).fill("2025-07-16");
+  holds.get(confirmedRemoval)?.release();
+  await expect(unresolved).toContainText("New caption after confirmation");
+  await expect(unresolved).toContainText("2025-07-16");
+  await expect(unresolved).toContainText("Typed during clean removal");
+  const saveDraftButtons = unresolved.getByRole("button", {
+    name: "Save draft",
+  });
+  await expect(saveDraftButtons).toHaveCount(2);
+  await expect(saveDraftButtons.nth(0)).toBeDisabled();
+  await expect(saveDraftButtons.nth(1)).toBeDisabled();
+});
+
+test("a non-caption focused field survives Enter submission and a cross-window conflict", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByLabel("Date type").selectOption("instant");
+  await first.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
+  const zone = first.getByLabel("Time zone");
+  await zone.fill("Asia/Taipei");
+
+  const reordered = [...itemIds.slice(1), itemIds[0] as string];
+  const external = await context.request.put(`/api/timelines/${id}/order`, {
+    headers: { Origin: e2eOrigin },
+    data: { expected_version: 1, item_ids: reordered },
+  });
+  expect(external.ok()).toBe(true);
+  await zone.press("Enter");
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  const moved = page.getByRole("group", { name: "Moment 250", exact: true });
+  await expect(moved.getByLabel("Time zone")).toHaveValue("Asia/Taipei");
+  await expect(moved.getByLabel("Time zone")).toBeFocused();
+});
+
+test("a held non-caption save preserves newer typing and restores that field focus", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1);
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded timeline item is missing.");
+  const response = deferredSignal();
+  await page.route(`**/api/timelines/${id}/items/${itemId}`, async (route) => {
+    if (route.request().method() !== "PATCH") {
+      await route.continue();
+      return;
+    }
+    const result = await route.fetch();
+    response.signal();
+    await response.promise;
+    await route.fulfill({ response: result });
+  });
+  await page.goto(`/timelines/${id}`);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Date type").selectOption("instant");
+  await moment.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
+  const zone = moment.getByLabel("Time zone");
+  await zone.fill("Asia/Taipei");
+  await zone.press("Enter");
+  await response.started;
+  await zone.fill("Asia/Tokyo");
+  response.release();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  await expect(zone).toHaveValue("Asia/Tokyo");
+  await expect(zone).toBeFocused();
+  await zone.press("Enter");
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.items[0].event_at.time_zone).toBe("Asia/Tokyo");
 });
 
 test("a remotely removed dirty moment remains copyable or discardable", async ({

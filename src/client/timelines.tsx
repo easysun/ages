@@ -546,11 +546,15 @@ function TimelineEditor({
   useEffect(() => {
     if (!focusRequestVersion || !detailsReady || !pendingFocus.current) return;
     const focus = pendingFocus.current;
-    const target = document.getElementById(`item-${focus.id}-${focus.field}`);
-    if (target instanceof HTMLElement) {
-      pendingFocus.current = null;
-      target.focus();
-    }
+    const focusedField = document.getElementById(
+      `item-${focus.id}-${focus.field}`,
+    );
+    const target =
+      focusedField instanceof HTMLElement
+        ? focusedField
+        : document.getElementById(`item-${focus.id}-caption`);
+    pendingFocus.current = null;
+    if (target instanceof HTMLElement) target.focus();
   }, [detailsReady, focusRequestVersion]);
 
   useEffect(() => {
@@ -658,23 +662,40 @@ function TimelineEditor({
     }
   }
 
+  function baselineDraft(item: ItemDetail): TimelineDraft {
+    return {
+      caption: item.caption,
+      eventKind: item.event_at?.kind ?? "none",
+      eventValue:
+        item.event_at?.kind === "date"
+          ? item.event_at.date
+          : item.event_at?.kind === "instant"
+            ? item.event_at.instant
+            : "",
+      timeZone:
+        item.event_at?.time_zone ??
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      dirty: { caption: false, event: false },
+    };
+  }
+
+  function rebaseDraft(
+    item: ItemDetail,
+    draft: TimelineDraft | undefined,
+  ): TimelineDraft {
+    const baseline = baselineDraft(item);
+    if (!draft) return baseline;
+    return {
+      caption: draft.dirty.caption ? draft.caption : baseline.caption,
+      eventKind: draft.dirty.event ? draft.eventKind : baseline.eventKind,
+      eventValue: draft.dirty.event ? draft.eventValue : baseline.eventValue,
+      timeZone: draft.dirty.event ? draft.timeZone : baseline.timeZone,
+      dirty: draft.dirty,
+    };
+  }
+
   function draftFor(item: ItemDetail): TimelineDraft {
-    return (
-      drafts[item.id] ?? {
-        caption: item.caption,
-        eventKind: item.event_at?.kind ?? "none",
-        eventValue:
-          item.event_at?.kind === "date"
-            ? item.event_at.date
-            : item.event_at?.kind === "instant"
-              ? item.event_at.instant
-              : "",
-        timeZone:
-          item.event_at?.time_zone ??
-          Intl.DateTimeFormat().resolvedOptions().timeZone,
-        dirty: { caption: false, event: false },
-      }
-    );
+    return rebaseDraft(item, drafts[item.id]);
   }
 
   function changeDraft(
@@ -689,20 +710,7 @@ function TimelineEditor({
       return next;
     });
     setDrafts((current) => {
-      const previous = current[item.id] ?? {
-        caption: item.caption,
-        eventKind: item.event_at?.kind ?? "none",
-        eventValue:
-          item.event_at?.kind === "date"
-            ? item.event_at.date
-            : item.event_at?.kind === "instant"
-              ? item.event_at.instant
-              : "",
-        timeZone:
-          item.event_at?.time_zone ??
-          Intl.DateTimeFormat().resolvedOptions().timeZone,
-        dirty: { caption: false, event: false },
-      };
+      const previous = rebaseDraft(item, current[item.id]);
       return {
         ...current,
         [item.id]: {
@@ -841,14 +849,22 @@ function TimelineEditor({
     item: ItemDetail,
     change: Record<string, unknown>,
     submitted: TimelineDraft,
+    focusedField: string,
   ) {
-    requestFieldFocus(item.id, "caption");
+    requestFieldFocus(item.id, focusedField);
     const saved = await mutation(
       `/items/${encodeURIComponent(item.id)}`,
       "PATCH",
       change,
       false,
     );
+    const activeElement = document.activeElement;
+    const fieldPrefix = `item-${item.id}-`;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement.id.startsWith(fieldPrefix)
+    )
+      requestFieldFocus(item.id, activeElement.id.slice(fieldPrefix.length));
     if (!saved) return false;
     const nextVersion = writeVersion.current;
     if (nextVersion === null) return false;
@@ -1036,9 +1052,26 @@ function TimelineEditor({
     )
       return;
     setDrafts((current) => {
-      const next = { ...current };
-      delete next[item.id];
-      return next;
+      const latest = current[item.id];
+      if (!latest) return current;
+      const changedCaption =
+        latest.dirty.caption && latest.caption !== draft.caption;
+      const changedEvent = latest.dirty.event && !sameEventDraft(latest, draft);
+      if (!changedCaption && !changedEvent) {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      }
+      return {
+        ...current,
+        [item.id]: {
+          caption: changedCaption ? latest.caption : "",
+          eventKind: changedEvent ? latest.eventKind : "none",
+          eventValue: changedEvent ? latest.eventValue : "",
+          timeZone: latest.timeZone,
+          dirty: { caption: changedCaption, event: changedEvent },
+        },
+      };
     });
     setItemNotices((current) => {
       const next = { ...current };
@@ -1305,8 +1338,8 @@ function TimelineEditor({
                           [item.id]: value,
                         }))
                       }
-                      save={(change, submitted) =>
-                        saveMoment(item, change, submitted)
+                      save={(change, submitted, focusedField) =>
+                        saveMoment(item, change, submitted, focusedField)
                       }
                       move={(direction) => void move(item.id, direction)}
                       remove={() => void removeMoment(item)}
@@ -1394,6 +1427,7 @@ function Moment({
   save: (
     change: Record<string, unknown>,
     submitted: TimelineDraft,
+    focusedField: string,
   ) => Promise<boolean>;
   move: (direction: number) => void;
   remove: () => void;
@@ -1402,6 +1436,7 @@ function Moment({
   const mediaPlaceholder = useRef<HTMLDivElement>(null);
   const [mediaInBand, setMediaInBand] = useState(false);
   const [explicitMediaLoad, setExplicitMediaLoad] = useState(false);
+  const lastFocusedField = useRef("caption");
   const assetId = asset?.id;
   const observerSupported =
     typeof window !== "undefined" &&
@@ -1456,7 +1491,7 @@ function Moment({
       setNotice("Moment is up to date");
       return;
     }
-    await save(change, draft);
+    await save(change, draft, lastFocusedField.current);
   }
   const field = `item-${item.id}`;
   const hasDimensions =
@@ -1515,7 +1550,15 @@ function Moment({
           This caption and date belong to this story. The original media stays
           unchanged.
         </p>
-        <form onSubmit={submit}>
+        <form
+          onSubmit={submit}
+          onFocusCapture={(event) => {
+            const target = event.target;
+            const prefix = `${field}-`;
+            if (target instanceof HTMLElement && target.id.startsWith(prefix))
+              lastFocusedField.current = target.id.slice(prefix.length);
+          }}
+        >
           <label htmlFor={`${field}-caption`}>Caption</label>
           <textarea
             id={`${field}-caption`}
