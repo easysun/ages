@@ -24,7 +24,7 @@ After a page is fully classified, store its cursor in the existing `LINK_CACHE` 
 
 Reconciliation runs last and its failures are caught without blocking existing cleanup. Emit a generic failure event on every failed invocation; omit exception text, keys, cursors, owner IDs, filenames, and other user metadata. On D1 classification or KV checkpoint failure, do not advance; the page is safe to repeat. If listing with a saved cursor fails, best-effort delete that checkpoint and stop without a same-invocation retry. This avoids guessing provider error strings and caps list calls at one per invocation; persistent failures remain visible as repeated generic events.
 
-Successful diagnostics are page-local aggregate counts and byte totals; overlap or retries can repeat them, so they are not cumulative unique-object totals. Do not persist or expose candidate key lists. The feature adds no migration, binding, dependency, API route, object deletion, Asset mutation, or quota adjustment.
+`objects_scanned` and `bytes_scanned` count all listed objects and their sizes, including skipped timestamps. `objects_eligible` counts keys submitted to D1 classification; `missing_asset_bytes` sums only eligible objects without an Asset row. Successful diagnostics are page-local aggregate counts and byte totals; overlap or retries can repeat them, so they are not cumulative unique-object totals. Do not persist or expose candidate key lists. The feature adds no migration, binding, dependency, API route, object deletion, Asset mutation, or quota adjustment.
 
 ## Verification
 
