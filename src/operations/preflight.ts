@@ -25,6 +25,7 @@ const requiredSecrets = [
 ];
 const dnsName =
   /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])$/;
+const dnsLabel = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 function exactHttpsOrigin(value: unknown, name: string) {
   let url: URL | undefined;
@@ -57,6 +58,14 @@ function withinDomain(hostname: string, domain: string) {
   return hostname === domain || hostname.endsWith(`.${domain}`);
 }
 
+function isWorkersDevHostname(hostname: string) {
+  return hostname === "workers.dev" || hostname.endsWith(".workers.dev");
+}
+
+export type TrackingRoute =
+  | { kind: "custom-domain" }
+  | { kind: "workers-dev"; accountSubdomain: string };
+
 export type ReleaseTarget = {
   environment: string;
   accountId: string;
@@ -68,20 +77,19 @@ export type ReleaseTarget = {
   trackingOrigin: string;
   appRegistrableDomain: string;
   trackingRegistrableDomain: string;
+  trackingRoute: TrackingRoute;
   trackingWorkerName: string;
   trackingDatabaseId: string;
   googleClientIdConfigured: boolean;
 };
 
-function validateTrackingWorkerTarget(
+function validateTrackingRoute(
   target: Pick<
     ReleaseTarget,
     | "environment"
-    | "accountId"
     | "workerName"
-    | "databaseId"
-    | "appOrigin"
     | "trackingOrigin"
+    | "trackingRegistrableDomain"
   >,
   configuration: unknown,
 ) {
@@ -97,6 +105,78 @@ function validateTrackingWorkerTarget(
     workerName !== target.workerName,
     "The tracking Worker must have a different name from the application Worker.",
   );
+
+  const routeSources = [config, selected];
+  const workersDev = selected.workers_dev ?? config.workers_dev;
+  if (workersDev === true) {
+    requireValue(
+      selected.workers_dev === true || config.workers_dev === true,
+      "Set workers_dev:true explicitly for workers.dev tracking mode.",
+    );
+    requireValue(
+      (selected.preview_urls ?? config.preview_urls) === false &&
+        (selected.preview_urls === false || config.preview_urls === false),
+      "Set preview_urls:false explicitly for workers.dev tracking mode.",
+    );
+    requireValue(
+      routeSources.every(
+        (source) =>
+          !Object.hasOwn(source, "route") &&
+          (!Object.hasOwn(source, "routes") ||
+            (Array.isArray(source.routes) && source.routes.length === 0)),
+      ),
+      "The workers.dev tracking Worker must not declare custom or legacy routes.",
+    );
+    const trackingUrl = exactHttpsOrigin(
+      target.trackingOrigin,
+      "TRACKING_ORIGIN",
+    );
+    const labels = trackingUrl.hostname.split(".");
+    const accountSubdomain = labels[1] ?? "";
+    requireValue(
+      trackingUrl.port === "" &&
+        labels.length === 4 &&
+        labels[0] === workerName &&
+        dnsLabel.test(accountSubdomain) &&
+        labels[2] === "workers" &&
+        labels[3] === "dev",
+      "TRACKING_ORIGIN must be exactly <tracking-worker>.<account>.workers.dev.",
+    );
+    requireValue(
+      target.trackingRegistrableDomain === `${accountSubdomain}.workers.dev`,
+      "TRACKING_REGISTRABLE_DOMAIN must exactly match the workers.dev account subdomain.",
+    );
+    return {
+      trackingWorkerName: workerName,
+      trackingRoute: { kind: "workers-dev", accountSubdomain } as const,
+    };
+  }
+
+  requireValue(
+    !isWorkersDevHostname(new URL(target.trackingOrigin).hostname),
+    "Set workers_dev:true explicitly for workers.dev tracking mode.",
+  );
+  return {
+    trackingWorkerName: workerName,
+    trackingRoute: { kind: "custom-domain" } as const,
+  };
+}
+
+function validateTrackingWorkerTarget(
+  target: Pick<
+    ReleaseTarget,
+    | "environment"
+    | "accountId"
+    | "workerName"
+    | "databaseId"
+    | "appOrigin"
+    | "trackingOrigin"
+  >,
+  configuration: unknown,
+  routeTarget: Pick<ReleaseTarget, "trackingWorkerName" | "trackingRoute">,
+) {
+  const config = record(configuration);
+  const selected = record(record(config.env)[target.environment]);
   requireValue(
     (selected.main ?? config.main) === "src/tracking/index.ts",
     "Preserve the tracking Worker entry point src/tracking/index.ts.",
@@ -158,26 +238,83 @@ function validateTrackingWorkerTarget(
     trackingDatabaseId === target.databaseId,
     "The tracking Worker D1 binding must match the ticket database.",
   );
+  if (routeTarget.trackingRoute.kind === "custom-domain") {
+    requireValue(
+      (selected.workers_dev ?? config.workers_dev) === false,
+      "Set workers_dev:false for custom-domain tracking mode or workers_dev:true for workers.dev tracking mode.",
+    );
+    const routeSources = [config, selected];
+    const hasLegacyRoute = routeSources.some((source) =>
+      Object.hasOwn(source, "route"),
+    );
+    const routes = entries(selected.routes ?? config.routes);
+    const routed =
+      !hasLegacyRoute &&
+      routes.length === 1 &&
+      routes[0]?.custom_domain === true &&
+      routes[0]?.pattern === new URL(target.trackingOrigin).hostname;
+    requireValue(
+      routed,
+      "The tracking Worker must declare only the exact tracking custom-domain route or use an explicit workers_dev:true origin.",
+    );
+  }
+  return {
+    trackingDatabaseId,
+    ...routeTarget,
+  };
+}
+
+function validateWorkersDevAppTarget(
+  configuration: RecordValue,
+  selected: RecordValue,
+  appUrl: URL,
+  appRegistrableDomain: string,
+  accountSubdomain: string,
+) {
+  const sources = [configuration, selected];
+  const accountDomain = `${accountSubdomain}.workers.dev`;
   requireValue(
-    (selected.workers_dev ?? config.workers_dev) === false,
-    "Disable workers.dev for the tracking Worker.",
+    withinDomain(appUrl.hostname, appRegistrableDomain) &&
+      !isWorkersDevHostname(appUrl.hostname) &&
+      !isWorkersDevHostname(appRegistrableDomain) &&
+      !withinDomain(appUrl.hostname, accountDomain) &&
+      !withinDomain(appRegistrableDomain, accountDomain),
+    "APP_ORIGIN must belong to its custom domain outside workers.dev.",
   );
-  const trackingHostname = new URL(target.trackingOrigin).hostname;
-  const routeSources = [config, selected];
-  const hasLegacyRoute = routeSources.some((source) =>
-    Object.hasOwn(source, "route"),
-  );
-  const routes = entries(selected.routes ?? config.routes);
-  const routed =
-    !hasLegacyRoute &&
-    routes.length === 1 &&
-    routes[0]?.custom_domain === true &&
-    routes[0]?.pattern === trackingHostname;
+
+  const workersDev = selected.workers_dev ?? configuration.workers_dev;
+  const previewUrls = selected.preview_urls ?? configuration.preview_urls;
   requireValue(
-    routed,
-    "The tracking Worker must declare only the exact tracking custom-domain route.",
+    workersDev === false &&
+      (selected.workers_dev === false || configuration.workers_dev === false) &&
+      previewUrls === false &&
+      (selected.preview_urls === false || configuration.preview_urls === false),
+    "The application Worker must explicitly set workers_dev:false and preview_urls:false.",
   );
-  return { trackingWorkerName: workerName, trackingDatabaseId };
+
+  const expectedRoute = (value: unknown) => {
+    const route = record(value);
+    return route.custom_domain === true && route.pattern === appUrl.hostname;
+  };
+  requireValue(
+    sources.every(
+      (source) =>
+        !Object.hasOwn(source, "route") &&
+        (!Object.hasOwn(source, "routes") ||
+          (Array.isArray(source.routes) &&
+            (source.routes.length === 0 ||
+              (source.routes.length === 1 &&
+                expectedRoute(source.routes[0]))))),
+    ),
+    "Use only the exact application custom-domain route in workers.dev tracking mode.",
+  );
+  const effectiveRoutes = selected.routes ?? configuration.routes;
+  requireValue(
+    Array.isArray(effectiveRoutes) &&
+      effectiveRoutes.length === 1 &&
+      expectedRoute(effectiveRoutes[0]),
+    "Use only the exact application custom-domain route in workers.dev tracking mode.",
+  );
 }
 
 export function validateReleaseTarget(
@@ -261,30 +398,56 @@ export function validateReleaseTarget(
     url.origin !== trackingUrl.origin,
     "APP_ORIGIN and TRACKING_ORIGIN must use different origins.",
   );
-  requireValue(
-    !withinDomain(appRegistrableDomain, trackingRegistrableDomain) &&
-      !withinDomain(trackingRegistrableDomain, appRegistrableDomain),
-    "Use separate registrable domains for APP and tracking.",
-  );
-  requireValue(
-    withinDomain(url.hostname, appRegistrableDomain),
-    "APP_ORIGIN must belong to APP_REGISTRABLE_DOMAIN.",
-  );
-  requireValue(
-    withinDomain(trackingUrl.hostname, trackingRegistrableDomain),
-    "TRACKING_ORIGIN must belong to TRACKING_REGISTRABLE_DOMAIN.",
-  );
-  const workersDev = selected.workers_dev ?? config.workers_dev;
-  const routed = entries(selected.routes ?? config.routes).some(
-    (route) => route.custom_domain === true && route.pattern === url.hostname,
-  );
-  requireValue(
-    routed ||
-      (workersDev === true &&
-        url.hostname.startsWith(`${workerName}.`) &&
-        url.hostname.endsWith(".workers.dev")),
-    "APP_ORIGIN needs an exact custom domain route or matching workers.dev route.",
-  );
+  const target = {
+    environment,
+    accountId,
+    workerName,
+    databaseId,
+    bucketName,
+    namespaceId,
+    appOrigin: url.origin,
+    trackingOrigin: trackingUrl.origin,
+    appRegistrableDomain,
+    trackingRegistrableDomain,
+    googleClientIdConfigured:
+      typeof vars.GOOGLE_CLIENT_ID === "string" &&
+      vars.GOOGLE_CLIENT_ID.trim().length > 0,
+  };
+  const routeTarget = validateTrackingRoute(target, trackingConfiguration);
+  if (routeTarget.trackingRoute.kind === "workers-dev") {
+    validateWorkersDevAppTarget(
+      config,
+      selected,
+      url,
+      appRegistrableDomain,
+      routeTarget.trackingRoute.accountSubdomain,
+    );
+  } else {
+    requireValue(
+      !withinDomain(appRegistrableDomain, trackingRegistrableDomain) &&
+        !withinDomain(trackingRegistrableDomain, appRegistrableDomain),
+      "Use separate registrable domains for APP and tracking.",
+    );
+    requireValue(
+      withinDomain(url.hostname, appRegistrableDomain),
+      "APP_ORIGIN must belong to APP_REGISTRABLE_DOMAIN.",
+    );
+    requireValue(
+      withinDomain(trackingUrl.hostname, trackingRegistrableDomain),
+      "TRACKING_ORIGIN must belong to TRACKING_REGISTRABLE_DOMAIN.",
+    );
+    const workersDev = selected.workers_dev ?? config.workers_dev;
+    const routed = entries(selected.routes ?? config.routes).some(
+      (route) => route.custom_domain === true && route.pattern === url.hostname,
+    );
+    requireValue(
+      routed ||
+        (workersDev === true &&
+          url.hostname.startsWith(`${workerName}.`) &&
+          url.hostname.endsWith(".workers.dev")),
+      "APP_ORIGIN needs an exact custom domain route or matching workers.dev route.",
+    );
+  }
   const assets = record(selected.assets ?? config.assets);
   requireValue(
     assets.directory === "./dist/client",
@@ -332,24 +495,14 @@ export function validateReleaseTarget(
       !entries(config.kv_namespaces).some((row) => row.id === namespaceId),
     "Environment isolation must exclude local bindings.",
   );
-  const target = {
-    environment,
-    accountId,
-    workerName,
-    databaseId,
-    bucketName,
-    namespaceId,
-    appOrigin: url.origin,
-    trackingOrigin: trackingUrl.origin,
-    appRegistrableDomain,
-    trackingRegistrableDomain,
-    googleClientIdConfigured:
-      typeof vars.GOOGLE_CLIENT_ID === "string" &&
-      vars.GOOGLE_CLIENT_ID.trim().length > 0,
-  };
+  const trackingTarget = validateTrackingWorkerTarget(
+    target,
+    trackingConfiguration,
+    routeTarget,
+  );
   return {
     ...target,
-    ...validateTrackingWorkerTarget(target, trackingConfiguration),
+    ...trackingTarget,
   };
 }
 
@@ -386,6 +539,50 @@ export async function verifyReleaseResources(
     } catch {
       throw new Error(`Could not verify ${label}; deployment is blocked.`);
     }
+  }
+  if (target.trackingRoute.kind === "workers-dev") {
+    const accountSubdomain = await read(
+      "/workers/subdomain",
+      "workers.dev account subdomain",
+    );
+    const liveSubdomain = record(accountSubdomain.result).subdomain;
+    requireValue(
+      typeof liveSubdomain === "string" &&
+        dnsLabel.test(liveSubdomain) &&
+        liveSubdomain === target.trackingRoute.accountSubdomain,
+      "The live workers.dev account subdomain does not match TRACKING_ORIGIN; deployment is blocked.",
+    );
+
+    const trackingSubdomain = await read(
+      `/workers/scripts/${encodeURIComponent(target.trackingWorkerName)}/subdomain`,
+      "tracking workers.dev URL",
+    );
+    const trackingSettings = record(trackingSubdomain.result);
+    requireValue(
+      trackingSettings.enabled === true &&
+        trackingSettings.previews_enabled === false,
+      "The tracking workers.dev URL must be enabled with Preview URLs disabled.",
+    );
+
+    const appSubdomain = await read(
+      `/workers/scripts/${encodeURIComponent(target.workerName)}/subdomain`,
+      "application workers.dev URL",
+    );
+    const appSettings = record(appSubdomain.result);
+    requireValue(
+      appSettings.enabled === false && appSettings.previews_enabled === false,
+      "The application workers.dev URL and Preview URLs must both be disabled.",
+    );
+
+    const trackingSecrets = await read(
+      `/workers/scripts/${encodeURIComponent(target.trackingWorkerName)}/secrets`,
+      "tracking Worker secret names",
+    );
+    requireValue(
+      Array.isArray(trackingSecrets.result) &&
+        trackingSecrets.result.length === 0,
+      "The tracking Worker secret names must be empty; deployment is blocked.",
+    );
   }
   const database = await read(
     `/d1/database/${target.databaseId}`,
