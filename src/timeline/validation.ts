@@ -131,6 +131,7 @@ export const timelineOverviewQuerySchema = z
   .strictObject({
     limit: z.coerce.number().int().min(1).max(1000).default(1000),
     version: readVersion.optional(),
+    projection: z.literal("chronological").optional(),
     ...readSelectors,
   })
   .superRefine(validateReadSelectors);
@@ -148,6 +149,7 @@ export const timelineReadCursorSchema = z.strictObject({
   timeline_id: id,
   position: readPosition,
   id,
+  projection: z.literal("chronological").optional(),
 });
 export type TimelineReadCursor = z.infer<typeof timelineReadCursorSchema>;
 export type EventAt = z.output<typeof eventAtSchema>;
