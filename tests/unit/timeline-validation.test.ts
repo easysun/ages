@@ -100,6 +100,10 @@ describe("Timeline read query validation", () => {
     if (!overview || !items) return;
 
     expect(overview.safeParse({}).data).toEqual({ limit: 1000 });
+    expect(overview.safeParse({ projection: "chronological" }).data).toEqual({
+      limit: 1000,
+      projection: "chronological",
+    });
     expect(
       overview.safeParse({ version: "7", limit: "12", cursor: "page-token" })
         .data,
@@ -151,8 +155,15 @@ describe("Timeline read query validation", () => {
       { version: "0" },
       { version: "9007199254740992" },
       { from_position: "-1", from_id: "item-a", version: "1" },
+      { projection: "default" },
+      { projection: "event_at" },
     ])
       expect(overview.safeParse(value).success).toBe(false);
+
+    expect(
+      overview.safeParse({ projection: "chronological", limit: "1000" })
+        .success,
+    ).toBe(true);
 
     for (const value of [
       {},

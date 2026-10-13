@@ -14,6 +14,7 @@ import {
   appendItemSchema,
   createTimelineSchema,
   cursorSchema,
+  eventAtSchema,
   listSchema,
   orderSchema,
   removeItemSchema,
@@ -25,6 +26,9 @@ import {
 } from "../timeline/validation";
 
 type TimelineReadPosition = { id: string; position: number };
+type TimelineChronologicalOverviewRow = TimelineReadPosition & {
+  event_at: string | null;
+};
 type TimelineDetailRow = {
   id: string;
   asset_id: string;
@@ -53,6 +57,7 @@ function encodeReadCursor(cursor: {
   timeline_id: string;
   position: number;
   id: string;
+  projection?: "chronological" | undefined;
 }) {
   const value = timelineReadCursorSchema.parse({ v: 1, ...cursor });
   const bytes = new TextEncoder().encode(JSON.stringify(value));
@@ -65,7 +70,11 @@ function encodeReadCursor(cursor: {
     .replace(/=+$/, "");
 }
 
-function decodeReadCursor(encoded: string, timelineId: string) {
+function decodeReadCursor(
+  encoded: string,
+  timelineId: string,
+  projection?: "chronological",
+) {
   try {
     if (!/^[A-Za-z0-9_-]{1,1000}$/.test(encoded))
       throw new Error("Invalid cursor");
@@ -82,6 +91,7 @@ function decodeReadCursor(encoded: string, timelineId: string) {
     );
     if (
       cursor.timeline_id !== timelineId ||
+      cursor.projection !== projection ||
       encodeReadCursor(cursor) !== encoded
     )
       throw new Error("Cursor scope mismatch");
@@ -116,6 +126,7 @@ function nextReadCursor(
   rows: readonly TimelineReadPosition[],
   hasMore: boolean,
   timelineId: string,
+  projection?: "chronological",
 ) {
   const last = rows.at(-1);
   return hasMore && last
@@ -123,6 +134,7 @@ function nextReadCursor(
         timeline_id: timelineId,
         position: last.position,
         id: last.id,
+        ...(projection === "chronological" ? { projection } : {}),
       })
     : null;
 }
@@ -179,20 +191,26 @@ timelines.get("/", async (context) => {
   });
 });
 timelines.get("/:id/overview", async (context) => {
+  context.header("Cache-Control", "private, no-store");
   const parsed = timelineOverviewQuerySchema.safeParse(
     readQuery(context.req.url),
   );
   if (!parsed.success) throw new ApiError("INVALID_REQUEST");
-  const { limit, version, cursor, from_position, from_id } = parsed.data;
+  const { limit, version, cursor, from_position, from_id, projection } =
+    parsed.data;
   const id = context.req.param("id");
   const owner = context.get("user").id;
-  const after = cursor ? decodeReadCursor(cursor, id) : undefined;
+  const after = cursor ? decodeReadCursor(cursor, id, projection) : undefined;
   const selector = pageSelector(after, from_position, from_id);
+  const projectionSql =
+    projection === "chronological"
+      ? "SELECT id, position, event_at"
+      : "SELECT id, position";
   const result = await context.env.DB.batch([
     context.env.DB.prepare(
       "SELECT * FROM timelines WHERE id = ? AND owner_id = ?",
     ).bind(id, owner),
-    context.env.DB.prepare(`SELECT id, position FROM timeline_items
+    context.env.DB.prepare(`${projectionSql} FROM timeline_items
       WHERE timeline_id = ? AND owner_id = ? ${selector.sql}
       ORDER BY position, id LIMIT ?`).bind(
       id,
@@ -210,12 +228,23 @@ timelines.get("/:id/overview", async (context) => {
 
   const page = (result[1]?.results ?? []) as TimelineReadPosition[];
   const rows = page.slice(0, limit);
+  const items =
+    projection === "chronological"
+      ? (rows as TimelineChronologicalOverviewRow[]).map((item) => ({
+          id: item.id,
+          position: item.position,
+          event_at:
+            item.event_at === null
+              ? null
+              : eventAtSchema.parse(JSON.parse(item.event_at)),
+        }))
+      : rows;
   const count = result[2]?.results[0] as { total_items: number } | undefined;
   return context.json({
     timeline: timelinePayload(timeline),
     total_items: count?.total_items ?? 0,
-    items: rows,
-    next_cursor: nextReadCursor(rows, page.length > limit, id),
+    items,
+    next_cursor: nextReadCursor(rows, page.length > limit, id, projection),
   });
 });
 timelines.get("/:id/items", async (context) => {

@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import {
   e2eOrigin,
   executeFixtureSql,
@@ -7,6 +7,7 @@ import {
   seedLargeTimeline,
   seedLibrary,
   seedTimeline,
+  setTimelineEventTimes,
 } from "./fixtures";
 
 async function addMoments(page: Page, names: string[]) {
@@ -16,6 +17,22 @@ async function addMoments(page: Page, names: string[]) {
     await dialog.getByRole("checkbox", { name: `Select ${name}` }).check();
   await dialog.getByRole("button", { name: "Add selected moments" }).click();
   await expect(dialog).toHaveCount(0);
+}
+
+async function chooseMoment(chooser: Locator, ordinal: number) {
+  const choice = chooser.getByRole("button", {
+    name: new RegExp(`^Moment ${ordinal}\\b`),
+  });
+  for (let page = 0; page < 100; page++) {
+    if (await choice.count()) {
+      await choice.click();
+      return;
+    }
+    const next = chooser.getByRole("button", { name: "Next choices" });
+    if (!(await next.count())) break;
+    await next.click();
+  }
+  throw new Error(`Moment ${ordinal} was not available in the chooser.`);
 }
 
 function deferred() {
@@ -44,15 +61,33 @@ test("10,000-item editor reads a lightweight index and bounded detail windows", 
   const { owner, ids } = await seedLibrary(context);
   const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string);
   const overviewRequests: URL[] = [];
+  const overviewPages: Promise<{
+    items: { id: string; position: number }[];
+    total_items: number;
+    timeline: { version: number };
+  }>[] = [];
   const detailRequests: URL[] = [];
   const fullDetailRequests: URL[] = [];
   const assetDetailRequests: URL[] = [];
   page.on("request", (request) => {
     if (request.method() !== "GET") return;
     const url = new URL(request.url());
-    if (url.pathname === `/api/timelines/${id}/overview`)
+    if (url.pathname === `/api/timelines/${id}/overview`) {
       overviewRequests.push(url);
-    else if (url.pathname === `/api/timelines/${id}/items`)
+      const response = request.response();
+      if (response)
+        overviewPages.push(
+          response.then(async (value) => {
+            if (!value)
+              throw new Error("The chronological page has no response.");
+            return value.json() as Promise<{
+              items: { id: string; position: number }[];
+              total_items: number;
+              timeline: { version: number };
+            }>;
+          }),
+        );
+    } else if (url.pathname === `/api/timelines/${id}/items`)
       detailRequests.push(url);
     else if (url.pathname === `/api/timelines/${id}`)
       fullDetailRequests.push(url);
@@ -174,7 +209,13 @@ test("10,000-item editor reads a lightweight index and bounded detail windows", 
   expect(fullDetailRequests).toEqual([]);
   expect(assetDetailRequests).toEqual([]);
   expect(overviewRequests).toHaveLength(10);
+  expect(
+    overviewRequests.every(
+      (url) => url.searchParams.get("projection") === "chronological",
+    ),
+  ).toBe(true);
   expect(overviewRequests[0]?.searchParams.get("version")).toBeNull();
+  expect(overviewRequests[0]?.searchParams.has("cursor")).toBe(false);
   expect(
     overviewRequests
       .slice(1)
@@ -184,6 +225,16 @@ test("10,000-item editor reads a lightweight index and bounded detail windows", 
           url.searchParams.get("cursor") !== null,
       ),
   ).toBe(true);
+  const loadedOverviewPages = await Promise.all(overviewPages);
+  expect(loadedOverviewPages).toHaveLength(10);
+  expect(
+    loadedOverviewPages.every(
+      (page) => page.timeline.version === 1 && page.total_items === 10_000,
+    ),
+  ).toBe(true);
+  expect(
+    loadedOverviewPages.flatMap((page) => page.items.map((item) => item.id)),
+  ).toEqual(itemIds);
   expect(
     overviewRequests.every(
       (url) => Number(url.searchParams.get("limit")) <= 1000,
@@ -1039,9 +1090,24 @@ test("empty and sparse appends reconcile one bounded pinned tail page", async ({
       expect(tail[0]?.searchParams.get("from_position")).toBeNull();
       expect(tail[0]?.searchParams.get("from_id")).toBeNull();
     }
+    const fullRefresh = overviewRequests.filter(
+      (url) => url.searchParams.get("projection") === "chronological",
+    );
+    expect(fullRefresh).toHaveLength(1);
+    expect(fullRefresh[0]?.searchParams.get("limit")).toBe("1000");
+    expect(fullRefresh[0]?.searchParams.get("version")).toBeNull();
     expect(
       overviewRequests.filter(
-        (url) => url.searchParams.get("version") === null,
+        (url) =>
+          url.searchParams.get("projection") !== "chronological" &&
+          url.searchParams.get("version") === null,
+      ),
+    ).toHaveLength(0);
+    expect(
+      overviewRequests.filter(
+        (url) =>
+          url.searchParams.get("projection") !== "chronological" &&
+          url.searchParams.get("limit") === "1000",
       ),
     ).toHaveLength(0);
     const stored = await (
@@ -1900,9 +1966,10 @@ test("mobile native touch pan and pinch navigate the story without disabling pag
   const { id } = seedTimeline(owner, ids, 3);
   await page.goto(`/timelines/${id}`);
   const map = page.getByRole("region", { name: "Story viewport" });
+  const plot = map.getByRole("img", { name: "Narrative order overview" });
   await expect(map).toBeVisible();
-  await map.scrollIntoViewIfNeeded();
-  let box = await map.boundingBox();
+  await plot.scrollIntoViewIfNeeded();
+  let box = await plot.boundingBox();
   expect(box).not.toBeNull();
   const cdp = await context.newCDPSession(page);
   const scrollingX = (box?.x ?? 0) + (box?.width ?? 0) / 2;
@@ -1927,8 +1994,8 @@ test("mobile native touch pan and pinch navigate the story without disabling pag
   await expect
     .poll(() => page.evaluate(() => window.scrollY))
     .toBeGreaterThan(scrollBefore);
-  await map.scrollIntoViewIfNeeded();
-  box = await map.boundingBox();
+  await plot.scrollIntoViewIfNeeded();
+  box = await plot.boundingBox();
   const x = (box?.x ?? 0) + (box?.width ?? 0) / 2;
   const y = (box?.y ?? 0) + 70;
   const before = await viewport(page);
@@ -2120,4 +2187,1109 @@ test("Escape dismisses the picker synchronously when its native close notificati
   await expect(opener).toBeFocused();
   await opener.press("Enter");
   await expect(page.getByRole("dialog", { name: "Add moments" })).toBeVisible();
+});
+
+test("chronological_tracks_keep_date_precision_instant_utc_and_undated_items", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 6);
+  setTimelineEventTimes(itemIds, [
+    {
+      kind: "date",
+      date: "2024-01-01",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    },
+    {
+      kind: "date",
+      date: "2024-01-01",
+      time_zone: "Asia/Tokyo",
+      calendar: "iso8601",
+    },
+    {
+      kind: "date",
+      date: "2024-01-04",
+      time_zone: "Pacific/Apia",
+      calendar: "iso8601",
+    },
+    {
+      kind: "instant",
+      instant: "2024-01-01T00:00:00.000Z",
+      time_zone: "Asia/Taipei",
+    },
+    {
+      kind: "instant",
+      instant: "2024-01-01T00:00:00.000Z",
+      time_zone: "UTC",
+    },
+    null,
+  ]);
+  await page.goto(`/timelines/${id}`);
+  await expect(
+    page.getByRole("button", { name: "Story", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    page.getByRole("region", { name: "Calendar dates viewport" }),
+  ).toHaveCount(0);
+
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  const instants = page.getByRole("region", {
+    name: "Exact instants viewport",
+  });
+  const undated = page.getByRole("region", { name: "Undated items" });
+  await expect(dates).toBeVisible();
+  await expect(instants).toBeVisible();
+  await expect(undated).toBeVisible();
+  await expect(
+    page.getByText(/not comparable|not cross-comparable/i),
+  ).toBeVisible();
+  const dateBins = dates.locator("[data-chronological-bin]");
+  const dateGeometry = await dates.evaluate((element) => {
+    const bins = [...element.querySelectorAll("[data-chronological-bin]")];
+    return {
+      extent: Number((element as HTMLElement).dataset.extent),
+      items: bins.reduce(
+        (total, bin) => total + Number(bin.getAttribute("data-item-count")),
+        0,
+      ),
+      validCoverage: bins.every(
+        (bin) =>
+          Number(bin.getAttribute("data-span-coverage-count")) >=
+          Number(bin.getAttribute("data-item-count")),
+      ),
+    };
+  });
+  expect(dateGeometry.items).toBe(3);
+  expect(dateGeometry.validCoverage).toBe(true);
+  expect(await dateBins.count()).toBeLessThanOrEqual(
+    Math.ceil(dateGeometry.extent / 48) + 2,
+  );
+  await expect(instants.locator("[data-chronological-bin]")).toHaveCount(1);
+  await expect(undated.getByRole("button", { name: /Undated.*1/ })).toHaveCount(
+    1,
+  );
+
+  await dates
+    .locator(
+      "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+    )
+    .first()
+    .click();
+  const dateChoices = page.getByRole("dialog", {
+    name: /Calendar date choices/,
+  });
+  await expect(dateChoices).toContainText("2024-01-01");
+  await expect(dateChoices).toContainText("Asia/Taipei");
+  await expect(dateChoices).toContainText("Asia/Tokyo");
+  await expect(dateChoices).toContainText("Moment 1");
+  await dateChoices.getByRole("button", { name: /Close/ }).click();
+
+  await instants
+    .locator(
+      "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+    )
+    .click();
+  const instantChoices = page.getByRole("dialog", {
+    name: /Exact instant choices/,
+  });
+  await expect(instantChoices).toContainText("2024-01-01T00:00:00.000Z");
+  await expect(instantChoices).toContainText("Asia/Taipei");
+  await expect(instantChoices).toContainText("UTC");
+  await instantChoices.getByRole("button", { name: /Close/ }).click();
+
+  await undated.getByRole("button", { name: /Undated.*1/ }).click();
+  const undatedChoices = page.getByRole("dialog", { name: "Undated moments" });
+  await expect(undatedChoices).toContainText("Moment 6");
+});
+
+test("loads_the_complete_10000_row_chronological_overview_before_showing_markers", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    10_000,
+    "A large dated story",
+    "mixed",
+  );
+  const overviewRequests: URL[] = [];
+  const fullDetailRequests: URL[] = [];
+  const assetDetailRequests: URL[] = [];
+  const detailRequests: URL[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET") return;
+    const url = new URL(request.url());
+    if (url.pathname === `/api/timelines/${id}/overview`)
+      overviewRequests.push(url);
+    else if (url.pathname === `/api/timelines/${id}`)
+      fullDetailRequests.push(url);
+    else if (url.pathname === `/api/timelines/${id}/items`)
+      detailRequests.push(url);
+    else if (/^\/api\/assets\/[^/]+$/.test(url.pathname))
+      assetDetailRequests.push(url);
+  });
+  await page.goto(`/timelines/${id}`);
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  const instants = page.getByRole("region", {
+    name: "Exact instants viewport",
+  });
+  const undated = page.getByRole("region", { name: "Undated items" });
+  await expect(dates).toBeVisible();
+  await expect(instants).toBeVisible();
+  await expect(
+    undated.getByRole("button", { name: /Undated.*3333/ }),
+  ).toBeVisible();
+
+  const chronologicalRequests = overviewRequests.filter(
+    (url) => url.searchParams.get("projection") === "chronological",
+  );
+  expect(overviewRequests).toHaveLength(10);
+  expect(
+    overviewRequests.every(
+      (url) => url.searchParams.get("projection") === "chronological",
+    ),
+  ).toBe(true);
+  expect(chronologicalRequests).toHaveLength(10);
+  expect(chronologicalRequests[0]?.searchParams.get("version")).toBeNull();
+  expect(chronologicalRequests[0]?.searchParams.has("cursor")).toBe(false);
+  expect(
+    chronologicalRequests
+      .slice(1)
+      .every(
+        (url) =>
+          url.searchParams.get("version") === "1" &&
+          url.searchParams.has("cursor"),
+      ),
+  ).toBe(true);
+  expect(
+    chronologicalRequests.every(
+      (url) => Number(url.searchParams.get("limit")) <= 1000,
+    ),
+  ).toBe(true);
+  expect(fullDetailRequests).toEqual([]);
+  expect(assetDetailRequests).toEqual([]);
+  expect(
+    detailRequests.every((url) => Number(url.searchParams.get("limit")) <= 100),
+  ).toBe(true);
+
+  for (const [lane, expectedItems] of [
+    [dates, 3334],
+    [instants, 3333],
+  ] as const) {
+    const bins = lane.locator("[data-chronological-bin]");
+    const dimensions = await lane.evaluate((element) => {
+      const node = element as HTMLElement;
+      return {
+        extent: Number(node.dataset.extent),
+        count: [...node.querySelectorAll("[data-chronological-bin]")].reduce(
+          (total, marker) =>
+            total + Number(marker.getAttribute("data-item-count") ?? 0),
+          0,
+        ),
+      };
+    });
+    expect(dimensions.count).toBe(expectedItems);
+    expect(await bins.count()).toBeLessThanOrEqual(
+      Math.ceil(dimensions.extent / 48) + 2,
+    );
+  }
+
+  const markers = dates.locator(
+    "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+  );
+  const markerCount = await markers.count();
+  for (const [ordinal, markerIndex] of [
+    [1, 0],
+    [5002, Math.floor(markerCount / 2)],
+    [10_000, markerCount - 1],
+  ] as const) {
+    const marker = markers.nth(markerIndex);
+    await marker.click();
+    const chooser = page.getByRole("dialog", { name: /Calendar date choices/ });
+    await chooseMoment(chooser, ordinal);
+    await expect(
+      page.getByRole("group", { name: `Moment ${ordinal}`, exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Chronological", exact: true })
+      .click();
+    await expect(dates).toBeVisible();
+  }
+});
+
+test("clipped_date_spans_have_unique_chooser_membership_and_pages_of_100", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id: timelineId } = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    315,
+    "Equal chronological groups",
+    "chooser-groups",
+  );
+  await page.goto(`/timelines/${timelineId}`);
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  const instants = page.getByRole("region", {
+    name: "Exact instants viewport",
+  });
+  const undated = page.getByRole("region", { name: "Undated items" });
+  const dateMarker = dates.locator(
+    "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+  );
+  await expect(dateMarker).toHaveCount(1);
+  await expect(dateMarker).toHaveAttribute("data-item-count", "105");
+  await expect(dateMarker).toHaveAttribute("data-span-coverage-count", "105");
+  await expect(
+    undated.getByRole("button", { name: /Undated.*105/ }),
+  ).toHaveCount(1);
+
+  for (const [lane, dialogName, first, last] of [
+    [dates, /Calendar date choices/, "Moment 1", "Moment 298"],
+    [instants, /Exact instant choices/, "Moment 2", "Moment 299"],
+  ] as const) {
+    await lane
+      .locator(
+        "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+      )
+      .click();
+    const chooser = page.getByRole("dialog", { name: dialogName });
+    const choices = chooser.getByRole("button", { name: /^Moment \d+/ });
+    await expect(choices).toHaveCount(100);
+    await expect(choices.first()).toContainText(first);
+    await expect(choices.last()).toContainText(last);
+    await chooser.getByRole("button", { name: "Next choices" }).click();
+    await expect(
+      chooser.getByRole("button", { name: /^Moment \d+/ }),
+    ).toHaveCount(5);
+    await chooser.getByRole("button", { name: /Close/ }).click();
+  }
+
+  await undated.getByRole("button", { name: /Undated.*105/ }).click();
+  const undatedChoices = page.getByRole("dialog", { name: "Undated moments" });
+  await expect(
+    undatedChoices.getByRole("button", { name: /^Moment \d+/ }),
+  ).toHaveCount(100);
+  await undatedChoices.getByRole("button", { name: "Next choices" }).click();
+  await expect(
+    undatedChoices.getByRole("button", { name: /^Moment \d+/ }),
+  ).toHaveCount(5);
+  await undatedChoices.getByRole("button", { name: /Close/ }).click();
+
+  await dates.getByRole("button", { name: "Fit all", exact: true }).click();
+  await dates.getByRole("button", { name: "Pan later", exact: true }).click();
+  const frame = await readFrame(dates);
+  const bins = await dates
+    .locator("[data-chronological-bin]")
+    .evaluateAll((markers) => {
+      const viewport = markers[0]?.closest(
+        '[aria-label="Calendar dates viewport"]',
+      ) as HTMLElement | null;
+      if (!viewport) throw new Error("The date-bin viewport is missing.");
+      const data = viewport.dataset;
+      const center = Number(data.center);
+      const span = Number(data.span);
+      const extent = Number(data.extent);
+      const left = center - span / 2;
+      return markers.map((marker) => {
+        const bin = Number(marker.getAttribute("data-bin"));
+        const pixelLeft = bin * 48;
+        const pixelRight = Math.min((bin + 1) * 48, extent);
+        const worldLeft = left + (pixelLeft / extent) * span;
+        const worldRight = left + (pixelRight / extent) * span;
+        return {
+          coverage: Number(marker.getAttribute("data-span-coverage-count")),
+          items: Number(marker.getAttribute("data-item-count")),
+          expectedCoverage: 19782 < worldRight && 19783 > worldLeft ? 105 : 0,
+          clipsTheStoredStart: worldLeft > 19782 && worldLeft < 19783,
+        };
+      });
+    });
+  expect(bins.length).toBeLessThanOrEqual(Math.ceil(frame.extent / 48) + 1);
+  expect(bins.length).toBeGreaterThan(1);
+  expect(bins.some((bin) => bin.clipsTheStoredStart)).toBe(true);
+  expect(bins.every((bin) => bin.coverage === bin.expectedCoverage)).toBe(true);
+  expect(bins.reduce((total, bin) => total + bin.items, 0)).toBe(105);
+});
+
+test("selects_a_paged_undated_item_and_restores_focus_in_its_story_window", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    303,
+    "Paged undated story",
+    "chooser-groups",
+  );
+  const targetId = itemIds[302];
+  if (!targetId) throw new Error("The last seeded story item is missing.");
+  const timelineWrites: string[] = [];
+  page.on("request", (request) => {
+    if (
+      (request.method() === "PATCH" || request.method() === "POST") &&
+      new URL(request.url()).pathname.startsWith(`/api/timelines/${id}/items`)
+    )
+      timelineWrites.push(`${request.method()} ${request.url()}`);
+  });
+
+  await page.goto(`/timelines/${id}`);
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const undated = page.getByRole("region", { name: "Undated items" });
+  const undatedButton = undated.getByRole("button", { name: /Undated.*101/ });
+  await expect(undatedButton).toBeEnabled();
+  await undatedButton.click();
+
+  const chooser = page.getByRole("dialog", { name: "Undated moments" });
+  await chooser.getByRole("button", { name: "Next choices" }).click();
+  const lastUndatedChoice = chooser.getByRole("button", {
+    name: /^Moment 303\b/,
+  });
+  await expect(lastUndatedChoice).toHaveCount(1);
+  await lastUndatedChoice.click();
+
+  await expect(chooser).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Moments 301–303 of 303" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Moment 303", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(`#item-${targetId}-caption`)).toBeFocused();
+  await expect(page.getByRole("group", { name: /^Moment \d+$/ })).toHaveCount(
+    3,
+  );
+  expect(timelineWrites).toEqual([]);
+});
+
+test("preserves_all_three_manual_frames_across_mode_switches_resize_append_and_event_edit", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 3, "Three frame story");
+  setTimelineEventTimes(itemIds, [
+    {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    },
+    {
+      kind: "instant",
+      instant: "2024-02-29T00:00:00.000Z",
+      time_zone: "UTC",
+    },
+    null,
+  ]);
+  const before = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  await page.goto(`/timelines/${id}`);
+  const story = page.getByRole("region", { name: "Story viewport" });
+  await expect
+    .poll(() =>
+      story.evaluate((element) =>
+        Number((element as HTMLElement).dataset.extent),
+      ),
+    )
+    .toBeGreaterThan(0);
+  await story.getByRole("button", { name: "Zoom in", exact: true }).click();
+  const storyManual = await readFrame(story);
+
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  const instants = page.getByRole("region", {
+    name: "Exact instants viewport",
+  });
+  await expect
+    .poll(() =>
+      dates.evaluate((element) =>
+        Number((element as HTMLElement).dataset.extent),
+      ),
+    )
+    .toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      instants.evaluate((element) =>
+        Number((element as HTMLElement).dataset.extent),
+      ),
+    )
+    .toBeGreaterThan(0);
+  await dates.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await instants.getByRole("button", { name: "Zoom out", exact: true }).click();
+  const dateManual = await readFrame(dates);
+  const instantManual = await readFrame(instants);
+
+  await page.getByRole("button", { name: "Story", exact: true }).click();
+  await expectFrame(story, storyManual);
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  await expectFrame(dates, dateManual);
+  await expectFrame(instants, instantManual);
+
+  const widthBeforeResize = await page.evaluate(() => window.innerWidth);
+  if (test.info().project.name === "mobile") {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 320,
+      height: 720,
+      screenWidth: 320,
+      screenHeight: 720,
+      deviceScaleFactor: 3,
+      mobile: true,
+    });
+  } else await page.setViewportSize({ width: 320, height: 720 });
+  await expect
+    .poll(() => page.evaluate(() => window.innerWidth))
+    .toBeLessThan(widthBeforeResize);
+  await expect
+    .poll(() =>
+      dates.evaluate((element) =>
+        Number((element as HTMLElement).dataset.extent),
+      ),
+    )
+    .toBeLessThan(dateManual.extent);
+  await expect
+    .poll(() =>
+      instants.evaluate((element) =>
+        Number((element as HTMLElement).dataset.extent),
+      ),
+    )
+    .toBeLessThan(instantManual.extent);
+  const resizedDate = await readFrame(dates);
+  const resizedInstant = await readFrame(instants);
+  expect(resizedDate.center).toBeCloseTo(dateManual.center, 4);
+  expect(resizedDate.span).toBeCloseTo(
+    Math.min(
+      10,
+      Math.max(0.5, dateManual.span * (resizedDate.extent / dateManual.extent)),
+    ),
+    4,
+  );
+  expect(resizedInstant.center).toBeCloseTo(instantManual.center, 4);
+  expect(resizedInstant.span).toBeCloseTo(
+    Math.max(
+      1,
+      instantManual.span * (resizedInstant.extent / instantManual.extent),
+    ),
+    4,
+  );
+  expect(
+    await (await context.request.get(`/api/timelines/${id}`)).json(),
+  ).toEqual(before);
+
+  await addMoments(page, ["A quiet afternoon.png"]);
+  const afterAppend = await readFrame(dates);
+  expect(afterAppend.center).toBeCloseTo(resizedDate.center, 4);
+  expect(afterAppend.span).toBeCloseTo(resizedDate.span, 4);
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Date type").selectOption("date");
+  await moment.getByLabel("Event date", { exact: true }).fill("2025-03-01");
+  await moment.getByLabel("Time zone").fill("Pacific/Apia");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(moment.getByRole("status")).toHaveText("Moment saved");
+  await expectFrame(dates, afterAppend);
+  await expectFrame(instants, resizedInstant);
+  const saved = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(saved.timeline.version).toBe(before.timeline.version + 2);
+  expect(saved.timeline.items[0]).toMatchObject({
+    id: itemIds[0],
+    position: before.timeline.items[0].position,
+    event_at: {
+      kind: "date",
+      date: "2025-03-01",
+      time_zone: "Pacific/Apia",
+    },
+  });
+});
+
+test("retains_drafts_and_field_focus_across_window_changes_and_conflicts", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
+  setTimelineEventTimes(itemIds, [
+    {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    },
+    ...Array.from({ length: 249 }, () => null),
+  ]);
+  await page.goto(`/timelines/${id}`);
+  const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  const caption = first.getByRole("textbox", { name: "Caption" });
+  const date = first.getByLabel("Event date", { exact: true });
+  const zone = first.getByLabel("Time zone");
+  await caption.fill("Draft that follows this stable item");
+  await date.fill("2024-03-01");
+  await zone.fill("Pacific/Apia");
+  await page.getByLabel("Go to moment").fill("151");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 101–200 of 250" }),
+  ).toBeFocused();
+
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  const marker = dates
+    .locator(
+      "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+    )
+    .first();
+  await marker.click();
+  const chooser = page.getByRole("dialog", { name: /Calendar date choices/ });
+  await chooseMoment(chooser, 1);
+  await expect(date).toHaveValue("2024-03-01");
+  await expect(zone).toHaveValue("Pacific/Apia");
+  await expect(caption).toHaveValue("Draft that follows this stable item");
+  await expect(zone).toBeFocused();
+
+  const changed = await context.request.patch(`/api/timelines/${id}`, {
+    headers: { Origin: e2eOrigin },
+    data: {
+      expected_version: 1,
+      title: "Changed while the event draft was open",
+    },
+  });
+  expect(changed.ok()).toBe(true);
+  await first.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "changed elsewhere" }),
+  ).toBeVisible();
+  await expect(date).toHaveValue("2024-03-01");
+  await expect(zone).toHaveValue("Pacific/Apia");
+  await expect(caption).toHaveValue("Draft that follows this stable item");
+  await expect(zone).toBeFocused();
+});
+
+async function readFrame(region: Locator) {
+  return region.evaluate((element) => {
+    const data = (element as HTMLElement).dataset;
+    return {
+      center: Number(data.center),
+      span: Number(data.span),
+      extent: Number(data.extent),
+    };
+  });
+}
+
+async function expectFrame(
+  region: Locator,
+  expected: Awaited<ReturnType<typeof readFrame>>,
+) {
+  const actual = await readFrame(region);
+  expect(actual.center).toBeCloseTo(expected.center, 4);
+  expect(actual.span).toBeCloseTo(expected.span, 4);
+}
+
+test("acknowledges_date_edit_before_refresh_reconciliation", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 250, "One editable moment");
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded Timeline item is missing.");
+  setTimelineEventTimes(itemIds, [
+    {
+      kind: "date",
+      date: "2024-02-28",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    },
+    ...Array.from({ length: itemIds.length - 1 }, () => null),
+  ]);
+  const refreshReadStarted = deferredSignal();
+  const releaseRefreshRead = deferredSignal();
+  const mutationStarted = deferredSignal();
+  const releaseMutation = deferredSignal();
+  const mutationResponseForwarded = deferredSignal();
+  const staleDetailStarted = deferredSignal();
+  const releaseStaleDetail = deferredSignal();
+  const staleDetailFinished = deferredSignal();
+  const projectionRequests: URL[] = [];
+  const staleDetailRequests: URL[] = [];
+  let patchRequests = 0;
+  let holdNextRefresh = false;
+  await page.goto(`/timelines/${id}`);
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  await page.route(`**/api/timelines/${id}/overview?**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("projection") !== "chronological")
+      return route.continue();
+    projectionRequests.push(url);
+    if (holdNextRefresh && !url.searchParams.has("version")) {
+      holdNextRefresh = false;
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      expect((await response.json()).timeline.version).toBe(2);
+      refreshReadStarted.signal();
+      await releaseRefreshRead.promise;
+      await route.fulfill({ response }).catch(() => undefined);
+      return;
+    }
+    return route.continue();
+  });
+  await page.route(`**/api/timelines/${id}/items/${itemId}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    patchRequests++;
+    expect(route.request().postDataJSON().expected_version).toBe(1);
+    mutationStarted.signal();
+    await releaseMutation.promise;
+    const response = await route.fetch();
+    expect(response.status()).toBe(204);
+    await route.fulfill({ response }).catch(() => undefined);
+    mutationResponseForwarded.signal();
+  });
+  await page.route(`**/api/timelines/${id}/items?**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (
+      url.searchParams.get("version") !== "1" ||
+      url.searchParams.get("from_position") !== "100"
+    )
+      return route.continue();
+    staleDetailRequests.push(url);
+    const response = await route.fetch();
+    expect(response.status()).toBe(200);
+    expect((await response.json()).version).toBe(1);
+    staleDetailStarted.signal();
+    await releaseStaleDetail.promise;
+    await route.fulfill({ response }).catch(() => undefined);
+    staleDetailFinished.signal();
+  });
+
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByLabel("Event date", { exact: true }).fill("2024-02-29");
+  await moment.getByLabel("Time zone").focus();
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await mutationStarted.started;
+  await page.getByLabel("Go to moment").fill("151");
+  await page.getByRole("button", { name: "Go", exact: true }).click();
+  await staleDetailStarted.started;
+  expect(staleDetailRequests).toHaveLength(1);
+  expect(staleDetailRequests[0]?.searchParams.get("version")).toBe("1");
+  expect(staleDetailRequests[0]?.searchParams.get("from_position")).toBe("100");
+  await expect(
+    page.getByRole("heading", { name: "Moments 101–200 of 250" }),
+  ).toBeVisible();
+  holdNextRefresh = true;
+  releaseMutation.release();
+  await mutationResponseForwarded.started;
+  await refreshReadStarted.started;
+  expect(patchRequests).toBe(1);
+  expect(projectionRequests).toHaveLength(1);
+  expect(projectionRequests[0]?.searchParams.get("version")).toBeNull();
+  expect(projectionRequests[0]?.searchParams.get("projection")).toBe(
+    "chronological",
+  );
+  releaseStaleDetail.release();
+  await staleDetailFinished.started;
+  releaseRefreshRead.release();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  await expect(
+    dates.locator(
+      "[data-chronological-bin][data-item-count]:not([data-item-count='0'])",
+    ),
+  ).toHaveCount(1);
+  const stored = await (
+    await context.request.get(`/api/timelines/${id}`)
+  ).json();
+  expect(stored.timeline.version).toBe(2);
+  expect(stored.timeline.items[0]).toMatchObject({
+    id: itemId,
+    position: 0,
+    event_at: {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+    },
+  });
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("group", { name: "Moment 1", exact: true })
+      .getByLabel("Time zone"),
+  ).toBeFocused();
+});
+
+test("does_not_replay_a_committed_append_after_switching_timelines", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const first = seedTimeline(owner, ids, 1, "Append stays with first story");
+  seedTimeline(owner, ids, 1, "Second selected story");
+  const appendCommitted = deferredSignal();
+  const releaseAppend = deferredSignal();
+  const appendPosts: string[] = [];
+  await page.addInitScript(
+    ({ timelineId }) => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === "string"
+            ? new URL(input, location.href)
+            : input instanceof URL
+              ? input
+              : new URL(input.url, location.href);
+        if (
+          url.pathname === `/api/timelines/${timelineId}/items` &&
+          init?.method === "POST"
+        ) {
+          const options = { ...init };
+          delete options.signal;
+          return nativeFetch(input, options);
+        }
+        return nativeFetch(input, init);
+      };
+    },
+    { timelineId: first.id },
+  );
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url() === `${e2eOrigin}/api/timelines/${first.id}/items`
+    )
+      appendPosts.push(request.postDataJSON().asset_id);
+  });
+  await page.route(`**/api/timelines/${first.id}/items`, async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    const response = await route.fetch();
+    expect(response.status()).toBe(204);
+    appendCommitted.signal();
+    await releaseAppend.promise;
+    await route.fulfill({ response }).catch(() => undefined);
+  });
+
+  await page.goto(`/timelines/${first.id}`);
+  await page
+    .getByRole("button", { name: "Chronological", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Calendar dates viewport" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Add moments", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "Add moments" });
+  await picker
+    .getByRole("checkbox", { name: "Select A quiet afternoon.png" })
+    .check();
+  await picker.getByRole("button", { name: "Add selected moments" }).click();
+  await appendCommitted.started;
+  expect(appendPosts).toEqual([ids[1]]);
+
+  await page.locator('nav a[href="/timelines"]').evaluate((element) => {
+    (element as HTMLAnchorElement).click();
+  });
+  await expect(
+    page.getByRole("heading", { name: "Your timelines" }),
+  ).toBeVisible();
+  await page.getByRole("link", { name: /Second selected story/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Second selected story", exact: true }),
+  ).toBeVisible();
+  releaseAppend.release();
+  await page.getByRole("link", { name: "Timelines", exact: true }).click();
+  await page
+    .getByRole("link", { name: /Append stays with first story/ })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Moments 1–2 of 2" }),
+  ).toBeVisible();
+  expect(appendPosts).toEqual([ids[1]]);
+  const stored = await (
+    await context.request.get(`/api/timelines/${first.id}`)
+  ).json();
+  expect(stored.timeline.version).toBe(2);
+  expect(stored.timeline.items).toHaveLength(2);
+  await page.getByRole("button", { name: "Add moments", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Add moments" })
+      .getByRole("checkbox", { name: "Select A quiet afternoon.png" }),
+  ).not.toBeChecked();
+});
+
+test("rejects_old_read_and_current_auth_generation_responses", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id, itemIds } = seedTimeline(owner, ids, 1, "Private race story");
+  const oldReadStarted = deferredSignal();
+  const releaseOldRead = deferredSignal();
+  let firstChronologicalRead = true;
+  let currentGenerationReads = 0;
+  await page.addInitScript(
+    ({ timelineId }) => {
+      const nativeFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url =
+          typeof input === "string"
+            ? new URL(input, location.href)
+            : input instanceof URL
+              ? input
+              : new URL(input.url, location.href);
+        if (
+          url.pathname === `/api/timelines/${timelineId}/overview` &&
+          url.searchParams.get("projection") === "chronological"
+        ) {
+          const options = { ...init };
+          delete options.signal;
+          return nativeFetch(input, options);
+        }
+        return nativeFetch(input, init);
+      };
+    },
+    { timelineId: id },
+  );
+  await page.route(`**/api/timelines/${id}/overview?**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("projection") !== "chronological")
+      return route.continue();
+    if (firstChronologicalRead) {
+      firstChronologicalRead = false;
+      oldReadStarted.signal();
+      await releaseOldRead.promise;
+      await route
+        .fulfill({
+          status: 401,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "UNAUTHENTICATED" }),
+        })
+        .catch(() => undefined);
+      return;
+    }
+    currentGenerationReads++;
+    await route.continue();
+  });
+  await page.route("**/auth/logout", async (route) =>
+    route.fulfill({ status: 500, body: "logout failed" }),
+  );
+
+  await page.goto(`/timelines/${id}`);
+  await oldReadStarted.started;
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "Sign out could not be completed" }),
+  ).toBeVisible();
+  await expect.poll(() => currentGenerationReads).toBeGreaterThan(0);
+  const chronologicalButton = page.getByRole("button", {
+    name: "Chronological",
+    exact: true,
+  });
+  await expect(chronologicalButton).toBeVisible();
+  await chronologicalButton.click();
+  const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+  await expect(dates).toBeVisible();
+  releaseOldRead.release();
+  await expect(dates).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toBeVisible();
+
+  const itemId = itemIds[0];
+  if (!itemId) throw new Error("The seeded Timeline item is missing.");
+  await page.route(`**/api/timelines/${id}/items/${itemId}`, async (route) => {
+    if (route.request().method() !== "PATCH") return route.continue();
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "UNAUTHENTICATED" }),
+    });
+  });
+  const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("textbox", { name: "Caption" }).fill("Private draft");
+  await moment.getByRole("button", { name: "Save moment" }).click();
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Calendar dates viewport" }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Caption" })).toHaveCount(0);
+});
+
+test("clears_private_timeline_state_after_a_current_generation_403", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const { id } = seedTimeline(owner, ids, 1, "Forbidden private story");
+  const denialReady = deferredSignal();
+  await page.route(`**/api/timelines/${id}/overview?**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get("projection") !== "chronological")
+      return route.continue();
+    denialReady.signal();
+    await denialReady.promise;
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "FORBIDDEN" }),
+    });
+  });
+
+  await page.goto(`/timelines/${id}`);
+  await denialReady.started;
+  denialReady.release();
+  await expect(
+    page.getByRole("alert").filter({
+      hasText: "You no longer have access to this private timeline",
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("group", { name: "Moment 1", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Calendar dates viewport" }),
+  ).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Caption" })).toHaveCount(0);
+});
+
+test("retries_a_transient_chronological_page_and_restarts_after_a_pinned_conflict", async ({
+  page,
+  context,
+}) => {
+  const { owner, ids } = await seedLibrary(context);
+  const retryTimeline = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    1001,
+    "Retry one projected page",
+    "mixed",
+  );
+  const conflictTimeline = seedLargeTimeline(
+    owner,
+    ids[0] as string,
+    1001,
+    "Restart a stale projection",
+    "mixed",
+  );
+
+  for (const scenario of [
+    { timelineId: retryTimeline.id, kind: "transient" as const },
+    { timelineId: conflictTimeline.id, kind: "conflict" as const },
+  ]) {
+    const requests: URL[] = [];
+    let injected = false;
+    await page.route(
+      `**/api/timelines/${scenario.timelineId}/overview?**`,
+      async (route) => {
+        const url = new URL(route.request().url());
+        if (url.searchParams.get("projection") !== "chronological")
+          return route.continue();
+        requests.push(url);
+        if (
+          !injected &&
+          url.searchParams.has("cursor") &&
+          scenario.kind === "transient"
+        ) {
+          injected = true;
+          await route.abort("failed");
+          return;
+        }
+        if (
+          !injected &&
+          url.searchParams.has("cursor") &&
+          scenario.kind === "conflict"
+        ) {
+          injected = true;
+          const update = await context.request.patch(
+            `/api/timelines/${scenario.timelineId}`,
+            {
+              headers: { Origin: e2eOrigin },
+              data: { expected_version: 1, title: "Changed during projection" },
+            },
+          );
+          expect(update.ok()).toBe(true);
+          const response = await route.fetch();
+          expect(response.status()).toBe(409);
+          await route.fulfill({ response });
+          return;
+        }
+        await route.continue();
+      },
+    );
+
+    await page.goto(`/timelines/${scenario.timelineId}`);
+    await page
+      .getByRole("button", { name: "Chronological", exact: true })
+      .click();
+    const dates = page.getByRole("region", { name: "Calendar dates viewport" });
+    const instants = page.getByRole("region", {
+      name: "Exact instants viewport",
+    });
+    await expect(dates).toBeVisible();
+    await expect(instants).toBeVisible();
+    const projected = requests.filter(
+      (url) => url.searchParams.get("projection") === "chronological",
+    );
+    if (scenario.kind === "transient") {
+      expect(projected).toHaveLength(3);
+      expect(projected[1]?.search).toBe(projected[2]?.search);
+      expect(projected[1]?.searchParams.get("version")).toBe("1");
+    } else {
+      expect(projected).toHaveLength(4);
+      expect(projected[0]?.searchParams.get("version")).toBeNull();
+      expect(projected[0]?.searchParams.has("cursor")).toBe(false);
+      expect(projected[1]?.searchParams.get("version")).toBe("1");
+      expect(projected[2]?.searchParams.get("version")).toBeNull();
+      expect(projected[2]?.searchParams.has("cursor")).toBe(false);
+      expect(projected[3]?.searchParams.get("version")).toBe("2");
+      expect(projected[3]?.searchParams.has("cursor")).toBe(true);
+    }
+    const counts = await Promise.all(
+      [dates, instants].map((lane) =>
+        lane
+          .locator("[data-chronological-bin]")
+          .evaluateAll((markers) =>
+            markers.reduce(
+              (total, marker) =>
+                total + Number(marker.getAttribute("data-item-count") ?? 0),
+              0,
+            ),
+          ),
+      ),
+    );
+    expect(counts).toEqual([334, 334]);
+    await page.unroute(`**/api/timelines/${scenario.timelineId}/overview?**`);
+  }
 });
