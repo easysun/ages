@@ -198,6 +198,10 @@ Trash purge claims the exact internal deletion generation in D1 before R2 deleti
 
 `npm run deploy:preview` and `npm run deploy:production` run the complete local check, repeat the remote read-only preflight, then deploy only to the selected named environment. Configure real IDs, distinct resources and origins, routes, and secret values in Cloudflare before using either command. The checked-in environment IDs are placeholders, so release commands intentionally stop until provisioning is complete. Live OAuth, browser-to-R2 CORS/signatures, large uploads, the scheduled trigger, and backup recovery still require separate cloud smoke and operations checks.
 
+## Local recovery rehearsal
+
+Run `npm run recovery:drill` to apply migrations to a fresh synthetic local D1 database, export schema and data separately, restore them into a second local D1 database, and independently back up and restore a synthetic PNG in local R2. Each run keeps its configs, SQL exports, object copies, command log, and report under the ignored `.wrangler/recovery-drills/<run-id>/` directory; the command does not access Cloudflare or production resources. A failure stops the run and preserves its evidence. The restored R2 PUT uses the source D1 `mime_type`, but the installed Wrangler CLI cannot read back stored R2 HTTP metadata, so that value is not independently verified. Run `npm run test:recovery-drill` for the local safety and comparison guards. This synthetic rehearsal does not close the Cloudflare recovery gate.
+
 ## Content reports and reversible moderation
 
 Authenticated same-origin `POST /api/reports` accepts reports about public or unlisted Timelines and active public Links; the server resolves stable targets and returns a generic 404 for private, missing, blocked, or unavailable subjects. Categories are `spam`, `abuse`, `copyright`, `illegal`, and `other`, with details capped at 1,000 characters. Reports deduplicate by reporter, target, and observed Timeline version for 24 hours. D1 enforces limits of 10 report attempts per minute and 20 distinct reports per rolling 24 hours per authenticated account.
