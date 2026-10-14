@@ -8,6 +8,7 @@ import {
 } from "../auth/config";
 import { hashToken, isToken, pkceChallenge, randomToken } from "../auth/crypto";
 import { exchangeGoogleCode } from "../auth/google";
+import { createLocalSession, localLoginEnabled } from "../auth/local";
 import { cleanupAuth, createSession, sessionHash } from "../auth/session";
 import type { AppContext } from "../bindings";
 import { ApiError } from "../http/errors";
@@ -180,6 +181,18 @@ auth.get("/google/callback", async (context) => {
     reportTarget ? reportTargetLocation(reportTarget) : "/",
     303,
   );
+});
+
+auth.get("/local", (context) => {
+  if (!localLoginEnabled(context.env)) throw new ApiError("NOT_FOUND");
+  return context.json({ enabled: true });
+});
+
+auth.post("/local", async (context) => {
+  if (!localLoginEnabled(context.env)) throw new ApiError("NOT_FOUND");
+  assertSameOrigin(context);
+  await createLocalSession(context);
+  return context.redirect("/library", 303);
 });
 
 auth.post("/logout", async (context) => {

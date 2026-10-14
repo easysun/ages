@@ -29,7 +29,8 @@
     "preflight": "node scripts/release-preflight.mjs",
     "recovery:drill": "node scripts/recovery-drill.mjs",
     "deploy:preview": "npm run preflight -- preview --deploy",
-    "deploy:production": "npm run preflight -- production --deploy"
+    "deploy:production": "npm run preflight -- production --deploy",
+    "dev:demo": "npm run build:client && node scripts/dev-demo.mjs"
   },
   "dependencies": {
     "aws4fetch": "1.0.20",

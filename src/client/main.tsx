@@ -14,6 +14,7 @@ import {
 import { ContentNodesScreen } from "./content-nodes";
 import { AssetDetails } from "./details";
 import { LinksScreen } from "./links";
+import { LocalSignIn } from "./local-sign-in";
 import { ModerationScreen } from "./moderation";
 import { ReporterScreen } from "./reporter";
 import { TimelineScreen } from "./timelines";
@@ -258,6 +259,7 @@ function Landing() {
         <p className="privacy-copy">
           Your library starts private. Your memories stay yours.
         </p>
+        <LocalSignIn />
         <a className="landing-report-link" href="/report">
           Report an Ages Link
         </a>
