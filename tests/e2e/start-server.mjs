@@ -170,6 +170,7 @@ function makeWorkerOverlay(configPath, worker) {
   };
   if (worker === "app")
     Object.assign(config.vars, {
+      LOCAL_LOGIN_ENABLED: "true",
       R2_ACCOUNT_ID: "a".repeat(32),
       R2_BUCKET_NAME: "ages-media-local",
       R2_ACCESS_KEY_ID: "synthetic-browser-id",

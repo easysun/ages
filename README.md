@@ -45,6 +45,12 @@ curl -i http://127.0.0.1:8787/health/ready
 
 Tests use isolated local storage, separate from the development database. Migration tests exercise a fresh database, reruns with preserved data, constraints, and batch rollback. JSON parser tests register test-only routes; no public echo or exception endpoint is deployed.
 
+## Local demo
+
+Run `npm run dev:demo` to initialize a separate, local-only demo under `.wrangler/demo` and start the app at `http://127.0.0.1:8787`. Select **Use local test account** to sign in without Google credentials. The seed includes sample photos, tagged Assets, Timelines, and a short Link. Changes persist across restarts; the demo does not create cloud resources or use Cloudflare free-tier requests. `npm run dev` remains unchanged and keeps local test sign-in disabled.
+
+Demo login is opt-in, guarded by `APP_ENV=local` and a loopback origin, and unavailable on cloud environments. Direct new-media uploads still require real R2 S3 credentials and bucket CORS; preloaded demo media works through Wrangler local R2. Do not use Demo mode for preview or production deployment.
+
 ## Google authentication
 
 Create a Google OAuth **Web application** client and register the exact redirect URI `http://127.0.0.1:8787/auth/google/callback` for local development. Copy `.dev.vars.example` to ignored `.dev.vars`, then set the client ID and secret there. Never paste secrets into chat, commits, or PRs. Each deployed environment needs its own `APP_ORIGIN` and registered HTTPS redirect URI; supply credentials through platform secrets.
