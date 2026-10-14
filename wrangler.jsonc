@@ -49,7 +49,7 @@
         "APP_REGISTRABLE_DOMAIN": "development.invalid",
         "TRACKING_REGISTRABLE_DOMAIN": "tracking-development.invalid",
         "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
-        "R2_BUCKET_NAME": "REPLACE_DEVELOPMENT_R2_BUCKET"
+        "R2_BUCKET_NAME": "ages-media-local-unconfigured-development"
       },
       "routes": [
         { "pattern": "app.development.invalid", "custom_domain": true }
@@ -63,7 +63,10 @@
         }
       ],
       "r2_buckets": [
-        { "binding": "MEDIA", "bucket_name": "REPLACE_DEVELOPMENT_R2_BUCKET" }
+        {
+          "binding": "MEDIA",
+          "bucket_name": "ages-media-local-unconfigured-development"
+        }
       ],
       "kv_namespaces": [
         { "binding": "LINK_CACHE", "id": "REPLACE_DEVELOPMENT_KV_ID" }
@@ -78,7 +81,7 @@
         "APP_REGISTRABLE_DOMAIN": "preview.invalid",
         "TRACKING_REGISTRABLE_DOMAIN": "tracking-preview.invalid",
         "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
-        "R2_BUCKET_NAME": "REPLACE_PREVIEW_R2_BUCKET"
+        "R2_BUCKET_NAME": "ages-media-local-unconfigured-preview"
       },
       "routes": [{ "pattern": "app.preview.invalid", "custom_domain": true }],
       "d1_databases": [
@@ -90,7 +93,10 @@
         }
       ],
       "r2_buckets": [
-        { "binding": "MEDIA", "bucket_name": "REPLACE_PREVIEW_R2_BUCKET" }
+        {
+          "binding": "MEDIA",
+          "bucket_name": "ages-media-local-unconfigured-preview"
+        }
       ],
       "kv_namespaces": [
         { "binding": "LINK_CACHE", "id": "REPLACE_PREVIEW_KV_ID" }
@@ -105,7 +111,7 @@
         "APP_REGISTRABLE_DOMAIN": "production.invalid",
         "TRACKING_REGISTRABLE_DOMAIN": "tracking-production.invalid",
         "R2_ACCOUNT_ID": "REPLACE_CLOUDFLARE_ACCOUNT_ID",
-        "R2_BUCKET_NAME": "REPLACE_PRODUCTION_R2_BUCKET"
+        "R2_BUCKET_NAME": "ages-media-local-unconfigured-production"
       },
       "routes": [
         { "pattern": "app.production.invalid", "custom_domain": true }
@@ -119,7 +125,10 @@
         }
       ],
       "r2_buckets": [
-        { "binding": "MEDIA", "bucket_name": "REPLACE_PRODUCTION_R2_BUCKET" }
+        {
+          "binding": "MEDIA",
+          "bucket_name": "ages-media-local-unconfigured-production"
+        }
       ],
       "kv_namespaces": [
         { "binding": "LINK_CACHE", "id": "REPLACE_PRODUCTION_KV_ID" }

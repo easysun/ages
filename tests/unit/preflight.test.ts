@@ -1,12 +1,18 @@
+/// <reference types="vite/client" />
+
 import { describe, expect, it, vi } from "vitest";
 import {
   validateReleaseTarget,
   verifyReleaseResources,
 } from "../../src/operations/preflight";
+import wranglerConfigSource from "../../wrangler.jsonc?raw";
 
 const account = "a".repeat(32);
 const database = "11111111-1111-4111-8111-111111111111";
 const namespace = "b".repeat(32);
+const namedEnvironments = ["development", "preview", "production"] as const;
+type NamedEnvironment = (typeof namedEnvironments)[number];
+
 function configured() {
   return {
     account_id: account,
@@ -145,6 +151,55 @@ function workersDevConfiguration(
   trackingEnvironments[environment] = selectedTrackingEnvironment;
   return { configuration, trackingConfiguration };
 }
+
+function configuredWithSyntheticBindings(
+  environment: NamedEnvironment,
+  bucketName: string,
+) {
+  const appOrigin = `https://app.${environment}.example.test`;
+  const trackingOrigin = `https://events.${environment}.tracking.test`;
+  const appHostname = new URL(appOrigin).hostname;
+  const trackingHostname = new URL(trackingOrigin).hostname;
+  const configuration = {
+    ...configured(),
+    env: {
+      [environment]: {
+        name: `ages-${environment}`,
+        vars: {
+          APP_ENV: environment,
+          APP_ORIGIN: appOrigin,
+          TRACKING_ORIGIN: trackingOrigin,
+          APP_REGISTRABLE_DOMAIN: "example.test",
+          TRACKING_REGISTRABLE_DOMAIN: "tracking.test",
+          R2_ACCOUNT_ID: account,
+          R2_BUCKET_NAME: bucketName,
+          GOOGLE_CLIENT_ID: "synthetic-client",
+        },
+        routes: [{ pattern: appHostname, custom_domain: true }],
+        d1_databases: [{ binding: "DB", database_id: database }],
+        r2_buckets: [{ binding: "MEDIA", bucket_name: bucketName }],
+        kv_namespaces: [{ binding: "LINK_CACHE", id: namespace }],
+      },
+    },
+  };
+  const trackingConfiguration = {
+    ...trackingConfigured(),
+    env: {
+      [environment]: {
+        name: `ages-tracking-${environment}`,
+        vars: {
+          APP_ENV: environment,
+          APP_ORIGIN: appOrigin,
+          TRACKING_ORIGIN: trackingOrigin,
+        },
+        routes: [{ pattern: trackingHostname, custom_domain: true }],
+        d1_databases: [{ binding: "DB", database_id: database }],
+      },
+    },
+  };
+  return { configuration, trackingConfiguration };
+}
+
 function releaseTarget(
   configuration = configured(),
   environment = "preview",
@@ -230,6 +285,29 @@ function responses(
 }
 
 describe("Release environment isolation", () => {
+  it("keeps every checked-in MEDIA sentinel unconfigured for release", () => {
+    const config = JSON.parse(wranglerConfigSource);
+
+    for (const environment of namedEnvironments) {
+      const selected = config.env[environment];
+      const bucketName = selected.r2_buckets.find(
+        (binding: { binding: string }) => binding.binding === "MEDIA",
+      )?.bucket_name;
+      expect(bucketName).toBe(`ages-media-local-unconfigured-${environment}`);
+      expect(selected.vars.R2_BUCKET_NAME).toBe(bucketName);
+
+      const { configuration, trackingConfiguration } =
+        configuredWithSyntheticBindings(environment, bucketName);
+      expect(() =>
+        validateReleaseTarget(
+          configuration,
+          environment,
+          trackingConfiguration,
+        ),
+      ).toThrow("Configure a real MEDIA bucket.");
+    }
+  });
+
   it("requires an explicit named environment and never releases the local default", () => {
     expect(() => releaseTarget(configured(), "local")).toThrow(
       "named environment",
