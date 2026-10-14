@@ -2132,7 +2132,11 @@ test("adding from the keyboard restores focus to its surviving Add moments opene
     .getByRole("checkbox", { name: "Select Mountain air.png" })
     .focus();
   await page.keyboard.press("Space");
-  await dialog.getByRole("button", { name: "Add selected moments" }).focus();
+  const addButton = dialog.getByRole("button", {
+    name: "Add selected moments",
+  });
+  await expect(addButton).toBeEnabled();
+  await addButton.focus();
   await page.keyboard.press("Enter");
   await expect(dialog).toHaveCount(0);
   await expect(opener).toBeFocused();
