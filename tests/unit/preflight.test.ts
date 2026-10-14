@@ -18,6 +18,7 @@ function configured() {
     account_id: account,
     main: "src/index.ts",
     workers_dev: false,
+    preview_urls: false,
     triggers: { crons: ["*/15 * * * *"] },
     assets: {
       directory: "./dist/client",
@@ -90,6 +91,66 @@ function trackingConfigured() {
     },
   };
 }
+function workersDevConfiguration(
+  environment: "preview" | "production" = "preview",
+) {
+  const configuration = configured();
+  const appEnvironment = configuration.env[environment] as unknown as Record<
+    string,
+    unknown
+  >;
+  const appVars = appEnvironment.vars as Record<string, unknown>;
+  const appOrigin = "https://app.example.test";
+  const trackingOrigin = `https://ages-tracking-${environment}.account.workers.dev`;
+  Object.assign(appVars, {
+    APP_ENV: environment,
+    APP_ORIGIN: appOrigin,
+    TRACKING_ORIGIN: trackingOrigin,
+    APP_REGISTRABLE_DOMAIN: "example.test",
+    TRACKING_REGISTRABLE_DOMAIN: "account.workers.dev",
+    R2_ACCOUNT_ID: account,
+    R2_BUCKET_NAME: `ages-${environment}-media`,
+  });
+  appEnvironment.name = `ages-${environment}`;
+  appEnvironment.routes = [
+    { pattern: "app.example.test", custom_domain: true },
+  ];
+  appEnvironment.r2_buckets = [
+    { binding: "MEDIA", bucket_name: `ages-${environment}-media` },
+  ];
+
+  const trackingConfiguration = trackingConfigured();
+  const trackingRoot = trackingConfiguration as unknown as Record<
+    string,
+    unknown
+  >;
+  trackingRoot.workers_dev = true;
+  trackingRoot.preview_urls = false;
+  const trackingEnvironments = trackingRoot.env as Record<string, unknown>;
+  const preview = trackingEnvironments.preview as Record<string, unknown>;
+  const trackingVars = preview.vars as Record<string, unknown>;
+  const selectedTrackingEnvironment = {
+    ...preview,
+    name: `ages-tracking-${environment}`,
+    vars: {
+      ...trackingVars,
+      APP_ENV: environment,
+      APP_ORIGIN: appOrigin,
+      TRACKING_ORIGIN: trackingOrigin,
+    },
+    routes: [],
+    d1_databases: [
+      {
+        binding: "DB",
+        database_id: (
+          appEnvironment.d1_databases as Array<{ database_id: string }>
+        )[0]?.database_id,
+      },
+    ],
+  };
+  trackingEnvironments[environment] = selectedTrackingEnvironment;
+  return { configuration, trackingConfiguration };
+}
 
 function configuredWithSyntheticBindings(
   environment: NamedEnvironment,
@@ -139,16 +200,23 @@ function configuredWithSyntheticBindings(
   return { configuration, trackingConfiguration };
 }
 
-function releaseTarget(configuration = configured(), environment = "preview") {
+function releaseTarget(
+  configuration = configured(),
+  environment = "preview",
+  trackingConfiguration = trackingConfigured(),
+) {
   return validateReleaseTarget(
     configuration,
     environment,
-    trackingConfigured(),
+    trackingConfiguration,
   );
 }
 const validateTrackingReleaseTarget = validateReleaseTarget;
 const migrations = ["0001_initial.sql", "0002_auth.sql"];
-function responses(overrides: Record<string, unknown> = {}) {
+function responses(
+  overrides: Record<string, unknown> = {},
+  accountSubdomain = "account",
+) {
   const seen: string[] = [];
   const fetcher = vi.fn(
     async (input: string | URL | Request, options?: RequestInit) => {
@@ -156,6 +224,24 @@ function responses(overrides: Record<string, unknown> = {}) {
       seen.push(path);
       const value = overrides[path];
       if (value !== undefined) return Response.json(value);
+      if (path.endsWith("/workers/subdomain"))
+        return Response.json({
+          success: true,
+          result: { subdomain: accountSubdomain },
+        });
+      const subdomainScript = path.match(
+        /\/workers\/scripts\/([^/]+)\/subdomain$/,
+      )?.[1];
+      if (subdomainScript)
+        return Response.json({
+          success: true,
+          result: {
+            enabled: subdomainScript.startsWith("ages-tracking-"),
+            previews_enabled: false,
+          },
+        });
+      if (/\/workers\/scripts\/ages-tracking-[^/]+\/secrets$/.test(path))
+        return Response.json({ success: true, result: [] });
       if (path.endsWith("/query")) {
         expect(JSON.parse(String(options?.body))).toEqual({
           sql: "SELECT name FROM d1_migrations ORDER BY name",
@@ -290,6 +376,29 @@ describe("Release environment isolation", () => {
     (config as Record<string, unknown>).routes = config.env.preview.routes;
     delete (config.env.preview as Record<string, unknown>).routes;
     expect(releaseTarget(config, "preview").workerName).toBe("ages-preview");
+  });
+  it("preserves the custom-domain tracking route mode", () => {
+    expect(releaseTarget().trackingRoute).toEqual({ kind: "custom-domain" });
+  });
+  it("does not accept a workers.dev origin through the custom-domain route mode", () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    const tracking = trackingConfiguration as unknown as {
+      workers_dev: boolean;
+      env: { preview: Record<string, unknown> };
+    };
+    tracking.workers_dev = false;
+    tracking.env.preview.routes = [
+      {
+        pattern: new URL(
+          configuration.env.preview.vars.TRACKING_ORIGIN as string,
+        ).hostname,
+        custom_domain: true,
+      },
+    ];
+
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("workers_dev:true");
   });
   it("rejects matching or nested registrable-domain declarations", () => {
     const config = configured();
@@ -434,6 +543,329 @@ describe("Release environment isolation", () => {
       validateTrackingReleaseTarget(configured(), "preview", tracking),
     ).toThrow("only its ticket D1 binding");
   });
+
+  it("accepts exact account-owned workers.dev tracking origins for preview and production", () => {
+    for (const environment of ["preview", "production"] as const) {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration(environment);
+      const target = releaseTarget(
+        configuration,
+        environment,
+        trackingConfiguration,
+      );
+
+      expect(target.trackingRoute).toEqual({
+        kind: "workers-dev",
+        accountSubdomain: "account",
+      });
+      expect(target.trackingRegistrableDomain).toBe("account.workers.dev");
+    }
+  });
+
+  it.each([
+    [
+      "https://preview-ages-tracking-preview.account.workers.dev",
+      "TRACKING_ORIGIN",
+    ],
+    ["https://other.account.workers.dev", "TRACKING_ORIGIN"],
+    [
+      "https://ages-tracking-preview.other-account.workers.dev",
+      "TRACKING_REGISTRABLE_DOMAIN",
+    ],
+    [
+      "https://ages-tracking-preview.account.extra.workers.dev",
+      "TRACKING_ORIGIN",
+    ],
+    ["https://AGES-TRACKING-PREVIEW.account.workers.dev", "TRACKING_ORIGIN"],
+    [
+      "https://ages-tracking-preview.account.workers.dev:8443",
+      "TRACKING_ORIGIN",
+    ],
+    [
+      "https://ages-tracking-preview.account.workers.dev/path",
+      "TRACKING_ORIGIN",
+    ],
+    [
+      "https://ages-tracking-preview.account.workers.dev?query=1",
+      "TRACKING_ORIGIN",
+    ],
+    [
+      "https://ages-tracking-preview.account.workers.dev#fragment",
+      "TRACKING_ORIGIN",
+    ],
+    ["http://ages-tracking-preview.account.workers.dev", "TRACKING_ORIGIN"],
+  ])(
+    "rejects a noncanonical workers.dev tracking origin: %s",
+    (origin, message) => {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration();
+      const vars = (
+        trackingConfiguration as unknown as {
+          env: { preview: Record<string, unknown> };
+        }
+      ).env.preview.vars as Record<string, unknown>;
+      vars.TRACKING_ORIGIN = origin;
+      (
+        configuration.env.preview.vars as Record<string, unknown>
+      ).TRACKING_ORIGIN = origin;
+
+      expect(() =>
+        releaseTarget(configuration, "preview", trackingConfiguration),
+      ).toThrow(message);
+    },
+  );
+
+  it.each([
+    "workers.dev",
+    "ages-tracking-preview.account.workers.dev",
+    "sibling.account.workers.dev",
+    "account.workers.dev.attacker.test",
+  ])(
+    "rejects a forged workers.dev registrable-domain declaration: %s",
+    (domain) => {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration();
+      (
+        configuration.env.preview.vars as Record<string, unknown>
+      ).TRACKING_REGISTRABLE_DOMAIN = domain;
+
+      expect(() =>
+        releaseTarget(configuration, "preview", trackingConfiguration),
+      ).toThrow("TRACKING_REGISTRABLE_DOMAIN");
+    },
+  );
+
+  it.each([
+    [
+      "false",
+      (tracking: Record<string, unknown>) => {
+        tracking.workers_dev = false;
+      },
+    ],
+    [
+      "missing",
+      (tracking: Record<string, unknown>) => {
+        delete tracking.workers_dev;
+      },
+    ],
+  ])(
+    "requires explicit workers_dev:true for tracking workers.dev mode (%s)",
+    (_, mutate) => {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration();
+      mutate(trackingConfiguration as Record<string, unknown>);
+      expect(() =>
+        releaseTarget(configuration, "preview", trackingConfiguration),
+      ).toThrow("workers_dev");
+    },
+  );
+
+  it.each([
+    [
+      "enabled",
+      (tracking: Record<string, unknown>) => {
+        tracking.preview_urls = true;
+      },
+    ],
+    [
+      "missing",
+      (tracking: Record<string, unknown>) => {
+        delete tracking.preview_urls;
+      },
+    ],
+  ])(
+    "requires explicit preview_urls:false for tracking workers.dev mode (%s)",
+    (_, mutate) => {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration();
+      mutate(trackingConfiguration as Record<string, unknown>);
+      expect(() =>
+        releaseTarget(configuration, "preview", trackingConfiguration),
+      ).toThrow("preview_urls");
+    },
+  );
+
+  it.each([
+    [
+      "top-level routes",
+      (tracking: Record<string, unknown>) => {
+        tracking.routes = [
+          { pattern: "app.example.test", custom_domain: true },
+        ];
+      },
+    ],
+    [
+      "top-level legacy route",
+      (tracking: Record<string, unknown>) => {
+        tracking.route = "app.example.test/*";
+      },
+    ],
+    [
+      "environment routes",
+      (tracking: Record<string, unknown>) => {
+        (
+          tracking as unknown as {
+            env: { preview: Record<string, unknown> };
+          }
+        ).env.preview.routes = [
+          { pattern: "app.example.test", custom_domain: true },
+        ];
+      },
+    ],
+    [
+      "environment legacy route",
+      (tracking: Record<string, unknown>) => {
+        (
+          tracking as unknown as {
+            env: { preview: Record<string, unknown> };
+          }
+        ).env.preview.route = "app.example.test/*";
+      },
+    ],
+  ])("rejects %s in workers.dev tracking mode", (_, mutate) => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    mutate(trackingConfiguration as Record<string, unknown>);
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("routes");
+  });
+
+  it("allows empty route arrays to explicitly suppress top-level route inheritance", () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    const tracking = trackingConfiguration as unknown as {
+      env: { preview: Record<string, unknown> };
+      routes?: unknown;
+    };
+    tracking.routes = [];
+    tracking.env.preview.routes = [];
+
+    expect(
+      releaseTarget(configuration, "preview", trackingConfiguration)
+        .trackingRoute,
+    ).toEqual({ kind: "workers-dev", accountSubdomain: "account" });
+  });
+
+  it("keeps the app on one explicit custom domain with workers.dev and preview URLs disabled", () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    expect(
+      releaseTarget(configuration, "preview", trackingConfiguration).appOrigin,
+    ).toBe("https://app.example.test");
+  });
+
+  it.each([
+    [
+      "workers.dev enabled",
+      (config: Record<string, unknown>) => {
+        config.workers_dev = true;
+      },
+    ],
+    [
+      "workers.dev implicit",
+      (config: Record<string, unknown>) => {
+        delete config.workers_dev;
+      },
+    ],
+    [
+      "preview URLs enabled",
+      (config: Record<string, unknown>) => {
+        config.preview_urls = true;
+      },
+    ],
+    [
+      "preview URLs implicit",
+      (config: Record<string, unknown>) => {
+        delete config.preview_urls;
+      },
+    ],
+  ])("requires app workers.dev and preview URLs disabled (%s)", (_, mutate) => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    mutate(configuration as unknown as Record<string, unknown>);
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("application Worker");
+  });
+
+  it.each([
+    [
+      "a second custom domain",
+      (config: Record<string, unknown>) => {
+        (
+          config as unknown as {
+            env: { preview: Record<string, unknown> };
+          }
+        ).env.preview.routes = [
+          { pattern: "app.example.test", custom_domain: true },
+          { pattern: "alias.example.test", custom_domain: true },
+        ];
+      },
+    ],
+    [
+      "a legacy route",
+      (config: Record<string, unknown>) => {
+        (
+          config as unknown as {
+            env: { preview: Record<string, unknown> };
+          }
+        ).env.preview.route = "alias.example.test/*";
+      },
+    ],
+  ])("requires one exact app custom-domain route without %s", (_, mutate) => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    mutate(configuration as unknown as Record<string, unknown>);
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("application custom-domain route");
+  });
+
+  it("rejects an app hostname under workers.dev even when APP_REGISTRABLE_DOMAIN claims otherwise", () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    Object.assign(configuration.env.preview.vars, {
+      APP_ORIGIN: "https://app.account.workers.dev",
+      APP_REGISTRABLE_DOMAIN: "example.test",
+    });
+    configuration.env.preview.routes = [
+      { pattern: "app.account.workers.dev", custom_domain: true },
+    ];
+
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("workers.dev");
+  });
+
+  it.each([
+    [
+      "a forged workers.dev app domain",
+      "https://app.example.test",
+      "account.workers.dev",
+    ],
+    [
+      "an app origin outside its declared domain",
+      "https://app.attacker.test",
+      "example.test",
+    ],
+  ])("rejects %s", (_, appOrigin, appDomain) => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    const trackingPreview = (
+      trackingConfiguration as unknown as {
+        env: { preview: Record<string, unknown> };
+      }
+    ).env.preview;
+    Object.assign(configuration.env.preview.vars, {
+      APP_ORIGIN: appOrigin,
+      APP_REGISTRABLE_DOMAIN: appDomain,
+    });
+    trackingPreview.vars = {
+      ...(trackingPreview.vars as Record<string, unknown>),
+      APP_ORIGIN: appOrigin,
+    };
+    configuration.env.preview.routes = [
+      { pattern: new URL(appOrigin).hostname, custom_domain: true },
+    ];
+
+    expect(() =>
+      releaseTarget(configuration, "preview", trackingConfiguration),
+    ).toThrow("APP_ORIGIN must belong to its custom domain");
+  });
 });
 
 describe("Read-only release resource verification", () => {
@@ -469,6 +901,144 @@ describe("Read-only release resource verification", () => {
       JSON.stringify({ sql: "SELECT name FROM d1_migrations ORDER BY name" }),
     );
   });
+  it("checks the exact account workers.dev subdomain and both live script states with GET only", async () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    const target = releaseTarget(
+      configuration,
+      "preview",
+      trackingConfiguration,
+    );
+    const { fetcher, seen } = responses();
+
+    await verifyReleaseResources(
+      target,
+      "synthetic-token",
+      migrations,
+      fetcher,
+    );
+
+    expect(seen).toContain(`/client/v4/accounts/${account}/workers/subdomain`);
+    expect(seen).toContain(
+      `/client/v4/accounts/${account}/workers/scripts/ages-tracking-preview/subdomain`,
+    );
+    expect(seen).toContain(
+      `/client/v4/accounts/${account}/workers/scripts/ages-preview/subdomain`,
+    );
+    expect(seen).toContain(
+      `/client/v4/accounts/${account}/workers/scripts/ages-tracking-preview/secrets`,
+    );
+    const workerCalls = fetcher.mock.calls.filter(([input]) =>
+      new URL(String(input)).pathname.includes("/workers/"),
+    );
+    expect(
+      workerCalls.every(([, options]) => (options?.method ?? "GET") === "GET"),
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      "mismatched account subdomain",
+      "/workers/subdomain",
+      { success: true, result: { subdomain: "other" } },
+      "workers.dev account subdomain",
+    ],
+    [
+      "missing account subdomain",
+      "/workers/subdomain",
+      { success: true },
+      "workers.dev account subdomain",
+    ],
+    [
+      "malformed account subdomain",
+      "/workers/subdomain",
+      { success: true, result: { subdomain: "bad..name" } },
+      "workers.dev account subdomain",
+    ],
+    [
+      "disabled tracking script",
+      "/workers/scripts/ages-tracking-preview/subdomain",
+      { success: true, result: { enabled: false, previews_enabled: false } },
+      "tracking workers.dev URL",
+    ],
+    [
+      "enabled tracking previews",
+      "/workers/scripts/ages-tracking-preview/subdomain",
+      { success: true, result: { enabled: true, previews_enabled: true } },
+      "tracking workers.dev URL",
+    ],
+    [
+      "missing tracking script settings",
+      "/workers/scripts/ages-tracking-preview/subdomain",
+      { success: true, result: { enabled: true } },
+      "tracking workers.dev URL",
+    ],
+    [
+      "enabled app workers.dev URL",
+      "/workers/scripts/ages-preview/subdomain",
+      { success: true, result: { enabled: true, previews_enabled: false } },
+      "application workers.dev URL",
+    ],
+    [
+      "enabled app preview URLs",
+      "/workers/scripts/ages-preview/subdomain",
+      { success: true, result: { enabled: false, previews_enabled: true } },
+      "application workers.dev URL",
+    ],
+    [
+      "missing tracking secret list",
+      "/workers/scripts/ages-tracking-preview/secrets",
+      { success: true },
+      "tracking Worker secret names",
+    ],
+    [
+      "tracking secret exists",
+      "/workers/scripts/ages-tracking-preview/secrets",
+      {
+        success: true,
+        result: [{ name: "APP_SESSION_KEY", type: "secret_text" }],
+      },
+      "tracking Worker secret names",
+    ],
+  ])(
+    "blocks release when live workers.dev control has %s",
+    async (_, suffix, payload, message) => {
+      const { configuration, trackingConfiguration } =
+        workersDevConfiguration();
+      const target = releaseTarget(
+        configuration,
+        "preview",
+        trackingConfiguration,
+      );
+      const path = `/client/v4/accounts/${account}${suffix}`;
+      const { fetcher } = responses({ [path]: payload });
+
+      await expect(
+        verifyReleaseResources(target, "synthetic-token", migrations, fetcher),
+      ).rejects.toThrow(message);
+    },
+  );
+
+  it("sanitizes failed workers.dev control GET responses and blocks before later checks", async () => {
+    const { configuration, trackingConfiguration } = workersDevConfiguration();
+    const target = releaseTarget(
+      configuration,
+      "preview",
+      trackingConfiguration,
+    );
+    const path = `/client/v4/accounts/${account}/workers/subdomain`;
+    const { fetcher, seen } = responses({
+      [path]: {
+        success: false,
+        errors: [{ message: "never-print-this" }],
+      },
+    });
+
+    await expect(
+      verifyReleaseResources(target, "synthetic-token", migrations, fetcher),
+    ).rejects.toThrow("Could not verify workers.dev account subdomain");
+    expect(seen).toEqual([path]);
+  });
+
   it("finds the configured namespace after a full KV page without skipping pages", async () => {
     const paths: string[] = [];
     const { fetcher } = responses();
