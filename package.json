@@ -20,7 +20,7 @@
     "test:watch": "vitest",
     "test:recovery-drill": "node --test tests/tools/recovery-drill.test.mjs",
     "test:trace-metrics": "node --test tests/tools/chromium-trace-metrics.test.mjs tests/tools/chromium-trace-cli.test.mjs",
-    "check": "npm run build:client && npm run lint && npm run typecheck && npm run test && npm run test:recovery-drill && npm run test:trace-metrics && npm run build:worker && npm run build:tracking-worker && playwright test",
+    "check": "npm run build:client && npm run lint && npm run typecheck && npm run test && npm run test:recovery-drill && npm run test:trace-metrics && npm run test:demo && npm run build:worker && npm run build:tracking-worker && playwright test",
     "build:client": "vite build",
     "build:worker": "wrangler deploy --env \"\" --dry-run --outdir dist/worker",
     "build:tracking-worker": "wrangler deploy --config wrangler.tracking.jsonc --env \"\" --dry-run --outdir dist/tracking-worker",
@@ -30,7 +30,8 @@
     "recovery:drill": "node scripts/recovery-drill.mjs",
     "deploy:preview": "npm run preflight -- preview --deploy",
     "deploy:production": "npm run preflight -- production --deploy",
-    "dev:demo": "npm run build:client && node scripts/dev-demo.mjs"
+    "dev:demo": "npm run build:client && node scripts/dev-demo.mjs",
+    "test:demo": "node --test tests/tools/dev-demo.test.mjs"
   },
   "dependencies": {
     "aws4fetch": "1.0.20",
