@@ -1,0 +1,120 @@
+{
+  "traceEvents": [
+    {
+      "name": "InputLatency::MouseUp",
+      "cat": "benchmark,latencyInfo,rail,input.scrolling",
+      "ph": "b",
+      "pid": 11,
+      "tid": 1,
+      "ts": 10000,
+      "id": "0x41",
+      "args": {
+        "chrome_latency_info": {
+          "trace_id": 9223372036854775807
+        },
+        "url": "https://private.example/marker",
+        "caption": "TRACE_PRIVATE_CAPTION_MARKER",
+        "database_id": "TRACE_PRIVATE_DATABASE_MARKER"
+      }
+    },
+    {
+      "name": "InputLatency::MouseUp",
+      "cat": "benchmark,latencyInfo,rail,input.scrolling",
+      "ph": "e",
+      "pid": 11,
+      "tid": 1,
+      "ts": 10010,
+      "id": "0x41"
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "b",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10010,
+      "id2": { "local": "0xa" },
+      "args": {
+        "event_latency": {
+          "event_type": "MOUSE_RELEASED",
+          "event_latency_id": 9223372036854775807,
+          "surface_frame_trace_id": -9223372036854775808,
+          "display_trace_id": -9223372036854775807,
+          "vsync_interval_ms": 16.666
+        }
+      }
+    },
+    {
+      "name": "SubmitCompositorFrameToPresentationCompositorFrame",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "b",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10020,
+      "id2": { "local": "0xa" }
+    },
+    {
+      "name": "SwapEndToPresentationCompositorFrame",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "b",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10030,
+      "id2": { "local": "0xa" }
+    },
+    {
+      "name": "PipelineReporter",
+      "cat": "cc,benchmark,disabled-by-default-devtools.timeline.frame",
+      "ph": "b",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10030,
+      "id2": { "local": "0x1" },
+      "args": {
+        "frame_reporter": {
+          "state": "STATE_PRESENTED_ALL",
+          "surface_frame_trace_id": -9223372036854775808,
+          "display_trace_id": -9223372036854775807,
+          "layer_tree_host_id": 7,
+          "frame_source": 9
+        }
+      }
+    },
+    {
+      "name": "SwapEndToPresentationCompositorFrame",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "e",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10050,
+      "id2": { "local": "0xa" }
+    },
+    {
+      "name": "SubmitCompositorFrameToPresentationCompositorFrame",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "e",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10050,
+      "id2": { "local": "0xa" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cc,benchmark,input,input.scrolling",
+      "ph": "e",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10050,
+      "id2": { "local": "0xa" }
+    },
+    {
+      "name": "PipelineReporter",
+      "cat": "cc,benchmark,disabled-by-default-devtools.timeline.frame",
+      "ph": "e",
+      "pid": 22,
+      "tid": 2,
+      "ts": 10050,
+      "id2": { "local": "0x1" }
+    }
+  ]
+}

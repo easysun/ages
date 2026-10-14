@@ -1,0 +1,204 @@
+{
+  "traceEvents": [
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 1,
+      "tid": 2,
+      "ts": 10,
+      "id2": { "local": "0x9" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 1,
+      "tid": 2,
+      "ts": 20,
+      "id2": { "local": "0x9" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 1,
+      "tid": 2,
+      "ts": 30,
+      "id2": { "local": "0x9" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 1,
+      "tid": 2,
+      "ts": 40,
+      "id2": { "local": "0x9" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 3,
+      "tid": 4,
+      "ts": 50,
+      "id2": { "local": "0x7" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 3,
+      "tid": 4,
+      "ts": 60,
+      "id2": { "local": "0x7" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-b",
+      "ph": "b",
+      "pid": 5,
+      "tid": 6,
+      "ts": 50,
+      "id2": { "local": "0x7" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-b",
+      "ph": "e",
+      "pid": 5,
+      "tid": 6,
+      "ts": 60,
+      "id2": { "local": "0x7" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 7,
+      "tid": 8,
+      "ts": 70,
+      "id2": { "local": "0x8" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 7,
+      "tid": 8,
+      "ts": 80,
+      "id2": { "global": "0x8" }
+    },
+    {
+      "name": "PipelineReporter",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 9,
+      "tid": 10,
+      "ts": 90,
+      "id": "0x1"
+    },
+    {
+      "name": "PipelineReporter",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 9,
+      "tid": 10,
+      "ts": 100,
+      "id": "0x1"
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 11,
+      "tid": 12,
+      "ts": 110,
+      "id2": { "local": "0x5" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 11,
+      "tid": 13,
+      "ts": 120,
+      "id2": { "local": "0x5" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 14,
+      "tid": 15,
+      "ts": 130,
+      "id2": { "local": "0x6" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 14,
+      "tid": 15,
+      "ts": 135,
+      "id2": { "local": "0x6" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 14,
+      "tid": 15,
+      "ts": 140,
+      "id2": { "local": "0x6" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 14,
+      "tid": 15,
+      "ts": 145,
+      "id2": { "local": "0x6" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 16,
+      "tid": 17,
+      "ts": 150,
+      "id2": { "local": "0x4" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 18,
+      "tid": 19,
+      "ts": 160,
+      "id2": { "local": "0x4" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "b",
+      "pid": 20,
+      "tid": 21,
+      "ts": 170,
+      "id": "0xf",
+      "id2": { "local": "0xf" }
+    },
+    {
+      "name": "EventLatency",
+      "cat": "cat-a",
+      "ph": "e",
+      "pid": 20,
+      "tid": 21,
+      "ts": 180,
+      "id": "0xf",
+      "id2": { "local": "0xf" }
+    }
+  ]
+}
