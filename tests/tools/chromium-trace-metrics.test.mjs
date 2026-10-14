@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   analyzeTrace,
+  nearestRank,
   parseTrace,
 } from "../../scripts/chromium-trace-metrics.mjs";
 
@@ -25,6 +26,559 @@ function diagnosticCodes(analysis) {
   return new Set(analysis.diagnostics.map(({ code }) => code));
 }
 
+test("uses one-based nearest-rank percentiles and rejects invalid inputs", () => {
+  assert.equal(nearestRank([4], 0.5), 4);
+  assert.equal(nearestRank([4], 0.95), 4);
+  assert.equal(
+    nearestRank(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+      0.5,
+    ),
+    50,
+  );
+  assert.equal(
+    nearestRank(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+      0.95,
+    ),
+    95,
+  );
+  assert.equal(
+    nearestRank(
+      Array.from({ length: 120 }, (_, i) => i + 1),
+      0.5,
+    ),
+    60,
+  );
+  assert.equal(
+    nearestRank(
+      Array.from({ length: 120 }, (_, i) => i + 1),
+      0.95,
+    ),
+    114,
+  );
+  assert.equal(nearestRank([2, 1, 2, 1], 0.5), 1);
+  assert.equal(nearestRank([], 0.5), null);
+  assert.throws(() => nearestRank([1, Number.NaN], 0.5), TypeError);
+  assert.throws(() => nearestRank([-1], 0.5), TypeError);
+  assert.throws(() => nearestRank([1], 0.9), TypeError);
+});
+
+test("inverts the original EventTiming decimal token and proves only exact discrete entries", () => {
+  const analysis = analyzeTrace(
+    parseTrace(readFixture("event-timing-fallback.trace.json")),
+    { trace: "event-timing-fallback.trace.json", dataLossOccurred: false },
+  );
+
+  assert.deepEqual(analysis.discreteEventTimingCrosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.equal(
+    analysis.discreteEventTimingCrosswalk.counts.legacyCompleteEntries,
+    1,
+  );
+  assert.equal(
+    analysis.discreteEventTimingCrosswalk.counts.modernCompleteEntries,
+    1,
+  );
+  assert.deepEqual(
+    analysis.discreteEventTimingCrosswalk.formalActionSamples,
+    [],
+  );
+  assert.deepEqual(analysis.discreteEventTimingCrosswalk.methodScope, {
+    observedBrowserVersion: "153.0.8010.12",
+    pinnedSourceRevision: "971a7443b0c9b0a9b2860529b33331b76077ec62",
+    evidenceClass: "synthetic-method-pilot",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    analysis.discreteEventTimingCrosswalk.gateReasonCodes.includes(
+      "ACTION_ATTRIBUTION_UNPROVEN",
+    ),
+  );
+  assert.ok(
+    analysis.discreteEventTimingCrosswalk.gateReasonCodes.includes(
+      "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+    ),
+  );
+  assert.ok(
+    analysis.discreteEventTimingCrosswalk.gateReasonCodes.includes(
+      "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    ),
+  );
+  assert.ok(
+    analysis.discreteEventTimingCrosswalk.gateReasonCodes.includes(
+      "SYNTHETIC_METHOD_PILOT_ONLY",
+    ),
+  );
+});
+
+test("rejects ambiguous crosswalk identities instead of joining nearby entries", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const duplicate = structuredClone(trace.traceEvents[0]);
+  const duplicateEnd = structuredClone(trace.traceEvents[3]);
+  duplicate.id = "0x4";
+  duplicateEnd.id = "0x4";
+  trace.traceEvents.push(duplicate, duplicateEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "AMBIGUOUS_CROSSWALK_IDENTITY",
+    ),
+  );
+});
+
+test("distinguishes repeated EventTiming identities by exact processing endpoints", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const legacyBegin = structuredClone(trace.traceEvents[0]);
+  const legacyEnd = structuredClone(trace.traceEvents[3]);
+  const modernBegin = structuredClone(trace.traceEvents[1]);
+  const modernEnd = structuredClone(trace.traceEvents[2]);
+  legacyBegin.ts = 11000;
+  legacyBegin.args.data.timeStamp = 2;
+  legacyBegin.args.data.processingStart = 2.001;
+  legacyBegin.args.data.processingEnd = 2.005;
+  legacyEnd.ts = 11009;
+  modernBegin.ts = 11001;
+  modernEnd.ts = 11005;
+  trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(
+    crosswalk.candidates.map(({ durationUs }) => durationUs),
+    [8, 9],
+  );
+  assert.equal(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "AMBIGUOUS_CROSSWALK_IDENTITY",
+    ),
+    false,
+  );
+});
+
+test("requires EventTiming frame values to use the observed string encoding", () => {
+  const legacyNumericFrame = JSON.parse(
+    readFixture("event-timing-fallback.trace.json"),
+  );
+  legacyNumericFrame.traceEvents[0].args.data.frame = 123;
+  const legacyCrosswalk = analyzeTrace(
+    parseTrace(JSON.stringify(legacyNumericFrame)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
+  assert.deepEqual(legacyCrosswalk.candidates, []);
+  assert.ok(
+    legacyCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "MALFORMED_LEGACY_FRAME",
+    ),
+  );
+
+  const modernNumericFrame = JSON.parse(
+    readFixture("event-timing-fallback.trace.json"),
+  );
+  modernNumericFrame.traceEvents[1].args.event_timing.frame = 123;
+  const modernCrosswalk = analyzeTrace(
+    parseTrace(JSON.stringify(modernNumericFrame)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
+  assert.deepEqual(modernCrosswalk.candidates, []);
+  assert.ok(
+    modernCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "MALFORMED_MODERN_FRAME",
+    ),
+  );
+});
+
+test("requires the observed category for each typed EventTiming source", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  for (const event of trace.traceEvents) {
+    if (event.name === "EventTiming") event.cat = "latency";
+    if (event.name === "EventProcessing") event.cat = "devtools.timeline";
+  }
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "UNEXPECTED_TYPED_SLICE_CATEGORY",
+    ),
+  );
+});
+
+test("requires a consistent origin per capture, renderer, and frame scope", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const legacyBegin = structuredClone(trace.traceEvents[0]);
+  const legacyEnd = structuredClone(trace.traceEvents[3]);
+  const modernBegin = structuredClone(trace.traceEvents[1]);
+  const modernEnd = structuredClone(trace.traceEvents[2]);
+  legacyBegin.id = "0x4";
+  legacyEnd.id = "0x4";
+  legacyBegin.ts = 11000;
+  legacyBegin.args.data.timeStamp = 1;
+  legacyBegin.args.data.processingStart = 1.001;
+  legacyBegin.args.data.processingEnd = 1.005;
+  legacyEnd.ts = 11008;
+  legacyBegin.args.data.interactionId = 2;
+  legacyBegin.args.data.interactionOffset = 3;
+  modernBegin.id2.local = "0x4";
+  modernEnd.id2.local = "0x4";
+  modernBegin.ts = 11001;
+  modernEnd.ts = 11005;
+  modernBegin.args.event_timing.interaction_id = 2;
+  modernBegin.args.event_timing.interaction_offset = 3;
+  trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "INCONSISTENT_DOCUMENT_ORIGIN",
+    ),
+  );
+});
+
+test("keeps independent renderer scopes separate when origins differ", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const legacyBegin = structuredClone(trace.traceEvents[0]);
+  const legacyEnd = structuredClone(trace.traceEvents[3]);
+  const modernBegin = structuredClone(trace.traceEvents[1]);
+  const modernEnd = structuredClone(trace.traceEvents[2]);
+  for (const event of [legacyBegin, legacyEnd, modernBegin, modernEnd]) {
+    event.pid = 202;
+  }
+  legacyBegin.id = "0x4";
+  legacyEnd.id = "0x4";
+  legacyBegin.ts = 11000;
+  legacyBegin.args.data.timeStamp = 1;
+  legacyBegin.args.data.processingStart = 1.001;
+  legacyBegin.args.data.processingEnd = 1.005;
+  legacyEnd.ts = 11008;
+  legacyBegin.args.data.interactionId = 2;
+  legacyBegin.args.data.interactionOffset = 3;
+  modernBegin.id2.local = "0x4";
+  modernEnd.id2.local = "0x4";
+  modernBegin.ts = 11001;
+  modernEnd.ts = 11005;
+  modernBegin.args.event_timing.interaction_id = 2;
+  modernBegin.args.event_timing.interaction_offset = 3;
+  trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.equal(crosswalk.candidates.length, 2);
+});
+
+test("keeps independent frame scopes separate when origins differ", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const legacyBegin = structuredClone(trace.traceEvents[0]);
+  const legacyEnd = structuredClone(trace.traceEvents[3]);
+  const modernBegin = structuredClone(trace.traceEvents[1]);
+  const modernEnd = structuredClone(trace.traceEvents[2]);
+  legacyBegin.id = "0x4";
+  legacyEnd.id = "0x4";
+  legacyBegin.ts = 11000;
+  legacyBegin.args.data.frame = "frame-B";
+  legacyBegin.args.data.timeStamp = 1;
+  legacyBegin.args.data.processingStart = 1.001;
+  legacyBegin.args.data.processingEnd = 1.005;
+  legacyEnd.ts = 11008;
+  legacyBegin.args.data.interactionId = 2;
+  legacyBegin.args.data.interactionOffset = 3;
+  modernBegin.id2.local = "0x4";
+  modernEnd.id2.local = "0x4";
+  modernBegin.ts = 11001;
+  modernEnd.ts = 11005;
+  modernBegin.args.event_timing.frame = "frame-B";
+  modernBegin.args.event_timing.interaction_id = 2;
+  modernBegin.args.event_timing.interaction_offset = 3;
+  trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.equal(crosswalk.candidates.length, 2);
+});
+
+test("rejects a decimal timestamp with no exact binary64 microsecond preimage", () => {
+  const text = readFixture("event-timing-fallback.trace.json").replace(
+    '"timeStamp": 1.0000000000000001',
+    '"timeStamp": 1.0000000000000002',
+  );
+  const crosswalk = analyzeTrace(parseTrace(text), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "NO_BINARY64_MICROSECOND_PREIMAGE",
+    ),
+  );
+});
+
+test("requires explicit fallback-free evidence for the modern slice", () => {
+  const missingFallback = readFixture(
+    "event-timing-fallback.trace.json",
+  ).replace('"fallback_reason": "None",\n', "");
+  const crosswalk = analyzeTrace(parseTrace(missingFallback), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(({ code }) => code === "FALLBACK_UNPROVEN"),
+  );
+
+  const fallbackTimeUsPresent = readFixture(
+    "event-timing-fallback.trace.json",
+  ).replace('"pointer_id": 1', '"pointer_id": 1, "fallback_time_us": 0');
+  const contradicted = analyzeTrace(parseTrace(fallbackTimeUsPresent), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(contradicted.candidates, []);
+  assert.ok(
+    contradicted.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
+
+  const nonzeroFallbackTime = readFixture(
+    "event-timing-fallback.trace.json",
+  ).replace('"fallback_time": 0', '"fallback_time": 1');
+  const fallbackTimeCrosswalk = analyzeTrace(parseTrace(nonzeroFallbackTime), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(fallbackTimeCrosswalk.candidates, []);
+  assert.ok(
+    fallbackTimeCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
+});
+
+test("rejects mismatched identity fields and typed track namespaces", () => {
+  const frameMismatch = readFixture("event-timing-fallback.trace.json").replace(
+    '"frame": "frame-A",\n          "node_id"',
+    '"frame": "frame-B",\n          "node_id"',
+  );
+  const frameCrosswalk = analyzeTrace(parseTrace(frameMismatch), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(frameCrosswalk.candidates, []);
+  assert.ok(
+    frameCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "NO_EXACT_CROSSWALK_MATCH",
+    ),
+  );
+
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  delete trace.traceEvents[3].id;
+  trace.traceEvents[3].id2 = { local: "0x1" };
+  const trackCrosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(trackCrosswalk.candidates, []);
+  assert.ok(
+    trackCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "UNTERMINATED_TYPED_SLICE",
+    ),
+  );
+  assert.ok(
+    trackCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "UNMATCHED_TYPED_SLICE_END",
+    ),
+  );
+});
+
+test("supports id2.global tracks and optional key_code without using them as join keys", () => {
+  const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const legacyBegin = structuredClone(trace.traceEvents[0]);
+  const legacyEnd = structuredClone(trace.traceEvents[3]);
+  const modernBegin = structuredClone(trace.traceEvents[1]);
+  const modernEnd = structuredClone(trace.traceEvents[2]);
+  legacyBegin.id = "0x9";
+  legacyEnd.id = "0x9";
+  legacyBegin.ts = 11000;
+  legacyBegin.args.data.type = "keydown";
+  legacyBegin.args.data.frame = "frame-B";
+  legacyBegin.args.data.nodeId = 317;
+  legacyBegin.args.data.interactionId = -3;
+  legacyBegin.args.data.interactionOffset = -4;
+  legacyBegin.args.data.timeStamp = 2;
+  legacyBegin.args.data.processingStart = 2.001;
+  legacyBegin.args.data.processingEnd = 2.005;
+  legacyEnd.ts = 11008;
+  delete modernBegin.id2.local;
+  delete modernEnd.id2.local;
+  modernBegin.id2.global = "0x9";
+  modernEnd.id2.global = "0x9";
+  modernBegin.ts = 11001;
+  modernEnd.ts = 11005;
+  modernBegin.args.event_timing.type = "KEY_DOWN_EVENT";
+  modernBegin.args.event_timing.frame = "frame-B";
+  modernBegin.args.event_timing.node_id = 317;
+  modernBegin.args.event_timing.interaction_id = 4294967293;
+  modernBegin.args.event_timing.interaction_offset = 4294967292;
+  delete modernBegin.args.event_timing.pointer_id;
+  modernBegin.args.event_timing.key_code = 16;
+  trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+
+  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(
+    crosswalk.candidates.map(({ eventType }) => eventType),
+    ["click", "keydown"],
+  );
+});
+
+test("rejects unknown fields and modern interaction values outside uint32", () => {
+  const unknownField = readFileSync(
+    new URL("event-timing-fallback.trace.json", fixtures),
+    "utf8",
+  ).replace('"pointer_id": 1', '"pointer_id": 1, "joinKey": "private"');
+  const unknownCrosswalk = analyzeTrace(parseTrace(unknownField), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(unknownCrosswalk.candidates, []);
+  assert.ok(
+    unknownCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "UNKNOWN_MODERN_EVENT_TIMING_FIELD",
+    ),
+  );
+
+  const outOfRange = readFixture("event-timing-fallback.trace.json").replace(
+    '"interaction_id": 4294967295',
+    '"interaction_id": 4294967296',
+  );
+  const rangeCrosswalk = analyzeTrace(parseTrace(outOfRange), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(rangeCrosswalk.candidates, []);
+  assert.ok(
+    rangeCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "MODERN_INTERACTION_OUT_OF_RANGE",
+    ),
+  );
+});
+
+test("rejects processing endpoint mismatch and out-of-range legacy interaction IDs", () => {
+  const endpointMismatch = readFixture(
+    "event-timing-fallback.trace.json",
+  ).replace('"ts": 10005', '"ts": 10004');
+  const endpointCrosswalk = analyzeTrace(parseTrace(endpointMismatch), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(endpointCrosswalk.candidates, []);
+  assert.ok(
+    endpointCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "PROCESSING_ENDPOINT_MISMATCH",
+    ),
+  );
+
+  const invalidLegacyId = readFixture(
+    "event-timing-fallback.trace.json",
+  ).replace('"interactionId": -1', '"interactionId": -2147483649');
+  const identityCrosswalk = analyzeTrace(parseTrace(invalidLegacyId), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+  assert.deepEqual(identityCrosswalk.candidates, []);
+  assert.ok(
+    identityCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "LEGACY_INTERACTION_OUT_OF_RANGE",
+    ),
+  );
+});
+
+test("rejects processing spans outside their legacy event lifetime", () => {
+  const outsideInput = readFixture("event-timing-fallback.trace.json")
+    .replace(
+      '"processingStart": 1.00099999999999999',
+      '"processingStart": 0.999',
+    )
+    .replace('"ts": 10001', '"ts": 9999');
+  const crosswalk = analyzeTrace(parseTrace(outsideInput), {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  }).discreteEventTimingCrosswalk;
+
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "INVALID_LEGACY_PROCESSING_INTERVAL",
+    ),
+  );
+});
+
+test("does not promote an incidental discrete event into a continuous action sample", () => {
+  const analysis = analyzeTrace(
+    parseTrace(readFixture("continuous-input.trace.json")),
+    {
+      trace: "continuous-input.trace.json",
+      dataLossOccurred: false,
+      action: "pan",
+      stimulusType: "pointermove",
+    },
+  );
+  const crosswalk = analysis.discreteEventTimingCrosswalk;
+
+  assert.equal(crosswalk.candidates.length, 1);
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.ok(
+    crosswalk.rejectionCounts.some(
+      ({ code }) => code === "UNSUPPORTED_CONTINUOUS_EVENT_TYPE",
+    ),
+  );
+});
+
 function frameReporterEvents({
   pid,
   tid = 1,
@@ -33,14 +587,14 @@ function frameReporterEvents({
   surfaceId,
   displayId,
   endpoint,
+  localId = "0x1",
 }) {
-  const id = "0x1";
   const common = {
     name: "PipelineReporter",
     cat: "cc,benchmark,disabled-by-default-devtools.timeline.frame",
     pid,
     tid,
-    id2: { local: id },
+    id2: { local: localId },
   };
   return [
     {
@@ -516,6 +1070,7 @@ test("keeps frame intervals inside declared action segments and streams", () => 
       rendererPid: 101,
       layerTreeHostId: 7,
       frameSource: 9,
+      activeWindows: [{ id: "scroll-one", startUs: 0, endUs: 60 }],
     },
     {
       trace: "frames.trace.json",
@@ -525,6 +1080,7 @@ test("keeps frame intervals inside declared action segments and streams", () => 
       rendererPid: 202,
       layerTreeHostId: 8,
       frameSource: 10,
+      activeWindows: [{ id: "scroll-two", startUs: 0, endUs: 60 }],
     },
     {
       trace: "frames.trace.json",
@@ -534,6 +1090,7 @@ test("keeps frame intervals inside declared action segments and streams", () => 
       rendererPid: 101,
       layerTreeHostId: 7,
       frameSource: 9,
+      activeWindows: [{ id: "zoom-one", startUs: 90, endUs: 120 }],
     },
   ];
   const analysis = analyzeTrace(trace, traceRecord, segments);
@@ -570,6 +1127,375 @@ test("keeps frame intervals inside declared action segments and streams", () => 
   assert.equal(analysis.frameIntervals.status, "diagnostic");
 });
 
+test("does not bridge idle gaps between active windows in one action segment", () => {
+  const events = [20, 30, 40, 50].flatMap((endpoint, index) =>
+    frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: index + 1,
+      displayId: index + 101,
+      endpoint,
+    }),
+  );
+  const analysis = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [
+      {
+        trace: "frames.trace.json",
+        action: "pan",
+        startUs: 0,
+        endUs: 60,
+        rendererPid: 101,
+        layerTreeHostId: 7,
+        frameSource: 9,
+        activeWindows: [
+          { id: "window-one", startUs: 0, endUs: 35 },
+          { id: "window-two", startUs: 35, endUs: 60 },
+        ],
+      },
+    ],
+  );
+
+  assert.deepEqual(
+    analysis.frameIntervals.samples.map(({ fromEndpointUs, toEndpointUs }) => [
+      fromEndpointUs,
+      toEndpointUs,
+    ]),
+    [
+      [20, 30],
+      [40, 50],
+    ],
+  );
+});
+
+test("deduplicates fully identical presented-frame records once", () => {
+  const duplicateFrame = frameReporterEvents({
+    pid: 101,
+    layerTreeHostId: 7,
+    frameSource: 9,
+    surfaceId: 1,
+    displayId: 11,
+    endpoint: 20,
+    localId: "0x1",
+  });
+  const trace = parseTrace(
+    JSON.stringify({
+      traceEvents: [
+        ...duplicateFrame,
+        ...frameReporterEvents({
+          pid: 101,
+          layerTreeHostId: 7,
+          frameSource: 9,
+          surfaceId: 1,
+          displayId: 11,
+          endpoint: 20,
+          localId: "0x2",
+        }),
+        ...frameReporterEvents({
+          pid: 101,
+          layerTreeHostId: 7,
+          frameSource: 9,
+          surfaceId: 2,
+          displayId: 12,
+          endpoint: 30,
+          localId: "0x3",
+        }),
+      ],
+    }),
+  );
+  const analysis = analyzeTrace(
+    trace,
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [
+      {
+        trace: "frames.trace.json",
+        action: "pan",
+        startUs: 0,
+        endUs: 40,
+        rendererPid: 101,
+        layerTreeHostId: 7,
+        frameSource: 9,
+        activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
+        protocolGroupIndex: 0,
+        session: 1,
+        trial: 1,
+      },
+    ],
+  );
+
+  assert.equal(analysis.frameIntervals.samples.length, 1);
+  assert.equal(analysis.frameIntervals.samples[0].intervalUs, 10);
+  assert.deepEqual(analysis.frameIntervals.qualifiedProtocolTrials, [
+    { protocolGroupIndex: 0, session: 1, trial: 1 },
+  ]);
+});
+
+test("rejects all linked trials that reuse an exact frame identity across windows", () => {
+  const events = [
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 20,
+      localId: "0x1",
+    }),
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 40,
+      localId: "0x2",
+    }),
+  ];
+  const analysis = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [1, 2].map((trial) => ({
+      trace: "frames.trace.json",
+      action: "pan",
+      startUs: (trial - 1) * 30,
+      endUs: trial * 30,
+      rendererPid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      activeWindows: [
+        {
+          id: `window-${trial}`,
+          startUs: (trial - 1) * 30,
+          endUs: trial * 30,
+        },
+      ],
+      protocolGroupIndex: 0,
+      session: 1,
+      trial,
+    })),
+  );
+
+  assert.deepEqual(analysis.frameIntervals.samples, []);
+  assert.deepEqual(analysis.frameIntervals.qualifiedProtocolTrials, []);
+  assert.deepEqual(analysis.frameIntervals.unqualifiedProtocolTrials, [
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 1,
+      status: "invalid",
+      reason: "AMBIGUOUS_CORRELATION",
+    },
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 2,
+      status: "invalid",
+      reason: "AMBIGUOUS_CORRELATION",
+    },
+  ]);
+});
+
+test("rejects frame identity reuse across conflicting compositor streams", () => {
+  const events = [
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 20,
+      localId: "0x1",
+    }),
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 8,
+      frameSource: 10,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 20,
+      localId: "0x2",
+    }),
+  ];
+  const analysis = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [
+      { trial: 1, layerTreeHostId: 7, frameSource: 9 },
+      { trial: 2, layerTreeHostId: 8, frameSource: 10 },
+    ].map(({ trial, layerTreeHostId, frameSource }) => ({
+      trace: "frames.trace.json",
+      action: "pan",
+      startUs: 0,
+      endUs: 40,
+      rendererPid: 101,
+      layerTreeHostId,
+      frameSource,
+      activeWindows: [{ id: `stream-${trial}`, startUs: 0, endUs: 40 }],
+      protocolGroupIndex: 0,
+      session: 1,
+      trial,
+    })),
+  );
+
+  assert.deepEqual(analysis.frameIntervals.samples, []);
+  assert.deepEqual(analysis.frameIntervals.qualifiedProtocolTrials, []);
+  assert.deepEqual(analysis.frameIntervals.unqualifiedProtocolTrials, [
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 1,
+      status: "invalid",
+      reason: "AMBIGUOUS_CORRELATION",
+    },
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 2,
+      status: "invalid",
+      reason: "AMBIGUOUS_CORRELATION",
+    },
+  ]);
+});
+
+test("rejects an ambiguous middle frame instead of bridging its neighbors", () => {
+  const events = [
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 10,
+      localId: "0x1",
+    }),
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 2,
+      displayId: 12,
+      endpoint: 20,
+      localId: "0x2",
+    }),
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 2,
+      displayId: 12,
+      endpoint: 21,
+      localId: "0x3",
+    }),
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 3,
+      displayId: 13,
+      endpoint: 30,
+      localId: "0x4",
+    }),
+  ];
+  const analysis = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [
+      {
+        trace: "frames.trace.json",
+        action: "pan",
+        startUs: 0,
+        endUs: 40,
+        rendererPid: 101,
+        layerTreeHostId: 7,
+        frameSource: 9,
+        activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
+        protocolGroupIndex: 0,
+        session: 1,
+        trial: 1,
+      },
+    ],
+  );
+
+  assert.deepEqual(analysis.frameIntervals.samples, []);
+  assert.deepEqual(analysis.frameIntervals.qualifiedProtocolTrials, []);
+  assert.deepEqual(analysis.frameIntervals.unqualifiedProtocolTrials, [
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 1,
+      status: "invalid",
+      reason: "AMBIGUOUS_CORRELATION",
+    },
+  ]);
+});
+
+test("does not bridge a presented-frame reporter with a malformed endpoint", () => {
+  const malformedReporter = frameReporterEvents({
+    pid: 101,
+    layerTreeHostId: 7,
+    frameSource: 9,
+    surfaceId: 2,
+    displayId: 12,
+    endpoint: 30,
+    localId: "0x2",
+  });
+  malformedReporter[1].ts = null;
+  const events = [
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 1,
+      displayId: 11,
+      endpoint: 10,
+      localId: "0x1",
+    }),
+    ...malformedReporter,
+    ...frameReporterEvents({
+      pid: 101,
+      layerTreeHostId: 7,
+      frameSource: 9,
+      surfaceId: 3,
+      displayId: 13,
+      endpoint: 40,
+      localId: "0x3",
+    }),
+  ];
+  const analysis = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "frames.trace.json", dataLossOccurred: false },
+    [
+      {
+        trace: "frames.trace.json",
+        action: "pan",
+        startUs: 0,
+        endUs: 50,
+        rendererPid: 101,
+        layerTreeHostId: 7,
+        frameSource: 9,
+        activeWindows: [{ id: "pan-one", startUs: 0, endUs: 50 }],
+        protocolGroupIndex: 0,
+        session: 1,
+        trial: 1,
+      },
+    ],
+  );
+
+  assert.deepEqual(analysis.frameIntervals.samples, []);
+  assert.deepEqual(analysis.frameIntervals.qualifiedProtocolTrials, []);
+  assert.deepEqual(analysis.frameIntervals.unqualifiedProtocolTrials, [
+    {
+      protocolGroupIndex: 0,
+      session: 1,
+      trial: 1,
+      status: "invalid",
+      reason: "MALFORMED_TRACE",
+    },
+  ]);
+});
+
 test("uses both exact frame IDs when identifying a presented frame", () => {
   const events = [
     ...frameReporterEvents({
@@ -601,6 +1527,7 @@ test("uses both exact frame IDs when identifying a presented frame", () => {
         rendererPid: 101,
         layerTreeHostId: 7,
         frameSource: 9,
+        activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
       },
     ],
   );
@@ -657,6 +1584,7 @@ test("rejects noncanonical segment action labels without echoing them", () => {
           rendererPid: 101,
           layerTreeHostId: 7,
           frameSource: 9,
+          activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
         },
       ],
     );
@@ -703,6 +1631,7 @@ test("does not form intervals when the presented stream identity is incomplete",
         rendererPid: 101,
         layerTreeHostId: 7,
         frameSource: 9,
+        activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
       },
     ],
   );
@@ -742,6 +1671,7 @@ test("reports no interval series for absent segments or lossy traces", () => {
     rendererPid: 101,
     layerTreeHostId: 7,
     frameSource: 9,
+    activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
   };
 
   const noSegments = analyzeTrace(trace, {
