@@ -19,6 +19,17 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "@playwright/test";
+import {
+  armTrustedStimulusObserver,
+  closeTrustedStimulusObserver,
+  createUnavailableTrustedStimulusObservation,
+  finishTrustedStimulusObserver,
+  installTrustedStimulusObserver,
+  registerTrustedStimulusTarget,
+  setTrustedStimulusPhase,
+  TRUSTED_STIMULUS_EVIDENCE_CLASS,
+  writeTrustedStimulusSidecar,
+} from "./browser-stimulus-observer.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ARTIFACTS = resolve(ROOT, ".superpowers/sdd/chromium-method-runner");
@@ -291,17 +302,33 @@ export function parseRunnerArgs(args) {
   ) {
     return { mode: "run", browser: "installed-brave" };
   }
+  if (
+    args.length === 3 &&
+    args[0] === "--run" &&
+    args[1] === "--browser=installed-brave" &&
+    args[2] === "--observe-inputs"
+  ) {
+    return { mode: "run", browser: "installed-brave", observeInputs: true };
+  }
   throw new Error("unsupported capture option");
 }
 
-export function artifactRootsForBrowser(browser = "playwright-chromium") {
+export function artifactRootsForBrowser(
+  browser = "playwright-chromium",
+  observeInputs = false,
+) {
+  if (observeInputs && browser !== "installed-brave") {
+    throw new Error("unsupported capture option");
+  }
   if (browser === "playwright-chromium") {
     return { artifactRoot: ARTIFACTS, runsRoot: RUNS };
   }
   if (browser === "installed-brave") {
     const artifactRoot = resolve(
       ROOT,
-      ".superpowers/sdd/installed-brave-schema-probe",
+      observeInputs
+        ? ".superpowers/sdd/trusted-stimulus-discovery"
+        : ".superpowers/sdd/installed-brave-schema-probe",
     );
     return { artifactRoot, runsRoot: resolve(artifactRoot, "runs") };
   }
@@ -491,6 +518,18 @@ export function qualifyInstalledBraveProbeEvidence(cases, measurementSegments) {
       inputToNextPaint,
     })),
   };
+}
+
+export function aggregateTrustedStimulusApiStatus(cases) {
+  const statuses = cases.map((caseRecord) => {
+    const status = caseRecord?.trustedStimulusObservation?.apiStatus;
+    return ["thresholded", "unsupported", "failed", "unknown"].includes(status)
+      ? status
+      : "unknown";
+  });
+  if (statuses.length === 0) return "unknown";
+  const distinctStatuses = new Set(statuses);
+  return distinctStatuses.size === 1 ? statuses[0] : "mixed";
 }
 
 export function validateCaptureTimeMetadata(metadata) {
@@ -1855,7 +1894,13 @@ async function prepareActionPage(page, item, timelineId) {
   }
 }
 
-async function setupOpenCase(page, item, timelineId, timelineListUrl) {
+async function setupOpenCase(
+  page,
+  item,
+  timelineId,
+  timelineListUrl,
+  observeInputs = false,
+) {
   const title = timelineTitle(item);
   const marker = markerNames(item);
   const gate = deferredRoute(page, timelineId, (url) =>
@@ -1865,8 +1910,14 @@ async function setupOpenCase(page, item, timelineId, timelineListUrl) {
   await page.goto(timelineListUrl, { waitUntil: "domcontentloaded" });
   const link = page.getByRole("link", { name: title });
   await link.waitFor({ timeout: UI_TIMEOUT_MS });
+  const secondaryTarget =
+    item.workload === "10000-chronological"
+      ? page.getByRole("button", { name: "Chronological", exact: true })
+      : null;
   return {
     marker,
+    primaryTarget: link,
+    ...(item.workload === "10000-chronological" ? { secondaryTarget } : {}),
     stimulus: "timeline-route-activation",
     openEntryPoint: "timeline-route",
     ...(item.workload === "10000-chronological"
@@ -1883,6 +1934,7 @@ async function setupOpenCase(page, item, timelineId, timelineListUrl) {
       runOpenStimuli(item.workload, {
         primaryOpen: async () => {
           await mark(page, marker.start);
+          if (observeInputs) await setTrustedStimulusPhase(page, "primary");
           await link.click();
           await withTimeout(
             gate.started,
@@ -1895,8 +1947,11 @@ async function setupOpenCase(page, item, timelineId, timelineListUrl) {
             .waitFor({ timeout: UI_TIMEOUT_MS });
           await twoFrames(page);
           await mark(page, marker.immediateEnd);
+          if (observeInputs)
+            await setTrustedStimulusPhase(page, "completion-hold");
           await new Promise((done) => setTimeout(done, COMPLETION_HOLD_MS));
           await mark(page, marker.completionStart);
+          if (observeInputs) await setTrustedStimulusPhase(page, "completion");
           const response = page.waitForResponse(
             (candidate) =>
               isInitialChronologicalOverviewRequest(
@@ -1918,10 +1973,16 @@ async function setupOpenCase(page, item, timelineId, timelineListUrl) {
           };
         },
         secondaryChronological: async () => {
+          if (observeInputs) {
+            await registerTrustedStimulusTarget(
+              page,
+              secondaryTarget,
+              "open-secondary",
+            );
+            await setTrustedStimulusPhase(page, "secondary");
+          }
           await mark(page, marker.secondaryStart);
-          await page
-            .getByRole("button", { name: "Chronological", exact: true })
-            .click();
+          await secondaryTarget.click();
           await waitForChronologicalView(page, 3333);
           await twoFrames(page);
           await mark(page, marker.secondaryEnd);
@@ -2040,7 +2101,13 @@ async function recordFitControlCounts(page, diagnostic) {
   if (Object.keys(counts).length > 0) diagnostic.controlMatchCounts = counts;
 }
 
-export async function runFitAll(page, item, viewport, diagnostic) {
+export async function runFitAll(
+  page,
+  item,
+  viewport,
+  diagnostic,
+  observeInputs = false,
+) {
   try {
     setActionDiagnosticPhase(diagnostic, "fit-all-initial-bounds");
     const initial = await readViewport(viewport);
@@ -2050,6 +2117,7 @@ export async function runFitAll(page, item, viewport, diagnostic) {
     await recordFitControlCounts(page, diagnostic);
 
     setActionDiagnosticPhase(diagnostic, "fit-all-zoom-in");
+    if (observeInputs) await setTrustedStimulusPhase(page, "preparatory");
     await viewport
       .getByRole("button", { name: "Zoom in", exact: true })
       .click();
@@ -2060,6 +2128,7 @@ export async function runFitAll(page, item, viewport, diagnostic) {
       throw new Error("MANUAL_FRAME_NOT_CHANGED");
 
     setActionDiagnosticPhase(diagnostic, "fit-all-pan-earlier");
+    if (observeInputs) await setTrustedStimulusPhase(page, "preparatory");
     await viewport
       .getByRole("button", { name: "Pan earlier", exact: true })
       .click();
@@ -2072,6 +2141,7 @@ export async function runFitAll(page, item, viewport, diagnostic) {
     const marker = markerNames(item);
     await mark(page, marker.start);
     setActionDiagnosticPhase(diagnostic, "fit-all-button");
+    if (observeInputs) await setTrustedStimulusPhase(page, "primary");
     await viewport
       .getByRole("button", { name: "Fit all", exact: true })
       .click();
@@ -2086,6 +2156,7 @@ export async function runFitAll(page, item, viewport, diagnostic) {
       throw new Error("FIT_ALL_GROUND_TRUTH_FAILED");
     }
     await mark(page, marker.immediateEnd);
+    if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
     await mark(page, marker.end);
     return { manualFrameChanged: true, fitRestoredInitialBounds: true };
   } catch (cause) {
@@ -2104,7 +2175,7 @@ export async function runFitAll(page, item, viewport, diagnostic) {
   }
 }
 
-async function runPan(page, item, viewport) {
+async function runPan(page, item, viewport, observeInputs = false) {
   const before = await readViewport(viewport);
   if (!finiteViewport(before)) throw new Error("VIEWPORT_BOUNDS_UNAVAILABLE");
   const plot =
@@ -2118,8 +2189,10 @@ async function runPan(page, item, viewport) {
       ? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
       : { x: box.x + Math.min(47, box.width - 2), y: box.y + box.height / 2 };
   const marker = markerNames(item);
+  if (observeInputs) await setTrustedStimulusPhase(page, "preparatory");
   await page.mouse.move(startPoint.x, startPoint.y);
   await mark(page, marker.start);
+  if (observeInputs) await setTrustedStimulusPhase(page, "primary");
   await page.mouse.down();
   await page.mouse.move(startPoint.x + 100, startPoint.y, { steps: 8 });
   await page.mouse.up();
@@ -2128,30 +2201,34 @@ async function runPan(page, item, viewport) {
   if (!(Math.abs(after.center - before.center) > 1e-9))
     throw new Error("PAN_GROUND_TRUTH_FAILED");
   await mark(page, marker.immediateEnd);
+  if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
   await mark(page, marker.end);
   return { viewportCenterChanged: true };
 }
 
-async function runZoom(page, item, viewport) {
+async function runZoom(page, item, viewport, observeInputs = false) {
   const before = await readViewport(viewport);
   if (!finiteViewport(before)) throw new Error("VIEWPORT_BOUNDS_UNAVAILABLE");
   const box = await viewport.boundingBox();
   if (!box) throw new Error("ZOOM_GROUND_TRUTH_FAILED");
   const marker = markerNames(item);
+  if (observeInputs) await setTrustedStimulusPhase(page, "preparatory");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.keyboard.down("Shift");
   await mark(page, marker.start);
+  if (observeInputs) await setTrustedStimulusPhase(page, "primary");
   await page.mouse.wheel(0, -120);
   await page.keyboard.up("Shift");
   await twoFrames(page);
   const after = await readViewport(viewport);
   if (!(after.span < before.span)) throw new Error("ZOOM_GROUND_TRUTH_FAILED");
   await mark(page, marker.immediateEnd);
+  if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
   await mark(page, marker.end);
   return { viewportSpanChanged: true };
 }
 
-async function runResize(page, item, viewport) {
+async function runResize(page, item, viewport, observeInputs = false) {
   const before = await readViewport(viewport);
   const initialWindow = await page.evaluate(() => ({
     width: innerWidth,
@@ -2162,6 +2239,7 @@ async function runResize(page, item, viewport) {
   const targetWidth = initialWindow.width > 900 ? 900 : 720;
   const marker = markerNames(item);
   await mark(page, marker.start);
+  if (observeInputs) await setTrustedStimulusPhase(page, "primary");
   await page.setViewportSize({
     width: targetWidth,
     height: initialWindow.height,
@@ -2176,6 +2254,7 @@ async function runResize(page, item, viewport) {
   if (after.width === before.width || after.extent === before.extent)
     throw new Error("RESIZE_GROUND_TRUTH_FAILED");
   await mark(page, marker.immediateEnd);
+  if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
   await mark(page, marker.end);
   return {
     viewportWidthChanged: true,
@@ -2185,7 +2264,14 @@ async function runResize(page, item, viewport) {
   };
 }
 
-export async function runAppend(page, item, timelineId, setup, diagnostic) {
+export async function runAppend(
+  page,
+  item,
+  timelineId,
+  setup,
+  diagnostic,
+  observeInputs = false,
+) {
   const marker = markerNames(item);
   const existingCount = item.workload === "100-interactive" ? 100 : 3333;
   if (diagnostic && !diagnostic.actionTimedOut) {
@@ -2209,6 +2295,7 @@ export async function runAppend(page, item, timelineId, setup, diagnostic) {
     responsePromise.catch(() => {});
     setActionDiagnosticPhase(diagnostic, phase);
     await mark(page, marker.start);
+    if (observeInputs) await setTrustedStimulusPhase(page, "primary");
     await setup.dialog
       .getByRole("button", { name: "Add selected moments", exact: true })
       .click();
@@ -2230,10 +2317,13 @@ export async function runAppend(page, item, timelineId, setup, diagnostic) {
     setActionDiagnosticPhase(diagnostic, phase);
     await twoFrames(page);
     await mark(page, marker.immediateEnd);
+    if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
     phase = "append-completion-hold";
     setActionDiagnosticPhase(diagnostic, phase);
+    if (observeInputs) await setTrustedStimulusPhase(page, "completion-hold");
     await new Promise((done) => setTimeout(done, COMPLETION_HOLD_MS));
     await mark(page, marker.completionStart);
+    if (observeInputs) await setTrustedStimulusPhase(page, "completion");
 
     phase = "append-response-headers";
     setActionDiagnosticPhase(diagnostic, phase);
@@ -2319,13 +2409,15 @@ export async function runAppend(page, item, timelineId, setup, diagnostic) {
   }
 }
 
-async function runScroll(page, item) {
+async function runScroll(page, item, observeInputs = false) {
   const media = page.locator(".moment-media img, .moment-media video");
   const beforeMedia = await media.count();
   const beforeScroll = await page.evaluate(() => window.scrollY);
   const marker = markerNames(item);
+  if (observeInputs) await setTrustedStimulusPhase(page, "preparatory");
   await page.mouse.move(700, 700);
   await mark(page, marker.start);
+  if (observeInputs) await setTrustedStimulusPhase(page, "scroll");
   await page.mouse.wheel(0, 700);
   await page.waitForFunction(
     (previous) => window.scrollY > previous,
@@ -2338,6 +2430,7 @@ async function runScroll(page, item) {
   if (!(afterScroll > beforeScroll))
     throw new Error("SCROLL_GROUND_TRUTH_FAILED");
   await mark(page, marker.immediateEnd);
+  if (observeInputs) await setTrustedStimulusPhase(page, "immediate");
   await mark(page, marker.end);
   return {
     scrollPositionChanged: true,
@@ -2429,6 +2522,7 @@ async function captureCase(
   runDirectory,
   categories,
   workloadCount,
+  observeInputs = false,
 ) {
   const page = await context.newPage();
   let session;
@@ -2442,10 +2536,45 @@ async function captureCase(
   const tracePath = tracePathFor(runDirectory, item);
   let captureStartedAtUtc;
   let viewport = null;
+  let viewportLocator = null;
+  let observationDocumentId = null;
+  let stimulusObservation = null;
+  let observationArtifact = null;
+
+  const saveStimulusObservation = () => {
+    if (!observeInputs) return null;
+    if (observationArtifact) return observationArtifact;
+    const payload =
+      stimulusObservation ??
+      createUnavailableTrustedStimulusObservation("OBSERVATION_NOT_ARMED");
+    try {
+      observationArtifact = writeTrustedStimulusSidecar({
+        directory: runDirectory,
+        fixture: `${item.workload}-${item.action}`,
+        payload,
+      });
+    } catch {
+      observationArtifact = {
+        evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,
+        status: "unavailable",
+        reasonCode: "OBSERVATION_SIDECAR_WRITE_FAILED",
+        recordCount: 0,
+        apiStatus: "unknown",
+      };
+    }
+    return observationArtifact;
+  };
 
   try {
+    if (observeInputs) await installTrustedStimulusObserver(page);
     if (item.action === "open") {
-      setup = await setupOpenCase(page, item, timelineId, listUrl);
+      setup = await setupOpenCase(
+        page,
+        item,
+        timelineId,
+        listUrl,
+        observeInputs,
+      );
     } else if (item.action === "append") {
       setup = await prepareAppend(page, item, timelineId);
     } else {
@@ -2454,6 +2583,7 @@ async function captureCase(
 
     if (item.action !== "open") {
       const targetViewport = await activeViewport(page, item);
+      viewportLocator = targetViewport;
       viewport = await targetViewport.evaluate((element) => ({
         innerWidth,
         innerHeight,
@@ -2471,6 +2601,44 @@ async function captureCase(
         screenHeight: screen.height,
       }));
     }
+    if (observeInputs) {
+      if (item.action === "open") {
+        await registerTrustedStimulusTarget(
+          page,
+          setup.primaryTarget,
+          "open-primary",
+        );
+      } else if (item.action === "fit-all") {
+        await registerTrustedStimulusTarget(
+          page,
+          viewportLocator.getByRole("button", { name: "Fit all", exact: true }),
+          "fit-all",
+        );
+      } else if (item.action === "pan" || item.action === "zoom") {
+        await registerTrustedStimulusTarget(
+          page,
+          viewportLocator,
+          item.workload === "100-interactive"
+            ? "story-viewport"
+            : "calendar-viewport",
+        );
+      } else if (item.action === "append") {
+        await registerTrustedStimulusTarget(
+          page,
+          setup.dialog.getByRole("button", {
+            name: "Add selected moments",
+            exact: true,
+          }),
+          "append-confirm",
+        );
+      } else if (item.action === "scroll") {
+        await registerTrustedStimulusTarget(
+          page,
+          page.locator("body"),
+          "scroll-container",
+        );
+      }
+    }
     session = await context.newCDPSession(page);
     const names = markerNames(item);
     captureStartedAtUtc = new Date().toISOString();
@@ -2480,6 +2648,22 @@ async function captureCase(
       tracePath,
       categories,
       async () => {
+        if (observeInputs) {
+          try {
+            const armed = await armTrustedStimulusObserver(page);
+            if (armed.status === "armed") {
+              observationDocumentId = armed.documentId;
+            } else {
+              stimulusObservation = createUnavailableTrustedStimulusObservation(
+                "OBSERVATION_DRAIN_FAILED",
+              );
+            }
+          } catch {
+            stimulusObservation = createUnavailableTrustedStimulusObservation(
+              "OBSERVATION_DRAIN_FAILED",
+            );
+          }
+        }
         try {
           if (item.action === "open") {
             actionOutcome = await runOpenAction(setup);
@@ -2489,24 +2673,28 @@ async function captureCase(
               item,
               await activeViewport(page, item),
               actionDiagnostic,
+              observeInputs,
             );
           } else if (item.action === "pan") {
             actionOutcome = await runPan(
               page,
               item,
               await activeViewport(page, item),
+              observeInputs,
             );
           } else if (item.action === "zoom") {
             actionOutcome = await runZoom(
               page,
               item,
               await activeViewport(page, item),
+              observeInputs,
             );
           } else if (item.action === "resize") {
             actionOutcome = await runResize(
               page,
               item,
               await activeViewport(page, item),
+              observeInputs,
             );
           } else if (item.action === "append") {
             actionOutcome = await runAppend(
@@ -2515,20 +2703,34 @@ async function captureCase(
               timelineId,
               setup,
               actionDiagnostic,
+              observeInputs,
             );
           } else {
-            actionOutcome = await runScroll(page, item);
+            actionOutcome = await runScroll(page, item, observeInputs);
           }
           activeWindowDefinitions = measurementWindows(item, names);
         } catch (error) {
           actionReason = outcomeReason(error, item.action);
           throw error;
+        } finally {
+          if (observeInputs && observationDocumentId) {
+            stimulusObservation = await finishTrustedStimulusObserver(
+              page,
+              observationDocumentId,
+            );
+            if (
+              stimulusObservation.reasonCode === "NAVIGATION_OBSERVATION_LOST"
+            ) {
+              actionReason = "NAVIGATION_OBSERVATION_LOST";
+            }
+          }
         }
         return actionOutcome;
       },
       actionDiagnostic,
     );
 
+    const safeStimulusObservation = saveStimulusObservation();
     const safeActionDiagnostic = serializeActionDiagnostic(actionDiagnostic);
 
     if (captured.tracePath) {
@@ -2594,6 +2796,9 @@ async function captureCase(
         ...(safeActionDiagnostic
           ? { actionDiagnostic: safeActionDiagnostic }
           : {}),
+        ...(safeStimulusObservation
+          ? { trustedStimulusObservation: safeStimulusObservation }
+          : {}),
         ...outcomeStatus({
           actionOutcome,
           actionFailureCode: actionReason,
@@ -2643,6 +2848,9 @@ async function captureCase(
         ...(safeActionDiagnostic
           ? { actionDiagnostic: safeActionDiagnostic }
           : {}),
+        ...(safeStimulusObservation
+          ? { trustedStimulusObservation: safeStimulusObservation }
+          : {}),
         ...outcomeStatus({
           actionOutcome,
           actionFailureCode: actionReason,
@@ -2656,6 +2864,7 @@ async function captureCase(
     };
   } catch {
     const code = actionReason ?? "CASE_SETUP_FAILED";
+    const safeStimulusObservation = saveStimulusObservation();
     return {
       caseRecord: {
         fixture: `${item.workload}-${item.action}`,
@@ -2666,6 +2875,9 @@ async function captureCase(
         stimulus: setup?.stimulus ?? stimulusForAction(item),
         ...(setup?.openEntryPoint
           ? { openEntryPoint: setup.openEntryPoint }
+          : {}),
+        ...(safeStimulusObservation
+          ? { trustedStimulusObservation: safeStimulusObservation }
           : {}),
         measurementStatus: "unavailable",
         measurementReasonCode: code,
@@ -2682,6 +2894,7 @@ async function captureCase(
       segment: null,
     };
   } finally {
+    if (observeInputs) await closeTrustedStimulusObserver(page);
     try {
       if (setup?.cleanup)
         await withTimeout(setup.cleanup(), 3000, "ROUTE_CLEANUP_TIMEOUT");
@@ -2746,6 +2959,7 @@ function sourceHash() {
     "tests/e2e/gateway.mjs",
     "tests/e2e/start-server.mjs",
     "scripts/capture-chromium-method-pilot.mjs",
+    "scripts/browser-stimulus-observer.mjs",
     "wrangler.jsonc",
     "wrangler.tracking.jsonc",
   ];
@@ -2777,6 +2991,7 @@ function captureTimeSystem() {
 async function runPilot(
   failureState = { stage: "preflight" },
   browserMode = "playwright-chromium",
+  observeInputs = false,
 ) {
   const setStage = (stage) => {
     failureState.stage = stage;
@@ -2790,7 +3005,7 @@ async function runPilot(
     installedBundleInfo = validateInstalledBraveInstallation();
     executableSha256 = hashInstalledBraveExecutable();
   }
-  const artifactRoots = artifactRootsForBrowser(browserMode);
+  const artifactRoots = artifactRootsForBrowser(browserMode, observeInputs);
   ensureArtifactRoot(artifactRoots.artifactRoot);
   stripCloudAuth();
   const runId = `run-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID()}`;
@@ -2896,6 +3111,7 @@ async function runPilot(
         runDirectory,
         sessionCategories,
         item.rowCount,
+        observeInputs,
       );
       cases.push(captured.caseRecord);
       if (captured.traceRecord) traces.push(captured.traceRecord);
@@ -2947,6 +3163,31 @@ async function runPilot(
           : "synthetic-method-pilot",
       ...(browserMode === "installed-brave"
         ? { qualification: INSTALLED_BRAVE_QUALIFICATION }
+        : {}),
+      ...(observeInputs
+        ? {
+            observationEvidence: {
+              evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,
+              instrumented: true,
+              qualification: "diagnostic-only",
+              inputMethod:
+                "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
+              performanceEventTiming: {
+                status: aggregateTrustedStimulusApiStatus(cases),
+                durationThresholdMs: 16,
+                buffered: false,
+                quantized: true,
+                continuousInputExcluded: true,
+              },
+              recordLimit: 512,
+              recordByteLimit: 240 * 1024,
+              sidecarByteLimit: 256 * 1024,
+              nextPaint: {
+                status: "unproven",
+                reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+              },
+            },
+          }
         : {}),
       inputMethod:
         "Playwright UI input against local synthetic fixtures; not physical input.",
@@ -3067,38 +3308,40 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
     );
   } else if (options?.mode === "run") {
     const failureState = { stage: "preflight" };
-    runPilot(failureState, options.browser ?? "playwright-chromium").catch(
-      (error) => {
-        const allowed = new Set([
-          "UNSUPPORTED_HOST",
-          "INSTALLED_BRAVE_UNAVAILABLE",
-          "LOCAL_DEPENDENCIES_UNAVAILABLE",
-          "LOCAL_APP_HEALTH_FAILED",
-          "OWNED_SERVER_START_FAILED",
-          "OWNED_SERVER_EXITED_EARLY",
-          "OWNED_SERVER_OUTPUT_CLOSED",
-          "OWNED_SERVER_READINESS_TIMEOUT",
-          "SYNTHETIC_FIXTURE_MISSING",
-          "BROWSER_METADATA_UNAVAILABLE",
-          "TRACE_CATEGORIES_UNAVAILABLE",
-        ]);
-        const code =
-          typeof error?.message === "string" && allowed.has(error.message)
-            ? error.message
-            : "METHOD_PILOT_FAILED";
-        process.stderr.write(
-          `${options?.browser === "installed-brave" ? "browser=installed-brave " : ""}${code} ${JSON.stringify(
-            summarizeSafeFailure(
-              error,
-              failureState.stage,
-              options?.browser === "installed-brave"
-                ? failureState.traceCategoryCatalogReadCount
-                : undefined,
-            ),
-          )}\n`,
-        );
-        process.exitCode = 1;
-      },
-    );
+    runPilot(
+      failureState,
+      options.browser ?? "playwright-chromium",
+      options.observeInputs ?? false,
+    ).catch((error) => {
+      const allowed = new Set([
+        "UNSUPPORTED_HOST",
+        "INSTALLED_BRAVE_UNAVAILABLE",
+        "LOCAL_DEPENDENCIES_UNAVAILABLE",
+        "LOCAL_APP_HEALTH_FAILED",
+        "OWNED_SERVER_START_FAILED",
+        "OWNED_SERVER_EXITED_EARLY",
+        "OWNED_SERVER_OUTPUT_CLOSED",
+        "OWNED_SERVER_READINESS_TIMEOUT",
+        "SYNTHETIC_FIXTURE_MISSING",
+        "BROWSER_METADATA_UNAVAILABLE",
+        "TRACE_CATEGORIES_UNAVAILABLE",
+      ]);
+      const code =
+        typeof error?.message === "string" && allowed.has(error.message)
+          ? error.message
+          : "METHOD_PILOT_FAILED";
+      process.stderr.write(
+        `${options?.browser === "installed-brave" ? "browser=installed-brave " : ""}${code} ${JSON.stringify(
+          summarizeSafeFailure(
+            error,
+            failureState.stage,
+            options?.browser === "installed-brave"
+              ? failureState.traceCategoryCatalogReadCount
+              : undefined,
+          ),
+        )}\n`,
+      );
+      process.exitCode = 1;
+    });
   }
 }
