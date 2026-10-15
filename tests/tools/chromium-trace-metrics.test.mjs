@@ -114,6 +114,525 @@ test("requires asserted Playwright Chromium observations before running the Even
   }
 });
 
+const knownBrave155Observations = {
+  browser: {
+    product: "Runtime browser observation",
+    version: "155.0.8059.40",
+  },
+  browserIdentity: {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.56",
+      bundleVersion: "197.56",
+      scmRevision: "b01cdf43be4b4d5559bf7e58229e666e24454f50",
+    },
+    executableSha256:
+      "6099adb0e47d7c12922bb2dca02e2a044b71ae2895c0bbab1717f8660ffb99a7",
+    runtime: {
+      version: "155.0.8059.40",
+      product: "Chrome/155.0.8059.40",
+      revision: "@b01cdf43be4b4d5559bf7e58229e666e24454f5",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-brave-schema-probe",
+  status: "installed-brave-schema-probe",
+};
+
+function withBrave155InteractionValues(trace) {
+  const legacy = trace.traceEvents[0].args.data;
+  const modern = trace.traceEvents[1].args.event_timing;
+  legacy.interactionId = 17n;
+  legacy.interactionOffset = 18n;
+  modern.interaction_id = 17n;
+  modern.interaction_offset = 18n;
+  return trace;
+}
+
+function makeBrave155Trace() {
+  return withBrave155InteractionValues(
+    parseTrace(readFixture("event-timing-fallback.trace.json")),
+  );
+}
+
+function makeBrave155TraceFromRaw(mutator) {
+  const raw = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  mutator(raw.traceEvents);
+  return withBrave155InteractionValues(parseTrace(JSON.stringify(raw)));
+}
+
+function brave155Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownBrave155Observations,
+) {
+  return analyzeTrace(
+    trace,
+    { trace: "brave155-synthetic.trace.json", dataLossOccurred: false },
+    [],
+    observations,
+  ).discreteEventTimingCrosswalk;
+}
+
+function assertUnsupportedBrave155(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+test("accepts the complete installed Brave 155 tuple as a separate diagnostic profile", () => {
+  const crosswalk = brave155Crosswalk();
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.40",
+    pinnedSourceRevision: "cfaadc5a132d78e1828635aa8405a499f3e14864",
+    publishedBraveCoreRevision: "b01cdf43be4b4d5559bf7e58229e666e24454f50",
+    evidenceClass: "installed-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes("INSTALLED_BRAVE_SCHEMA_PROBE_ONLY"),
+  );
+  assert.ok(!crosswalk.gateReasonCodes.includes("SYNTHETIC_METHOD_PILOT_ONLY"));
+  for (const reason of [
+    "ACTION_ATTRIBUTION_UNPROVEN",
+    "INTERACTION_AGGREGATION_UNPROVEN",
+    "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+    "MODALITY_EQUIVALENCE_UNPROVEN",
+    "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+  ]) {
+    assert.ok(crosswalk.gateReasonCodes.includes(reason), reason);
+  }
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+});
+
+test("requires every asserted Brave 155 observation and rejects independent tuple mutations", () => {
+  const requiredPaths = [
+    ["browser"],
+    ["browser", "product"],
+    ["browser", "version"],
+    ["qualification"],
+    ["status"],
+    ["browserIdentity"],
+    ["browserIdentity", "bundle"],
+    ["browserIdentity", "bundle", "identifier"],
+    ["browserIdentity", "bundle", "shortVersion"],
+    ["browserIdentity", "bundle", "bundleVersion"],
+    ["browserIdentity", "bundle", "scmRevision"],
+    ["browserIdentity", "executableSha256"],
+    ["browserIdentity", "runtime"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+  ];
+
+  for (const path of requiredPaths) {
+    const missing = structuredClone(knownBrave155Observations);
+    let parent = missing;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    delete parent[path.at(-1)];
+    assertUnsupportedBrave155(brave155Crosswalk(undefined, missing));
+
+    const changed = structuredClone(knownBrave155Observations);
+    parent = changed;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    parent[path.at(-1)] = `TRACE_PRIVATE_${path.join("_")}`;
+    assertUnsupportedBrave155(brave155Crosswalk(undefined, changed));
+  }
+
+  const invalidObservations = [
+    (observations) => {
+      observations.browser.version = "153.0.8010.12";
+      observations.browserIdentity.runtime.version = "153.0.8010.12";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.product = "Chrome/155.0.8059.41";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.revision = {};
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.userAgent =
+        "Mozilla/5.0 Chrome/155.0.8059.40 Safari/537.36";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.userAgent =
+        "Mozilla/5.0 Chrome/155.0.0.0 Safari/537.36 Chrome/155.0.0.1";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.userAgent =
+        "Mozilla/5.0 Chrome/155.0.0.0trailing Safari/537.36";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.userAgent =
+        "Mozilla/5.0 Safari/537.36";
+    },
+    (observations) => {
+      observations.profileName = "TRACE_PRIVATE_PROFILE";
+    },
+    (observations) => {
+      observations.browser.engine = "TRACE_PRIVATE_ENGINE";
+    },
+    (observations) => {
+      observations.browserIdentity.profileName = "TRACE_PRIVATE_PROFILE";
+    },
+    (observations) => {
+      observations.browserIdentity.bundle.extra = "TRACE_PRIVATE_BUNDLE";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.extra = "TRACE_PRIVATE_RUNTIME";
+    },
+    (observations) => {
+      observations.sourceRevision = "TRACE_PRIVATE_SOURCE_REVISION";
+    },
+  ];
+  for (const mutate of invalidObservations) {
+    const observations = structuredClone(knownBrave155Observations);
+    mutate(observations);
+    assertUnsupportedBrave155(brave155Crosswalk(undefined, observations));
+  }
+});
+
+test("keeps non-Chrome user-agent text private while requiring every Chrome token to match Brave 155", () => {
+  const observations = structuredClone(knownBrave155Observations);
+  observations.browserIdentity.runtime.userAgent += " TRACE_PRIVATE_USER_AGENT";
+  const crosswalk = brave155Crosswalk(undefined, observations);
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.equal(crosswalk.candidates.length, 1);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_USER_AGENT/);
+});
+
+test("bounds each legacy and modern Brave 155 interaction identity to signed int32", () => {
+  const fields = [
+    {
+      label: "legacy interactionId",
+      owner: "legacy",
+      key: "interactionId",
+      peerOwner: "modern",
+      peerKey: "interaction_id",
+    },
+    {
+      label: "legacy interactionOffset",
+      owner: "legacy",
+      key: "interactionOffset",
+      peerOwner: "modern",
+      peerKey: "interaction_offset",
+    },
+    {
+      label: "modern interaction_id",
+      owner: "modern",
+      key: "interaction_id",
+      peerOwner: "legacy",
+      peerKey: "interactionId",
+    },
+    {
+      label: "modern interaction_offset",
+      owner: "modern",
+      key: "interaction_offset",
+      peerOwner: "legacy",
+      peerKey: "interactionOffset",
+    },
+  ];
+  const boundaries = [
+    ["zero", 0n, true],
+    ["signed maximum", 2147483647n, true],
+    ["negative one", -1n, false],
+    ["signed maximum plus one", 2147483648n, false],
+  ];
+
+  for (const field of fields) {
+    for (const [label, value, supported] of boundaries) {
+      const trace = makeBrave155Trace();
+      const legacy = trace.traceEvents[0].args.data;
+      const modern = trace.traceEvents[1].args.event_timing;
+      const target = field.owner === "legacy" ? legacy : modern;
+      target[field.key] = value;
+      if (supported) {
+        const peer = field.peerOwner === "legacy" ? legacy : modern;
+        peer[field.peerKey] = value;
+      }
+
+      const crosswalk = brave155Crosswalk(trace);
+      if (supported) {
+        assert.equal(
+          crosswalk.status,
+          "diagnostic-only",
+          `${field.label}: ${label}`,
+        );
+        assert.equal(
+          crosswalk.candidates.length,
+          1,
+          `${field.label}: ${label}`,
+        );
+      } else {
+        assert.deepEqual(crosswalk.candidates, [], `${field.label}: ${label}`);
+        assert.ok(
+          crosswalk.rejectionCounts.some(
+            ({ code, count }) =>
+              code === "BRAVE_SIGNED_IDENTITY_OVERFLOW_UNVERIFIED" &&
+              count === 1,
+          ),
+          `${field.label}: ${label}`,
+        );
+      }
+    }
+  }
+});
+
+test("preserves existing missing and malformed interaction reasons in the Brave 155 profile", () => {
+  const fields = [
+    [
+      "legacy",
+      "interactionId",
+      "MISSING_LEGACY_EVENT_FIELD",
+      "MALFORMED_LEGACY_INTERACTION",
+    ],
+    [
+      "legacy",
+      "interactionOffset",
+      "MISSING_LEGACY_EVENT_FIELD",
+      "MALFORMED_LEGACY_INTERACTION",
+    ],
+    [
+      "modern",
+      "interaction_id",
+      "MISSING_MODERN_EVENT_TIMING_FIELD",
+      "MALFORMED_MODERN_INTERACTION",
+    ],
+    [
+      "modern",
+      "interaction_offset",
+      "MISSING_MODERN_EVENT_TIMING_FIELD",
+      "MALFORMED_MODERN_INTERACTION",
+    ],
+  ];
+  for (const [owner, key, missingReason, malformedReason] of fields) {
+    const missingTrace = makeBrave155Trace();
+    const missingRecord =
+      owner === "legacy"
+        ? missingTrace.traceEvents[0].args.data
+        : missingTrace.traceEvents[1].args.event_timing;
+    delete missingRecord[key];
+    const missingCrosswalk = brave155Crosswalk(missingTrace);
+    assert.ok(
+      missingCrosswalk.rejectionCounts.some(
+        ({ code }) => code === missingReason,
+      ),
+      `${owner}.${key}`,
+    );
+    assert.equal(
+      missingCrosswalk.methodScope.evidenceClass,
+      "installed-brave-schema-probe",
+    );
+
+    const malformedTrace = makeBrave155Trace();
+    const malformedRecord =
+      owner === "legacy"
+        ? malformedTrace.traceEvents[0].args.data
+        : malformedTrace.traceEvents[1].args.event_timing;
+    malformedRecord[key] = "17";
+    const malformedCrosswalk = brave155Crosswalk(malformedTrace);
+    assert.ok(
+      malformedCrosswalk.rejectionCounts.some(
+        ({ code }) => code === malformedReason,
+      ),
+      `${owner}.${key}`,
+    );
+    assert.equal(
+      malformedCrosswalk.methodScope.evidenceClass,
+      "installed-brave-schema-probe",
+    );
+  }
+});
+
+test("keeps Brave 155 slice pairing, identity, endpoint, marker, and fallback gates", () => {
+  const invalidCases = [
+    {
+      name: "wrong EventTiming phase",
+      expectedReason: "UNSUPPORTED_SLICE_PHASE",
+      mutate(trace) {
+        trace.traceEvents[3].ph = "X";
+      },
+    },
+    {
+      name: "wrong legacy typed category",
+      expectedReason: "UNEXPECTED_TYPED_SLICE_CATEGORY",
+      mutate(trace) {
+        trace.traceEvents[0].cat = "latency";
+      },
+    },
+    {
+      name: "wrong modern typed category",
+      expectedReason: "UNEXPECTED_TYPED_SLICE_CATEGORY",
+      mutate(trace) {
+        trace.traceEvents[1].cat = "devtools.timeline";
+      },
+    },
+    {
+      name: "mismatched typed begin and end ID",
+      expectedReason: "UNMATCHED_TYPED_SLICE_END",
+      mutate(trace) {
+        trace.traceEvents[2].id2.local = "0x42";
+      },
+    },
+    {
+      name: "different renderer process",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].pid = 102;
+        trace.traceEvents[2].pid = 102;
+      },
+    },
+    {
+      name: "different thread",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].tid = 8;
+        trace.traceEvents[2].tid = 8;
+      },
+    },
+    {
+      name: "different frame",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].args.event_timing.frame = "frame-B";
+      },
+    },
+    {
+      name: "different DOM node",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].args.event_timing.node_id = 312n;
+      },
+    },
+    {
+      name: "different cancelable state",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].args.event_timing.cancelable = false;
+      },
+    },
+    {
+      name: "different DOM event type",
+      expectedReason: "NO_EXACT_CROSSWALK_MATCH",
+      mutate(trace) {
+        trace.traceEvents[1].args.event_timing.type = "KEY_DOWN_EVENT";
+      },
+    },
+    {
+      name: "ambiguous duplicate legacy identity",
+      expectedReason: "AMBIGUOUS_CROSSWALK_IDENTITY",
+      makeTrace() {
+        const trace = makeBrave155TraceFromRaw((events) => {
+          const duplicateBegin = structuredClone(events[0]);
+          const duplicateEnd = structuredClone(events[3]);
+          duplicateBegin.id = "0x4";
+          duplicateEnd.id = "0x4";
+          events.push(duplicateBegin, duplicateEnd);
+        });
+        trace.traceEvents[6].args.data.interactionId = 17n;
+        trace.traceEvents[6].args.data.interactionOffset = 18n;
+        return trace;
+      },
+    },
+    {
+      name: "different processing endpoint",
+      expectedReason: "PROCESSING_ENDPOINT_MISMATCH",
+      makeTrace() {
+        return makeBrave155TraceFromRaw((events) => {
+          events[2].ts = 10006;
+        });
+      },
+    },
+    {
+      name: "unproven fallback reason",
+      expectedReason: "FALLBACK_UNPROVEN",
+      mutate(trace) {
+        trace.traceEvents[1].args.fallback_reason = "unknown";
+      },
+    },
+    {
+      name: "nonzero fallback time",
+      expectedReason: "FALLBACK_UNPROVEN",
+      mutate(trace) {
+        trace.traceEvents[1].args.fallback_time = 1n;
+      },
+    },
+    {
+      name: "fallback time in modern payload",
+      expectedReason: "FALLBACK_UNPROVEN",
+      mutate(trace) {
+        trace.traceEvents[1].args.event_timing.fallback_time_us = 1000n;
+      },
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const trace = invalidCase.makeTrace
+      ? invalidCase.makeTrace()
+      : makeBrave155Trace();
+    if (invalidCase.mutate) invalidCase.mutate(trace);
+    const crosswalk = brave155Crosswalk(trace);
+    assert.deepEqual(crosswalk.candidates, [], invalidCase.name);
+    assert.equal(
+      crosswalk.methodScope.evidenceClass,
+      "installed-brave-schema-probe",
+      invalidCase.name,
+    );
+    assert.ok(
+      crosswalk.rejectionCounts.some(
+        ({ code }) => code === invalidCase.expectedReason,
+      ),
+      invalidCase.name,
+    );
+  }
+
+  const payloadFreeMarker = brave155Crosswalk();
+  assert.equal(payloadFreeMarker.candidates.length, 1);
+  assert.equal(payloadFreeMarker.counts.modernMarkerCount, 1);
+  assert.ok(
+    payloadFreeMarker.rejectionCounts.some(
+      ({ code }) => code === "PAYLOAD_FREE_MODERN_MARKER",
+    ),
+  );
+
+  const payloadMarkerTrace = makeBrave155Trace();
+  payloadMarkerTrace.traceEvents[5].args = {
+    event_timing: structuredClone(
+      payloadMarkerTrace.traceEvents[1].args.event_timing,
+    ),
+  };
+  const payloadMarker = brave155Crosswalk(payloadMarkerTrace);
+  assert.equal(payloadMarker.candidates.length, 1);
+  assert.equal(payloadMarker.counts.modernMarkerCount, 1);
+  assert.ok(
+    payloadMarker.rejectionCounts.some(
+      ({ code }) => code === "MODERN_MARKER_NOT_SLICE",
+    ),
+  );
+});
+
 function crosswalkWithRuntimeUserAgent(userAgent) {
   const trace = parseTrace(readFixture("event-timing-fallback.trace.json"));
   return analyzeTrace(
