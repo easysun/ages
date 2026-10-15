@@ -1,11 +1,15 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
   constants,
   copyFileSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -19,6 +23,16 @@ import { chromium } from "@playwright/test";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ARTIFACTS = resolve(ROOT, ".superpowers/sdd/chromium-method-runner");
 const RUNS = resolve(ARTIFACTS, "runs");
+const INSTALLED_BRAVE_APP = "/Applications/Brave Browser.app";
+const INSTALLED_BRAVE_EXECUTABLE = `${INSTALLED_BRAVE_APP}/Contents/MacOS/Brave Browser`;
+const INSTALLED_BRAVE_INFO_PLIST = `${INSTALLED_BRAVE_APP}/Contents/Info.plist`;
+const INSTALLED_BRAVE_QUALIFICATION = "installed-brave-schema-probe";
+const CHROMIUM_LAUNCH_ARGS = [
+  "--disable-background-networking",
+  "--disable-component-update",
+  "--disable-sync",
+  "--no-first-run",
+];
 const ACTIONS = [
   "open",
   "fit-all",
@@ -182,15 +196,16 @@ function ensureRealDirectory(path) {
   }
 }
 
-function ensureArtifactRoot() {
+function ensureArtifactRoot(artifactRoot = ARTIFACTS) {
+  const runsRoot = resolve(artifactRoot, "runs");
   for (const path of [
     resolve(ROOT, ".superpowers"),
     resolve(ROOT, ".superpowers/sdd"),
-    ARTIFACTS,
+    artifactRoot,
   ]) {
     ensureRealDirectory(path);
   }
-  const ignorePath = resolve(ARTIFACTS, ".gitignore");
+  const ignorePath = resolve(artifactRoot, ".gitignore");
   try {
     const info = lstatSync(ignorePath);
     if (!info.isFile() || info.isSymbolicLink()) {
@@ -205,7 +220,8 @@ function ensureArtifactRoot() {
     if (error.code !== "ENOENT") throw error;
     writeFileSync(ignorePath, "*\n!.gitignore\n", { flag: "wx" });
   }
-  ensureRealDirectory(RUNS);
+  ensureRealDirectory(runsRoot);
+  return { artifactRoot, runsRoot };
 }
 
 export function createRunDirectory(runsRoot, runId) {
@@ -268,7 +284,213 @@ export function verifyTraceArtifact(path, expected) {
 export function parseRunnerArgs(args) {
   if (args.length === 0) return { mode: "preview" };
   if (args.length === 1 && args[0] === "--run") return { mode: "run" };
+  if (
+    args.length === 2 &&
+    args[0] === "--run" &&
+    args[1] === "--browser=installed-brave"
+  ) {
+    return { mode: "run", browser: "installed-brave" };
+  }
   throw new Error("unsupported capture option");
+}
+
+export function artifactRootsForBrowser(browser = "playwright-chromium") {
+  if (browser === "playwright-chromium") {
+    return { artifactRoot: ARTIFACTS, runsRoot: RUNS };
+  }
+  if (browser === "installed-brave") {
+    const artifactRoot = resolve(
+      ROOT,
+      ".superpowers/sdd/installed-brave-schema-probe",
+    );
+    return { artifactRoot, runsRoot: resolve(artifactRoot, "runs") };
+  }
+  throw new Error("unsupported capture option");
+}
+
+export function buildChromiumLaunchOptions(browser = "playwright-chromium") {
+  if (browser !== "playwright-chromium" && browser !== "installed-brave") {
+    throw new Error("unsupported capture option");
+  }
+  return {
+    headless: false,
+    ...(browser === "installed-brave"
+      ? { executablePath: INSTALLED_BRAVE_EXECUTABLE }
+      : {}),
+    args: [...CHROMIUM_LAUNCH_ARGS],
+  };
+}
+
+function readInstalledBraveBundleInfo() {
+  const json = execFileSync(
+    "/usr/bin/plutil",
+    ["-convert", "json", "-o", "-", "--", INSTALLED_BRAVE_INFO_PLIST],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+  const bundleInfo = JSON.parse(json);
+  if (!isRecord(bundleInfo)) throw new Error("invalid bundle metadata");
+  return bundleInfo;
+}
+
+function safeBundleVersion(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 100 &&
+    /^[A-Za-z0-9._+-]+$/.test(value)
+  );
+}
+
+export function validateInstalledBraveInstallation({
+  lstat = lstatSync,
+  readBundleInfo = readInstalledBraveBundleInfo,
+} = {}) {
+  try {
+    for (const path of [
+      "/Applications",
+      INSTALLED_BRAVE_APP,
+      `${INSTALLED_BRAVE_APP}/Contents`,
+      `${INSTALLED_BRAVE_APP}/Contents/MacOS`,
+    ]) {
+      const info = lstat(path);
+      if (info.isSymbolicLink() || !info.isDirectory()) {
+        throw new Error("invalid bundle directory");
+      }
+    }
+
+    const executable = lstat(INSTALLED_BRAVE_EXECUTABLE);
+    if (
+      executable.isSymbolicLink() ||
+      !executable.isFile() ||
+      (executable.mode & 0o111) === 0
+    ) {
+      throw new Error("invalid browser executable");
+    }
+
+    const plist = lstat(INSTALLED_BRAVE_INFO_PLIST);
+    if (plist.isSymbolicLink() || !plist.isFile()) {
+      throw new Error("invalid bundle metadata file");
+    }
+    const bundleInfo = readBundleInfo(INSTALLED_BRAVE_INFO_PLIST);
+    if (
+      !isRecord(bundleInfo) ||
+      bundleInfo.CFBundleIdentifier !== "com.brave.Browser" ||
+      !safeBundleVersion(bundleInfo.CFBundleShortVersionString) ||
+      !safeBundleVersion(bundleInfo.CFBundleVersion)
+    ) {
+      throw new Error("invalid bundle identity");
+    }
+    return bundleInfo;
+  } catch {
+    throw new Error("INSTALLED_BRAVE_UNAVAILABLE");
+  }
+}
+
+function hashInstalledBraveExecutable() {
+  let descriptor;
+  try {
+    descriptor = openSync(
+      INSTALLED_BRAVE_EXECUTABLE,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const info = fstatSync(descriptor);
+    if (!info.isFile() || (info.mode & 0o111) === 0) {
+      throw new Error("invalid browser executable");
+    }
+    const hash = createHash("sha256");
+    const buffer = Buffer.alloc(1024 * 1024);
+    let bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+    while (bytesRead > 0) {
+      hash.update(buffer.subarray(0, bytesRead));
+      bytesRead = readSync(descriptor, buffer, 0, buffer.length, null);
+    }
+    return hash.digest("hex");
+  } catch {
+    throw new Error("INSTALLED_BRAVE_UNAVAILABLE");
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {}
+    }
+  }
+}
+
+function safeBrowserObservation(value, limit) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= limit &&
+    /^[A-Za-z0-9 (),._/;+ -]+$/.test(value)
+  );
+}
+
+function safeBrowserRevision(value) {
+  return (
+    typeof value === "string" &&
+    (/^@[a-f0-9]{39,40}$/i.test(value) || /^[a-f0-9]{40}$/i.test(value))
+  );
+}
+
+export function buildInstalledBraveBrowserIdentity({
+  bundleInfo,
+  executableSha256,
+  runtime,
+}) {
+  if (
+    !isRecord(bundleInfo) ||
+    bundleInfo.CFBundleIdentifier !== "com.brave.Browser" ||
+    !safeBundleVersion(bundleInfo.CFBundleShortVersionString) ||
+    !safeBundleVersion(bundleInfo.CFBundleVersion) ||
+    typeof executableSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(executableSha256) ||
+    !isRecord(runtime) ||
+    !safeBrowserObservation(runtime.version, 100) ||
+    !safeBrowserObservation(runtime.product, 256) ||
+    !safeBrowserRevision(runtime.revision) ||
+    !safeBrowserObservation(runtime.userAgent, 512)
+  ) {
+    throw new Error("BROWSER_METADATA_UNAVAILABLE");
+  }
+  const scmRevision = bundleInfo.SCMRevision;
+  return {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: bundleInfo.CFBundleShortVersionString,
+      bundleVersion: bundleInfo.CFBundleVersion,
+      ...(typeof scmRevision === "string" &&
+      /^[a-f0-9]{7,64}$/i.test(scmRevision)
+        ? { scmRevision }
+        : {}),
+    },
+    executableSha256,
+    runtime: {
+      version: runtime.version,
+      product: runtime.product,
+      revision: runtime.revision,
+      userAgent: runtime.userAgent,
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+}
+
+export function qualifyInstalledBraveProbeEvidence(cases, measurementSegments) {
+  const inputToNextPaint = {
+    status: "unproven",
+    reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+  };
+  return {
+    cases: cases.map((caseRecord) => ({
+      ...caseRecord,
+      qualification: INSTALLED_BRAVE_QUALIFICATION,
+      inputToNextPaint,
+    })),
+    measurementSegments: measurementSegments.map((segment) => ({
+      ...segment,
+      qualification: INSTALLED_BRAVE_QUALIFICATION,
+      inputToNextPaint,
+    })),
+  };
 }
 
 export function validateCaptureTimeMetadata(metadata) {
@@ -600,6 +822,7 @@ export function buildCaptureCases() {
 
 const SAFE_FAILURE_STAGES = new Set([
   "preflight",
+  "browser-installation-preflight",
   "workspace",
   "server-startup",
   "browser-startup",
@@ -665,10 +888,21 @@ const SAFE_VIEWPORT_BOUND_KEYS = new Set([
 const SAFE_VIEWPORT_METRICS = ["center", "span", "extent", "width"];
 const SAFE_CONTROL_MATCH_KEYS = ["zoomIn", "panEarlier", "fitAll"];
 
-export function summarizeSafeFailure(error, stage) {
+export function summarizeSafeFailure(
+  error,
+  stage,
+  traceCategoryCatalogReadCount,
+) {
   const summary = {
     stage: SAFE_FAILURE_STAGES.has(stage) ? stage : "unknown",
   };
+  if (
+    Number.isInteger(traceCategoryCatalogReadCount) &&
+    traceCategoryCatalogReadCount >= 1 &&
+    traceCategoryCatalogReadCount <= 2
+  ) {
+    summary.traceCategoryCatalogReadCount = traceCategoryCatalogReadCount;
+  }
   if (
     Number.isInteger(error?.status) &&
     error.status > 0 &&
@@ -809,6 +1043,49 @@ export function probeTraceCategories(availableCategories) {
       (category) => !available.has(category),
     ).sort(),
   };
+}
+
+export function requireTraceCategories(categoryAvailability) {
+  if (
+    !Array.isArray(categoryAvailability?.available) ||
+    categoryAvailability.available.length === 0
+  ) {
+    throw new Error("TRACE_CATEGORIES_UNAVAILABLE");
+  }
+  return categoryAvailability.available;
+}
+
+export async function readTraceCategoriesForMode({
+  browser,
+  context,
+  page,
+  browserMode,
+  onRead,
+}) {
+  const session =
+    browserMode === "installed-brave"
+      ? await browser.newBrowserCDPSession()
+      : await context.newCDPSession(page);
+  try {
+    let readCount = 0;
+    const readCategories = async () => {
+      const response = await session.send("Tracing.getCategories");
+      readCount += 1;
+      onRead?.(readCount);
+      return response?.categories;
+    };
+    const categories = await readCategories();
+    if (
+      browserMode === "installed-brave" &&
+      Array.isArray(categories) &&
+      categories.length === 0
+    ) {
+      return await readCategories();
+    }
+    return categories;
+  } finally {
+    await session.detach();
+  }
 }
 
 export function isInitialChronologicalOverviewRequest(url, timelineId) {
@@ -2497,17 +2774,28 @@ function captureTimeSystem() {
   };
 }
 
-async function runPilot(failureState = { stage: "preflight" }) {
+async function runPilot(
+  failureState = { stage: "preflight" },
+  browserMode = "playwright-chromium",
+) {
   const setStage = (stage) => {
     failureState.stage = stage;
   };
   if (platform() !== "darwin") throw new Error("UNSUPPORTED_HOST");
   setStage("preflight");
-  ensureArtifactRoot();
+  let installedBundleInfo;
+  let executableSha256;
+  if (browserMode === "installed-brave") {
+    setStage("browser-installation-preflight");
+    installedBundleInfo = validateInstalledBraveInstallation();
+    executableSha256 = hashInstalledBraveExecutable();
+  }
+  const artifactRoots = artifactRootsForBrowser(browserMode);
+  ensureArtifactRoot(artifactRoots.artifactRoot);
   stripCloudAuth();
   const runId = `run-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID()}`;
   setStage("workspace");
-  const runDirectory = createRunDirectory(RUNS, runId);
+  const runDirectory = createRunDirectory(artifactRoots.runsRoot, runId);
   const { workspace } = prepareWorkspace(runDirectory);
   const { appPort, trackingPort } = await localPorts();
   process.env.AGES_E2E_PORT = appPort;
@@ -2529,6 +2817,7 @@ async function runPilot(failureState = { stage: "preflight" }) {
   });
   let context;
   let browser;
+  let installedBrowserIdentity;
   let sessionCategories = [];
   let categoryAvailability = { available: [], unavailable: [] };
   const captureStartedAtUtc = new Date().toISOString();
@@ -2538,15 +2827,29 @@ async function runPilot(failureState = { stage: "preflight" }) {
     await waitForAppHealth(appPort);
 
     setStage("browser-startup");
-    browser = await chromium.launch({
-      headless: false,
-      args: [
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-        "--no-first-run",
-      ],
-    });
+    browser = await chromium.launch(buildChromiumLaunchOptions(browserMode));
+    if (browserMode === "installed-brave") {
+      try {
+        const browserSession = await browser.newBrowserCDPSession();
+        try {
+          const version = await browserSession.send("Browser.getVersion");
+          installedBrowserIdentity = buildInstalledBraveBrowserIdentity({
+            bundleInfo: installedBundleInfo,
+            executableSha256,
+            runtime: {
+              version: browser.version(),
+              product: version.product,
+              revision: version.revision,
+              userAgent: version.userAgent,
+            },
+          });
+        } finally {
+          await browserSession.detach().catch(() => {});
+        }
+      } catch {
+        throw new Error("BROWSER_METADATA_UNAVAILABLE");
+      }
+    }
     context = await browser.newContext({
       viewport: null,
       acceptDownloads: false,
@@ -2559,21 +2862,28 @@ async function runPilot(failureState = { stage: "preflight" }) {
     );
 
     const page = await context.newPage();
-    const session = await context.newCDPSession(page);
-    const availableCategories = (await session.send("Tracing.getCategories"))
-      .categories;
+    const availableCategories = await readTraceCategoriesForMode({
+      browser,
+      context,
+      page,
+      browserMode,
+      onRead:
+        browserMode === "installed-brave"
+          ? (count) => {
+              failureState.traceCategoryCatalogReadCount = count;
+            }
+          : undefined,
+    });
     categoryAvailability = probeTraceCategories(availableCategories);
     sessionCategories = categoryAvailability.available;
-    await session.detach();
     await page.close();
-    if (sessionCategories.length === 0)
-      throw new Error("TRACE_CATEGORIES_UNAVAILABLE");
+    sessionCategories = requireTraceCategories(categoryAvailability);
     setStage("seed-library");
     const timelineIds = await seedFixtures(context, workspace, setStage);
     const timelineListUrl = `http://127.0.0.1:${appPort}/timelines`;
-    const cases = [];
+    let cases = [];
     const traces = [];
-    const measurementSegments = [];
+    let measurementSegments = [];
     for (const item of buildCaptureCases()) {
       setStage(`capture:${item.workload}:${item.action}`);
       const timelineId = timelineIds.get(`${item.workload}/${item.action}`);
@@ -2592,6 +2902,15 @@ async function runPilot(failureState = { stage: "preflight" }) {
       if (captured.segment) measurementSegments.push(captured.segment);
     }
 
+    if (browserMode === "installed-brave") {
+      const qualified = qualifyInstalledBraveProbeEvidence(
+        cases,
+        measurementSegments,
+      );
+      cases = qualified.cases;
+      measurementSegments = qualified.measurementSegments;
+    }
+
     const metadataPage = await context.newPage();
     const viewport = await metadataPage.evaluate(() => ({
       innerWidth,
@@ -2605,24 +2924,64 @@ async function runPilot(failureState = { stage: "preflight" }) {
     const captureMetadata = {
       captureStartedAtUtc,
       captureEndedAtUtc,
-      browser: { product: "Playwright Chromium", version: browser.version() },
+      browser:
+        browserMode === "installed-brave"
+          ? {
+              product: "Runtime browser observation",
+              version: installedBrowserIdentity.runtime.version,
+            }
+          : { product: "Playwright Chromium", version: browser.version() },
     };
     validateCaptureTimeMetadata(captureMetadata);
     const system = captureTimeSystem();
     setStage("manifest");
     const manifest = {
       schemaVersion: 1,
-      purpose: "Synthetic Chromium method-discovery pilot; diagnostic only.",
-      status: "synthetic-method-pilot",
+      purpose:
+        browserMode === "installed-brave"
+          ? INSTALLED_BRAVE_QUALIFICATION
+          : "Synthetic Chromium method-discovery pilot; diagnostic only.",
+      status:
+        browserMode === "installed-brave"
+          ? INSTALLED_BRAVE_QUALIFICATION
+          : "synthetic-method-pilot",
+      ...(browserMode === "installed-brave"
+        ? { qualification: INSTALLED_BRAVE_QUALIFICATION }
+        : {}),
       inputMethod:
         "Playwright UI input against local synthetic fixtures; not physical input.",
-      renderer: "Local Playwright Chromium renderer.",
+      renderer:
+        browserMode === "installed-brave"
+          ? "Locally installed Brave renderer launched by Playwright."
+          : "Local Playwright Chromium renderer.",
       browser: captureMetadata.browser,
-      hardware: system.hardware,
+      ...(browserMode === "installed-brave"
+        ? { browserIdentity: installedBrowserIdentity }
+        : {}),
+      ...(browserMode === "installed-brave"
+        ? {
+            traceCategoryCatalogReadCount:
+              failureState.traceCategoryCatalogReadCount,
+          }
+        : {}),
+      hardware:
+        browserMode === "installed-brave"
+          ? {
+              ...system.hardware,
+              qualification:
+                "Installed Brave schema probe host metadata; incomplete and not hardware qualification.",
+            }
+          : system.hardware,
       architecture: system.architecture,
       viewport,
       cache:
         "Fresh Chromium process and browser context; HTTP cache retained within this run.",
+      ...(browserMode === "installed-brave"
+        ? {
+            requestBoundary:
+              "Playwright context route blocks page requests outside loopback; it is not a process-wide egress wall.",
+          }
+        : {}),
       captureStartedAtUtc,
       captureEndedAtUtc,
       sourceRevision: execFileSync("git", ["rev-parse", "HEAD"], {
@@ -2646,12 +3005,23 @@ async function runPilot(failureState = { stage: "preflight" }) {
     process.stdout.write(
       `${JSON.stringify(
         {
-          status: "synthetic-method-pilot",
+          status:
+            browserMode === "installed-brave"
+              ? INSTALLED_BRAVE_QUALIFICATION
+              : "synthetic-method-pilot",
           runId,
           caseCount: cases.length,
           capturedTraceCount: traces.length,
           resolvedSegmentCount: measurementSegments.length,
           inputToNextPaint: "unproven",
+          ...(browserMode === "installed-brave"
+            ? {
+                browser: "installed-brave",
+                qualification: INSTALLED_BRAVE_QUALIFICATION,
+                traceCategoryCatalogReadCount:
+                  failureState.traceCategoryCatalogReadCount,
+              }
+            : {}),
         },
         null,
         2,
@@ -2697,29 +3067,38 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
     );
   } else if (options?.mode === "run") {
     const failureState = { stage: "preflight" };
-    runPilot(failureState).catch((error) => {
-      const allowed = new Set([
-        "UNSUPPORTED_HOST",
-        "LOCAL_DEPENDENCIES_UNAVAILABLE",
-        "LOCAL_APP_HEALTH_FAILED",
-        "OWNED_SERVER_START_FAILED",
-        "OWNED_SERVER_EXITED_EARLY",
-        "OWNED_SERVER_OUTPUT_CLOSED",
-        "OWNED_SERVER_READINESS_TIMEOUT",
-        "SYNTHETIC_FIXTURE_MISSING",
-        "BROWSER_METADATA_UNAVAILABLE",
-        "TRACE_CATEGORIES_UNAVAILABLE",
-      ]);
-      const code =
-        typeof error?.message === "string" && allowed.has(error.message)
-          ? error.message
-          : "METHOD_PILOT_FAILED";
-      process.stderr.write(
-        `${code} ${JSON.stringify(
-          summarizeSafeFailure(error, failureState.stage),
-        )}\n`,
-      );
-      process.exitCode = 1;
-    });
+    runPilot(failureState, options.browser ?? "playwright-chromium").catch(
+      (error) => {
+        const allowed = new Set([
+          "UNSUPPORTED_HOST",
+          "INSTALLED_BRAVE_UNAVAILABLE",
+          "LOCAL_DEPENDENCIES_UNAVAILABLE",
+          "LOCAL_APP_HEALTH_FAILED",
+          "OWNED_SERVER_START_FAILED",
+          "OWNED_SERVER_EXITED_EARLY",
+          "OWNED_SERVER_OUTPUT_CLOSED",
+          "OWNED_SERVER_READINESS_TIMEOUT",
+          "SYNTHETIC_FIXTURE_MISSING",
+          "BROWSER_METADATA_UNAVAILABLE",
+          "TRACE_CATEGORIES_UNAVAILABLE",
+        ]);
+        const code =
+          typeof error?.message === "string" && allowed.has(error.message)
+            ? error.message
+            : "METHOD_PILOT_FAILED";
+        process.stderr.write(
+          `${options?.browser === "installed-brave" ? "browser=installed-brave " : ""}${code} ${JSON.stringify(
+            summarizeSafeFailure(
+              error,
+              failureState.stage,
+              options?.browser === "installed-brave"
+                ? failureState.traceCategoryCatalogReadCount
+                : undefined,
+            ),
+          )}\n`,
+        );
+        process.exitCode = 1;
+      },
+    );
   }
 }

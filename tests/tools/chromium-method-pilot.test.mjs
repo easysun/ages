@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import * as runner from "../../scripts/capture-chromium-method-pilot.mjs";
 import {
   buildCaptureCases,
   buildLocalWorkerConfig,
@@ -117,6 +118,17 @@ test("failure diagnostics replace unknown stages and ignore unrecognized child t
   assert.doesNotMatch(
     JSON.stringify(summary),
     /private|user@example\.test|secret-value/,
+  );
+});
+
+test("failure diagnostics report completed installed Brave category reads", () => {
+  assert.deepEqual(
+    summarizeSafeFailure(new Error("private error text"), "browser-startup", 2),
+    { stage: "browser-startup", traceCategoryCatalogReadCount: 2 },
+  );
+  assert.deepEqual(
+    summarizeSafeFailure(new Error("ignored"), "browser-startup"),
+    { stage: "browser-startup" },
   );
 });
 
@@ -812,6 +824,266 @@ test("trace category probe reports required candidates as available or absent", 
   assert.equal(JSON.stringify(probe).includes("private"), false);
 });
 
+test("installed Brave category discovery uses the populated read after an empty first read", async () => {
+  const browserCategories = [
+    "blink.user_timing",
+    "devtools.timeline",
+    "disabled-by-default-devtools.timeline",
+    "disabled-by-default-devtools.timeline.frame",
+    "disabled-by-default-devtools.timeline.inputs",
+    "input",
+    "input.scrolling",
+    "latency",
+    "latencyInfo",
+    "cc",
+    "benchmark",
+    "toplevel",
+    "vendor.extra",
+  ];
+  const browserResponses = [
+    { categories: [] },
+    { categories: browserCategories },
+  ];
+  const page = {};
+  const calls = [];
+  const readCounts = [];
+  const browser = {
+    newBrowserCDPSession: async () => {
+      calls.push("browser.session");
+      return {
+        send: async (method) => {
+          calls.push(`browser.send:${method}`);
+          return browserResponses.shift();
+        },
+        detach: async () => calls.push("browser.detach"),
+      };
+    },
+  };
+  const context = {
+    newCDPSession: async () => {
+      calls.push("page.session");
+      return {
+        send: async () => ({ categories: browserCategories }),
+        detach: async () => calls.push("page.detach"),
+      };
+    },
+  };
+
+  const categories = await runner.readTraceCategoriesForMode({
+    browser,
+    context,
+    page,
+    browserMode: "installed-brave",
+    onRead: (count) => readCounts.push(count),
+  });
+
+  assert.deepEqual(calls, [
+    "browser.session",
+    "browser.send:Tracing.getCategories",
+    "browser.send:Tracing.getCategories",
+    "browser.detach",
+  ]);
+  assert.deepEqual(categories, browserCategories);
+  assert.deepEqual(readCounts, [1, 2]);
+  assert.deepEqual(probeTraceCategories(categories), {
+    available: [
+      "benchmark",
+      "blink.user_timing",
+      "cc",
+      "devtools.timeline",
+      "disabled-by-default-devtools.timeline",
+      "disabled-by-default-devtools.timeline.frame",
+      "disabled-by-default-devtools.timeline.inputs",
+      "input",
+      "input.scrolling",
+      "latency",
+      "latencyInfo",
+      "toplevel",
+    ],
+    unavailable: [],
+  });
+});
+
+test("installed Brave category discovery fails closed after two empty reads without page fallback", async () => {
+  const page = {};
+  const calls = [];
+  const readCounts = [];
+  const browser = {
+    newBrowserCDPSession: async () => {
+      calls.push("browser.session");
+      return {
+        send: async (method) => {
+          calls.push(`browser.send:${method}`);
+          return { categories: [] };
+        },
+        detach: async () => calls.push("browser.detach"),
+      };
+    },
+  };
+  const context = {
+    newCDPSession: async () => {
+      calls.push("page.session");
+      return {
+        send: async () => ({ categories: ["devtools.timeline"] }),
+        detach: async () => calls.push("page.detach"),
+      };
+    },
+  };
+
+  const categories = await runner.readTraceCategoriesForMode({
+    browser,
+    context,
+    page,
+    browserMode: "installed-brave",
+    onRead: (count) => readCounts.push(count),
+  });
+
+  assert.deepEqual(calls, [
+    "browser.session",
+    "browser.send:Tracing.getCategories",
+    "browser.send:Tracing.getCategories",
+    "browser.detach",
+  ]);
+  assert.deepEqual(readCounts, [1, 2]);
+  assert.deepEqual(categories, []);
+  assert.throws(
+    () => runner.requireTraceCategories(probeTraceCategories(categories)),
+    { message: "TRACE_CATEGORIES_UNAVAILABLE" },
+  );
+});
+
+test("installed Brave does not retry a malformed category response", async () => {
+  const page = {};
+  const calls = [];
+  const readCounts = [];
+  const malformedCategories = { count: 0 };
+  const browser = {
+    newBrowserCDPSession: async () => {
+      calls.push("browser.session");
+      return {
+        send: async (method) => {
+          calls.push(`browser.send:${method}`);
+          return { categories: malformedCategories };
+        },
+        detach: async () => calls.push("browser.detach"),
+      };
+    },
+  };
+  const context = {
+    newCDPSession: async () => {
+      calls.push("page.session");
+      return {
+        send: async () => ({ categories: ["devtools.timeline"] }),
+        detach: async () => calls.push("page.detach"),
+      };
+    },
+  };
+
+  const categories = await runner.readTraceCategoriesForMode({
+    browser,
+    context,
+    page,
+    browserMode: "installed-brave",
+    onRead: (count) => readCounts.push(count),
+  });
+
+  assert.deepEqual(calls, [
+    "browser.session",
+    "browser.send:Tracing.getCategories",
+    "browser.detach",
+  ]);
+  assert.deepEqual(readCounts, [1]);
+  assert.deepEqual(categories, malformedCategories);
+  assert.throws(
+    () => runner.requireTraceCategories(probeTraceCategories(categories)),
+    { message: "TRACE_CATEGORIES_UNAVAILABLE" },
+  );
+});
+
+test("installed Brave does not repeat a nonempty category catalog", async () => {
+  const page = {};
+  const calls = [];
+  const readCounts = [];
+  const browser = {
+    newBrowserCDPSession: async () => {
+      calls.push("browser.session");
+      return {
+        send: async (method) => {
+          calls.push(`browser.send:${method}`);
+          return { categories: ["devtools.timeline"] };
+        },
+        detach: async () => calls.push("browser.detach"),
+      };
+    },
+  };
+  const context = {
+    newCDPSession: async () => {
+      calls.push("page.session");
+      return {
+        send: async () => ({ categories: ["input"] }),
+        detach: async () => calls.push("page.detach"),
+      };
+    },
+  };
+
+  const categories = await runner.readTraceCategoriesForMode({
+    browser,
+    context,
+    page,
+    browserMode: "installed-brave",
+    onRead: (count) => readCounts.push(count),
+  });
+
+  assert.deepEqual(calls, [
+    "browser.session",
+    "browser.send:Tracing.getCategories",
+    "browser.detach",
+  ]);
+  assert.deepEqual(categories, ["devtools.timeline"]);
+  assert.deepEqual(readCounts, [1]);
+});
+
+test("Playwright Chromium category discovery retains its single page-level read", async () => {
+  const page = {};
+  const pageCategories = ["input"];
+  const calls = [];
+  const browser = {
+    newBrowserCDPSession: async () => {
+      calls.push("browser.session");
+      return {
+        send: async () => ({ categories: ["devtools.timeline"] }),
+        detach: async () => calls.push("browser.detach"),
+      };
+    },
+  };
+  const context = {
+    newCDPSession: async (targetPage) => {
+      calls.push(targetPage === page ? "page.session" : "wrong-page.session");
+      return {
+        send: async (method) => {
+          calls.push(`page.send:${method}`);
+          return { categories: pageCategories };
+        },
+        detach: async () => calls.push("page.detach"),
+      };
+    },
+  };
+
+  const categories = await runner.readTraceCategoriesForMode({
+    browser,
+    context,
+    page,
+    browserMode: "playwright-chromium",
+  });
+
+  assert.deepEqual(categories, pageCategories);
+  assert.deepEqual(calls, [
+    "page.session",
+    "page.send:Tracing.getCategories",
+    "page.detach",
+  ]);
+});
+
 test("isolated Worker configs preserve the service and fixture bucket contracts", () => {
   const appSource = JSON.parse(
     readFileSync(resolve(process.cwd(), "wrangler.jsonc"), "utf8"),
@@ -1403,6 +1675,257 @@ test("runner starts capture only for the explicit run flag", () => {
     () => parseRunnerArgs(["--run", "--remote"]),
     /unsupported capture option/,
   );
+});
+
+test("installed Brave mode requires its exact explicit flag pair", () => {
+  assert.deepEqual(parseRunnerArgs(["--run", "--browser=installed-brave"]), {
+    mode: "run",
+    browser: "installed-brave",
+  });
+  for (const args of [
+    ["--browser=installed-brave"],
+    ["--run", "--run", "--browser=installed-brave"],
+    ["--run", "--browser=installed-brave", "--browser=installed-brave"],
+    ["--run", "--browser=chrome"],
+    ["--run", "--browser=installed-brave", "--executable-path=/tmp/brave"],
+    ["--run", "--browser=installed-brave", "--user-data-dir=/tmp/profile"],
+    ["--run", "--browser=installed-brave", "--profile-directory=Default"],
+    ["--run", "--browser=installed-brave", "--fallback=chromium"],
+    ["--browser=installed-brave", "--run"],
+  ]) {
+    assert.throws(() => parseRunnerArgs(args), /unsupported capture option/);
+  }
+  assert.deepEqual(parseRunnerArgs([]), { mode: "preview" });
+  assert.deepEqual(parseRunnerArgs(["--run"]), { mode: "run" });
+});
+
+test("installed Brave validation fails closed for missing and redirected bundles", async () => {
+  const runner = await import(
+    "../../scripts/capture-chromium-method-pilot.mjs"
+  );
+  assert.equal(typeof runner.validateInstalledBraveInstallation, "function");
+
+  let bundleInfoRead = false;
+  const missing = Object.assign(new Error("private path detail"), {
+    code: "ENOENT",
+  });
+  assert.throws(
+    () =>
+      runner.validateInstalledBraveInstallation({
+        lstat: () => {
+          throw missing;
+        },
+        readBundleInfo: () => {
+          bundleInfoRead = true;
+          return {};
+        },
+      }),
+    { message: "INSTALLED_BRAVE_UNAVAILABLE" },
+  );
+  assert.equal(bundleInfoRead, false);
+
+  assert.throws(
+    () =>
+      runner.validateInstalledBraveInstallation({
+        lstat: (path) =>
+          path === "/Applications/Brave Browser.app"
+            ? {
+                isDirectory: () => false,
+                isFile: () => false,
+                isSymbolicLink: () => true,
+                mode: 0,
+              }
+            : {
+                isDirectory: () => true,
+                isFile: () => false,
+                isSymbolicLink: () => false,
+                mode: 0o40755,
+              },
+        readBundleInfo: () => ({ CFBundleIdentifier: "com.brave.Browser" }),
+      }),
+    { message: "INSTALLED_BRAVE_UNAVAILABLE" },
+  );
+});
+
+test("installed Brave metadata keeps bundle and runtime observations separate", async () => {
+  const runner = await import(
+    "../../scripts/capture-chromium-method-pilot.mjs"
+  );
+  assert.equal(typeof runner.buildInstalledBraveBrowserIdentity, "function");
+  const identity = runner.buildInstalledBraveBrowserIdentity({
+    bundleInfo: {
+      CFBundleIdentifier: "com.brave.Browser",
+      CFBundleShortVersionString: "155.1.97.56",
+      CFBundleVersion: "155.1.97.56",
+      SCMRevision: "971a7443b0c9b0a9b2860529b33331b76077ec62",
+    },
+    executableSha256: "a".repeat(64),
+    runtime: {
+      version: "153.0.8010.12",
+      product: "Chrome/153.0.8010.12",
+      revision: "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Safari/537.36",
+    },
+  });
+
+  assert.deepEqual(identity.bundle, {
+    identifier: "com.brave.Browser",
+    shortVersion: "155.1.97.56",
+    bundleVersion: "155.1.97.56",
+    scmRevision: "971a7443b0c9b0a9b2860529b33331b76077ec62",
+  });
+  assert.equal(identity.executableSha256, "a".repeat(64));
+  assert.deepEqual(identity.runtime, {
+    version: "153.0.8010.12",
+    product: "Chrome/153.0.8010.12",
+    revision: "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Safari/537.36",
+  });
+  assert.equal(identity.chromiumSourceIdentity, "unverified");
+  assert.doesNotMatch(JSON.stringify(identity), /\/Users\/|https?:/);
+
+  const bundleInfo = {
+    CFBundleIdentifier: "com.brave.Browser",
+    CFBundleShortVersionString: "155.1.97.56",
+    CFBundleVersion: "155.1.97.56",
+  };
+  const runtime = {
+    version: "153.0.8010.12",
+    product: "Chrome/153.0.8010.12",
+    revision: "971a7443b0c9b0a9b2860529b33331b76077ec62",
+    userAgent:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.8010.12 Safari/537.36",
+  };
+  const bareRevisionIdentity = runner.buildInstalledBraveBrowserIdentity({
+    bundleInfo,
+    executableSha256: "a".repeat(64),
+    runtime,
+  });
+  assert.equal(
+    bareRevisionIdentity.runtime.revision,
+    "971a7443b0c9b0a9b2860529b33331b76077ec62",
+  );
+  const syntheticShortRevision = `@${"1234567890abcdef".repeat(2)}1234567`;
+  const shortRevisionIdentity = runner.buildInstalledBraveBrowserIdentity({
+    bundleInfo,
+    executableSha256: "a".repeat(64),
+    runtime: { ...runtime, revision: syntheticShortRevision },
+  });
+  assert.equal(shortRevisionIdentity.runtime.revision, syntheticShortRevision);
+  for (const revision of [
+    `@${"a".repeat(38)}`,
+    `@${"a".repeat(41)}`,
+    "user@example.test",
+    "revision with whitespace",
+    "revision\nwith-control",
+    "/Users/private/Chromium/source",
+  ]) {
+    assert.throws(
+      () =>
+        runner.buildInstalledBraveBrowserIdentity({
+          bundleInfo,
+          executableSha256: "a".repeat(64),
+          runtime: { ...runtime, revision },
+        }),
+      { message: "BROWSER_METADATA_UNAVAILABLE" },
+    );
+  }
+});
+
+test("installed Brave probe evidence stays qualified and next-paint remains unavailable", async () => {
+  const runner = await import(
+    "../../scripts/capture-chromium-method-pilot.mjs"
+  );
+  assert.equal(typeof runner.qualifyInstalledBraveProbeEvidence, "function");
+  const caseRecord = {
+    action: "open",
+    inputToNextPaint: {
+      status: "unproven",
+      reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+    },
+  };
+  const segment = { action: "open", trace: "open.trace.json" };
+  const result = runner.qualifyInstalledBraveProbeEvidence(
+    [caseRecord],
+    [segment],
+  );
+
+  assert.equal(result.cases[0].qualification, "installed-brave-schema-probe");
+  assert.equal(
+    result.measurementSegments[0].qualification,
+    "installed-brave-schema-probe",
+  );
+  assert.deepEqual(result.cases[0].inputToNextPaint, {
+    status: "unproven",
+    reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+  });
+  assert.deepEqual(result.measurementSegments[0].inputToNextPaint, {
+    status: "unproven",
+    reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+  });
+  assert.equal(caseRecord.qualification, undefined);
+  assert.equal(segment.qualification, undefined);
+});
+
+test("installed Brave launch options use the fixed executable and owned profile", async () => {
+  const runner = await import(
+    "../../scripts/capture-chromium-method-pilot.mjs"
+  );
+  assert.equal(typeof runner.buildChromiumLaunchOptions, "function");
+  const options = runner.buildChromiumLaunchOptions("installed-brave");
+  assert.equal(
+    options.executablePath,
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+  );
+  assert.deepEqual(options.args, [
+    "--disable-background-networking",
+    "--disable-component-update",
+    "--disable-sync",
+    "--no-first-run",
+  ]);
+  assert.equal(Object.hasOwn(options, "userDataDir"), false);
+  assert.equal(
+    options.args.some((argument) => /profile|user-data-dir/i.test(argument)),
+    false,
+  );
+
+  const legacyOptions = runner.buildChromiumLaunchOptions();
+  assert.deepEqual(legacyOptions, {
+    headless: false,
+    args: [
+      "--disable-background-networking",
+      "--disable-component-update",
+      "--disable-sync",
+      "--no-first-run",
+    ],
+  });
+});
+
+test("installed Brave probe runs use a dedicated artifact root", async () => {
+  const runner = await import(
+    "../../scripts/capture-chromium-method-pilot.mjs"
+  );
+  assert.equal(typeof runner.artifactRootsForBrowser, "function");
+  const installedBraveRoots = runner.artifactRootsForBrowser("installed-brave");
+  const legacyRoots = runner.artifactRootsForBrowser();
+
+  assert.ok(
+    installedBraveRoots.artifactRoot.endsWith(
+      "/.superpowers/sdd/installed-brave-schema-probe",
+    ),
+  );
+  assert.equal(
+    installedBraveRoots.runsRoot,
+    join(installedBraveRoots.artifactRoot, "runs"),
+  );
+  assert.ok(
+    legacyRoots.artifactRoot.endsWith(
+      "/.superpowers/sdd/chromium-method-runner",
+    ),
+  );
+  assert.notEqual(installedBraveRoots.artifactRoot, legacyRoots.artifactRoot);
 });
 
 test("cleanup terminates only its owned subprocess", async () => {
