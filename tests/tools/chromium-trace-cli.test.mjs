@@ -223,6 +223,123 @@ test("reports sanitized exact discrete candidates without promoting formal actio
   assert.equal(result.stdout.includes(privateMarker), false);
 });
 
+test("reports a qualified Brave 155 diagnostic scope and fails closed on a conflicting top-level observation", (t) => {
+  let traceText = readFileSync(eventTimingFixturePath, "utf8");
+  for (const [before, after] of [
+    ['"interactionId": -1', '"interactionId": 17'],
+    ['"interactionOffset": -2', '"interactionOffset": 18'],
+    ['"interaction_id": 4294967295', '"interaction_id": 17'],
+    ['"interaction_offset": 4294967294', '"interaction_offset": 18'],
+  ]) {
+    assert.ok(traceText.includes(before), before);
+    traceText = traceText.replace(before, after);
+  }
+  const input = makeFixture(t, {
+    traceText,
+    traceName: "brave155-probe.trace.json",
+  });
+  const brave155Manifest = {
+    ...input.manifest,
+    browser: {
+      product: "Runtime browser observation",
+      version: "155.0.8059.40",
+    },
+    browserIdentity: {
+      bundle: {
+        identifier: "com.brave.Browser",
+        shortVersion: "155.1.97.56",
+        bundleVersion: "197.56",
+        scmRevision: "b01cdf43be4b4d5559bf7e58229e666e24454f50",
+      },
+      executableSha256:
+        "6099adb0e47d7c12922bb2dca02e2a044b71ae2895c0bbab1717f8660ffb99a7",
+      runtime: {
+        version: "155.0.8059.40",
+        product: "Chrome/155.0.8059.40",
+        revision: "@b01cdf43be4b4d5559bf7e58229e666e24454f5",
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 TRACE_PRIVATE_CLI_USER_AGENT",
+      },
+      chromiumSourceIdentity: "unverified",
+    },
+    qualification: "installed-brave-schema-probe",
+    status: "installed-brave-schema-probe",
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(brave155Manifest));
+  const supportedResult = runCli([input.manifestPath]);
+
+  assert.equal(supportedResult.status, 0, supportedResult.stderr);
+  const supportedTrace = JSON.parse(supportedResult.stdout).traces[0];
+  const supportedCrosswalk = supportedTrace.discreteEventTimingCrosswalk;
+  assert.deepEqual(supportedCrosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.equal(
+    supportedCrosswalk.methodScope.observedBrowserVersion,
+    "155.0.8059.40",
+  );
+  assert.equal(
+    supportedCrosswalk.methodScope.pinnedSourceRevision,
+    "cfaadc5a132d78e1828635aa8405a499f3e14864",
+  );
+  assert.equal(
+    supportedCrosswalk.methodScope.publishedBraveCoreRevision,
+    "b01cdf43be4b4d5559bf7e58229e666e24454f50",
+  );
+  assert.equal(
+    supportedCrosswalk.methodScope.evidenceClass,
+    "installed-brave-schema-probe",
+  );
+  assert.equal(supportedCrosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(supportedCrosswalk.formalActionSamples, []);
+  assert.equal(
+    supportedCrosswalk.gateReasonCodes.includes(
+      "INSTALLED_BRAVE_SCHEMA_PROBE_ONLY",
+    ),
+    true,
+  );
+  assert.equal(
+    supportedResult.stdout.includes("TRACE_PRIVATE_CLI_USER_AGENT"),
+    false,
+  );
+
+  const conflictingManifest = {
+    ...brave155Manifest,
+    browser: {
+      product: "Playwright Chromium",
+      version: "153.0.8010.12",
+    },
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(conflictingManifest));
+  const unsupportedResult = runCli([input.manifestPath]);
+
+  assert.equal(unsupportedResult.status, 0, unsupportedResult.stderr);
+  const unsupportedTrace = JSON.parse(unsupportedResult.stdout).traces[0];
+  const unsupportedCrosswalk = unsupportedTrace.discreteEventTimingCrosswalk;
+  assert.equal(unsupportedCrosswalk.status, "unavailable");
+  assert.deepEqual(unsupportedCrosswalk.candidates, []);
+  assert.equal(unsupportedCrosswalk.methodScope, null);
+  assert.equal(unsupportedCrosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(unsupportedCrosswalk.formalActionSamples, []);
+  assert.deepEqual(unsupportedCrosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  for (const key of [
+    "counts",
+    "eventTimingInventory",
+    "inputToPresentedFrameSamples",
+    "frameIntervals",
+    "diagnostics",
+  ]) {
+    assert.deepEqual(unsupportedTrace[key], supportedTrace[key]);
+  }
+});
+
 test("keeps Brave schema-probe crosswalks unavailable despite a forged Chromium top-level version", (t) => {
   const traceBytes = readFileSync(eventTimingFixturePath);
   const input = makeFixture(t, {

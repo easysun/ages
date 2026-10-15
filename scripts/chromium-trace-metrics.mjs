@@ -111,10 +111,35 @@ const CROSSWALK_GATE_REASONS = [
   "VENDOR_PATCH_IDENTITY_UNVERIFIED",
   "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
 ];
+const BRAVE155_METHOD_SCOPE = {
+  observedBrowserVersion: "155.0.8059.40",
+  pinnedSourceRevision: "cfaadc5a132d78e1828635aa8405a499f3e14864",
+  publishedBraveCoreRevision: "b01cdf43be4b4d5559bf7e58229e666e24454f50",
+  evidenceClass: "installed-brave-schema-probe",
+  vendorPatchIdentity: "unverified",
+  navigationDocumentIdentity: "not-inferred",
+  originScope: "capture-case + renderer PID + frame",
+};
+const BRAVE155_GATE_REASONS = [
+  "ACTION_ATTRIBUTION_UNPROVEN",
+  "INTERACTION_AGGREGATION_UNPROVEN",
+  "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+  "MODALITY_EQUIVALENCE_UNPROVEN",
+  "INSTALLED_BRAVE_SCHEMA_PROBE_ONLY",
+  "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+  "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+];
 
 const BROWSER_SOURCE_PROFILE_UNSUPPORTED = "BROWSER_SOURCE_PROFILE_UNSUPPORTED";
 const PLAYWRIGHT_CHROMIUM_PRODUCT = "Playwright Chromium";
 const PLAYWRIGHT_RUNTIME_PRODUCT = `Chrome/${CROSSWALK_METHOD_SCOPE.observedBrowserVersion}`;
+const BRAVE155_BROWSER_PRODUCT = "Runtime browser observation";
+const BRAVE155_RUNTIME_PRODUCT = "Chrome/155.0.8059.40";
+const BRAVE155_USER_AGENT_PRODUCT_VERSION = "155.0.0.0";
+const BRAVE155_BUNDLE_REVISION = "b01cdf43be4b4d5559bf7e58229e666e24454f50";
+const BRAVE155_RUNTIME_REVISION = "@b01cdf43be4b4d5559bf7e58229e666e24454f5";
+const BRAVE155_EXECUTABLE_SHA256 =
+  "6099adb0e47d7c12922bb2dca02e2a044b71ae2895c0bbab1717f8660ffb99a7";
 
 export function nearestRank(values, percentile) {
   if (
@@ -1388,6 +1413,18 @@ function readModernInteraction(value, rejections) {
   return integer;
 }
 
+function withinBrave155SignedInteractionBounds(values, rejections) {
+  let withinBounds = true;
+  for (const value of values) {
+    const integer = exactInteger(value);
+    if (integer !== null && (integer < 0n || integer > SIGNED_INT32_MAX)) {
+      rejectEntry(rejections, "BRAVE_SIGNED_IDENTITY_OVERFLOW_UNVERIFIED");
+      withinBounds = false;
+    }
+  }
+  return withinBounds;
+}
+
 function readNodeId(value, rejections, source) {
   const integer = exactInteger(value);
   if (integer === null || integer < 0n) {
@@ -1412,7 +1449,7 @@ function isContinuousEventType(type) {
   ].includes(type);
 }
 
-function legacyCrosswalkEntry(span, captureCase, rejections) {
+function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
   const data = span.begin.args?.data;
   if (
     !isRecord(data) ||
@@ -1439,6 +1476,15 @@ function legacyCrosswalkEntry(span, captureCase, rejections) {
   ];
   if (!hasRequiredFields(data, required)) {
     rejectEntry(rejections, "MISSING_LEGACY_EVENT_FIELD");
+    return null;
+  }
+  if (
+    profile === "brave155" &&
+    !withinBrave155SignedInteractionBounds(
+      [data.interactionId, data.interactionOffset],
+      rejections,
+    )
+  ) {
     return null;
   }
 
@@ -1540,7 +1586,7 @@ function legacyCrosswalkEntry(span, captureCase, rejections) {
   };
 }
 
-function modernCrosswalkEntry(span, rejections) {
+function modernCrosswalkEntry(span, rejections, profile) {
   const args = span.begin.args;
   const timing = args?.event_timing;
   if (!isRecord(args) || !isRecord(timing)) {
@@ -1565,6 +1611,15 @@ function modernCrosswalkEntry(span, rejections) {
   ];
   if (!hasRequiredFields(timing, required)) {
     rejectEntry(rejections, "MISSING_MODERN_EVENT_TIMING_FIELD");
+    return null;
+  }
+  if (
+    profile === "brave155" &&
+    !withinBrave155SignedInteractionBounds(
+      [timing.interaction_id, timing.interaction_offset],
+      rejections,
+    )
+  ) {
     return null;
   }
 
@@ -1677,19 +1732,17 @@ function toSafeMicroseconds(value) {
   return Number(value);
 }
 
-function hasPinnedChromeProductTokens(userAgent) {
+function hasPinnedChromeProductTokens(userAgent, expectedVersion) {
   const versions = [...userAgent.matchAll(/(?:^|\s)Chrome\/([^\s]*)/g)].map(
     ([, version]) => version,
   );
   return (
     versions.length > 0 &&
-    versions.every(
-      (version) => version === CROSSWALK_METHOD_SCOPE.observedBrowserVersion,
-    )
+    versions.every((version) => version === expectedVersion)
   );
 }
 
-function supportsEventTimingCrosswalkProfile(observations) {
+function supportsPlaywrightChromiumProfile(observations) {
   if (
     !isRecord(observations) ||
     Object.keys(observations).some(
@@ -1747,13 +1800,106 @@ function supportsEventTimingCrosswalkProfile(observations) {
           CROSSWALK_METHOD_SCOPE.pinnedSourceRevision)) ||
     (runtime.userAgent !== undefined &&
       (typeof runtime.userAgent !== "string" ||
-        !hasPinnedChromeProductTokens(runtime.userAgent) ||
+        !hasPinnedChromeProductTokens(
+          runtime.userAgent,
+          CROSSWALK_METHOD_SCOPE.observedBrowserVersion,
+        ) ||
         /brave/i.test(runtime.userAgent)))
   ) {
     return false;
   }
 
   return true;
+}
+
+function supportsBrave155Profile(observations) {
+  if (
+    !isRecord(observations) ||
+    !hasOnlyFields(
+      observations,
+      new Set(["browser", "browserIdentity", "qualification", "status"]),
+    ) ||
+    !isRecord(observations.browser) ||
+    !hasOnlyFields(observations.browser, new Set(["product", "version"])) ||
+    observations.browser.product !== BRAVE155_BROWSER_PRODUCT ||
+    observations.browser.version !==
+      BRAVE155_METHOD_SCOPE.observedBrowserVersion ||
+    observations.qualification !== "installed-brave-schema-probe" ||
+    observations.status !== "installed-brave-schema-probe"
+  ) {
+    return false;
+  }
+
+  const identity = observations.browserIdentity;
+  if (
+    !isRecord(identity) ||
+    !hasOnlyFields(
+      identity,
+      new Set([
+        "bundle",
+        "executableSha256",
+        "runtime",
+        "chromiumSourceIdentity",
+      ]),
+    ) ||
+    identity.chromiumSourceIdentity !== "unverified" ||
+    identity.executableSha256 !== BRAVE155_EXECUTABLE_SHA256
+  ) {
+    return false;
+  }
+
+  const bundle = identity.bundle;
+  if (
+    !isRecord(bundle) ||
+    !hasOnlyFields(
+      bundle,
+      new Set(["identifier", "shortVersion", "bundleVersion", "scmRevision"]),
+    ) ||
+    bundle.identifier !== "com.brave.Browser" ||
+    bundle.shortVersion !== "155.1.97.56" ||
+    bundle.bundleVersion !== "197.56" ||
+    bundle.scmRevision !== BRAVE155_BUNDLE_REVISION
+  ) {
+    return false;
+  }
+
+  const runtime = identity.runtime;
+  return (
+    isRecord(runtime) &&
+    hasOnlyFields(
+      runtime,
+      new Set(["version", "product", "revision", "userAgent"]),
+    ) &&
+    runtime.version === BRAVE155_METHOD_SCOPE.observedBrowserVersion &&
+    runtime.product === BRAVE155_RUNTIME_PRODUCT &&
+    runtime.revision === BRAVE155_RUNTIME_REVISION &&
+    typeof runtime.userAgent === "string" &&
+    hasPinnedChromeProductTokens(
+      runtime.userAgent,
+      BRAVE155_USER_AGENT_PRODUCT_VERSION,
+    )
+  );
+}
+
+function selectEventTimingCrosswalkProfile(observations) {
+  if (!isRecord(observations) || !isRecord(observations.browser)) return null;
+  if (
+    observations.browser.product === PLAYWRIGHT_CHROMIUM_PRODUCT &&
+    observations.browser.version ===
+      CROSSWALK_METHOD_SCOPE.observedBrowserVersion
+  ) {
+    return supportsPlaywrightChromiumProfile(observations)
+      ? "chromium153"
+      : null;
+  }
+  if (
+    observations.browser.product === BRAVE155_BROWSER_PRODUCT &&
+    observations.browser.version ===
+      BRAVE155_METHOD_SCOPE.observedBrowserVersion
+  ) {
+    return supportsBrave155Profile(observations) ? "brave155" : null;
+  }
+  return null;
 }
 
 function unsupportedEventTimingCrosswalk() {
@@ -1780,7 +1926,7 @@ function unsupportedEventTimingCrosswalk() {
   };
 }
 
-function discreteEventTimingCrosswalk(trace, traceRecord) {
+function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
   const rejectionCounts = new Map();
   const legacyPairs = pairTypedSlices(
     trace.traceEvents,
@@ -1799,7 +1945,9 @@ function discreteEventTimingCrosswalk(trace, traceRecord) {
       ? traceRecord.trace
       : null;
   const parsedLegacy = legacyPairs.spans
-    .map((span) => legacyCrosswalkEntry(span, captureCase, rejectionCounts))
+    .map((span) =>
+      legacyCrosswalkEntry(span, captureCase, rejectionCounts, profile),
+    )
     .filter((entry) => entry !== null);
 
   const originsByScope = new Map();
@@ -1840,7 +1988,7 @@ function discreteEventTimingCrosswalk(trace, traceRecord) {
   const modernGroups = new Map();
   const modernIdentityGroups = new Map();
   for (const span of modernPairs.spans) {
-    const entry = modernCrosswalkEntry(span, rejectionCounts);
+    const entry = modernCrosswalkEntry(span, rejectionCounts, profile);
     if (entry !== null && entry.legacyType !== null) {
       addToGroups(modernGroups, entry);
       addToGroups(modernIdentityGroups, entry, crosswalkBaseIdentityKey);
@@ -1967,10 +2115,15 @@ function discreteEventTimingCrosswalk(trace, traceRecord) {
       }),
     ),
     rejectionCounts: diagnosticList(rejectionCounts),
-    methodScope: { ...CROSSWALK_METHOD_SCOPE },
+    methodScope: {
+      ...(profile === "brave155"
+        ? BRAVE155_METHOD_SCOPE
+        : CROSSWALK_METHOD_SCOPE),
+    },
     formalActionStatus: "unavailable",
     formalActionSamples: [],
-    gateReasonCodes: CROSSWALK_GATE_REASONS,
+    gateReasonCodes:
+      profile === "brave155" ? BRAVE155_GATE_REASONS : CROSSWALK_GATE_REASONS,
   };
 }
 
@@ -2008,10 +2161,9 @@ export function analyzeTrace(
     reporterBegins,
     diagnosticCounts,
   );
-  const eventTimingCrosswalk = supportsEventTimingCrosswalkProfile(
-    sourceObservations,
-  )
-    ? discreteEventTimingCrosswalk(trace, traceRecord)
+  const profile = selectEventTimingCrosswalkProfile(sourceObservations);
+  const eventTimingCrosswalk = profile
+    ? discreteEventTimingCrosswalk(trace, traceRecord, profile)
     : unsupportedEventTimingCrosswalk();
 
   return {
