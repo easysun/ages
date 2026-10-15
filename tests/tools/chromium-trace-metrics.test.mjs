@@ -15,7 +15,7 @@ function readFixture(name) {
 
 function analyzeFixture(name, traceRecord = {}) {
   const trace = parseTrace(readFixture(name));
-  return analyzeTrace(trace, {
+  return analyzeKnownChromiumTrace(trace, {
     trace: name,
     dataLossOccurred: false,
     ...traceRecord,
@@ -25,6 +25,173 @@ function analyzeFixture(name, traceRecord = {}) {
 function diagnosticCodes(analysis) {
   return new Set(analysis.diagnostics.map(({ code }) => code));
 }
+
+const knownChromiumObservations = {
+  browser: { product: "Playwright Chromium", version: "153.0.8010.12" },
+  status: "synthetic-method-pilot",
+};
+
+function analyzeKnownChromiumTrace(trace, traceRecord, segments = []) {
+  return analyzeTrace(trace, traceRecord, segments, knownChromiumObservations);
+}
+
+test("requires asserted Playwright Chromium observations before running the EventTiming crosswalk", () => {
+  const trace = parseTrace(readFixture("event-timing-fallback.trace.json"));
+  const record = {
+    trace: "event-timing-fallback.trace.json",
+    dataLossOccurred: false,
+  };
+  const accepted = analyzeTrace(
+    trace,
+    record,
+    [],
+    knownChromiumObservations,
+  ).discreteEventTimingCrosswalk;
+  assert.equal(accepted.status, "diagnostic-only");
+  assert.equal(accepted.candidates.length, 1);
+  assert.equal(accepted.methodScope.observedBrowserVersion, "153.0.8010.12");
+
+  const braveIdentity = {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.56",
+      bundleVersion: "155.1.97.56",
+      scmRevision: "971a7443b0c9b0a9b2860529b33331b76077ec62",
+    },
+    executableSha256: "a".repeat(64),
+    runtime: {
+      version: "153.0.8010.12",
+      product: "Chrome/153.0.8010.12",
+      revision: "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+      userAgent:
+        "Mozilla/5.0 AppleWebKit/537.36 Chrome/153.0.8010.12 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  const unsupportedObservations = [
+    undefined,
+    null,
+    {},
+    { browser: { product: "Playwright Chromium" } },
+    { browser: { product: "Synthetic Chromium", version: "153.0.8010.12" } },
+    { browser: { product: "Playwright Chromium", version: "155.0.8059.40" } },
+    {
+      ...knownChromiumObservations,
+      browserIdentity: { runtime: { version: "155.0.8059.40" } },
+    },
+    { ...knownChromiumObservations, browserIdentity: braveIdentity },
+    {
+      ...knownChromiumObservations,
+      qualification: "installed-brave-schema-probe",
+    },
+    { ...knownChromiumObservations, status: "installed-brave-schema-probe" },
+    {
+      ...knownChromiumObservations,
+      browserIdentity: { runtime: { revision: {} } },
+    },
+    {
+      ...knownChromiumObservations,
+      sourceRevision: "TRACE_PRIVATE_AGES_REVISION",
+    },
+    { ...knownChromiumObservations, profileName: "caller-selected-profile" },
+  ];
+
+  for (const observations of unsupportedObservations) {
+    const crosswalk = analyzeTrace(
+      trace,
+      record,
+      [],
+      observations,
+    ).discreteEventTimingCrosswalk;
+    assert.equal(crosswalk.status, "unavailable");
+    assert.deepEqual(crosswalk.candidates, []);
+    assert.equal(crosswalk.methodScope, null);
+    assert.equal(crosswalk.formalActionStatus, "unavailable");
+    assert.deepEqual(crosswalk.formalActionSamples, []);
+    assert.deepEqual(crosswalk.gateReasonCodes, [
+      "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+    ]);
+  }
+});
+
+function crosswalkWithRuntimeUserAgent(userAgent) {
+  const trace = parseTrace(readFixture("event-timing-fallback.trace.json"));
+  return analyzeTrace(
+    trace,
+    { trace: "event-timing-fallback.trace.json", dataLossOccurred: false },
+    [],
+    {
+      ...knownChromiumObservations,
+      browserIdentity: { runtime: { userAgent } },
+    },
+  ).discreteEventTimingCrosswalk;
+}
+
+function assertUnsupportedUserAgent(userAgent) {
+  const crosswalk = crosswalkWithRuntimeUserAgent(userAgent);
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_USER_AGENT/);
+}
+
+test("accepts the complete pinned Chrome product token in an asserted user agent", () => {
+  const crosswalk = crosswalkWithRuntimeUserAgent(
+    "Mozilla/5.0 AppleWebKit/537.36 Chrome/153.0.8010.12 Safari/537.36",
+  );
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.equal(crosswalk.candidates.length, 1);
+});
+
+test("rejects a Chrome product token with a longer version sharing the pinned prefix", () => {
+  assertUnsupportedUserAgent("Mozilla/5.0 Chrome/153.0.8010.123 Safari/537.36");
+});
+
+test("rejects the pinned version embedded after a conflicting Chrome product token", () => {
+  assertUnsupportedUserAgent(
+    "Mozilla/5.0 Chrome/155.0.8059.40 comment=Chrome/153.0.8010.12 TRACE_PRIVATE_USER_AGENT",
+  );
+});
+
+test("rejects conflicting complete Chrome product tokens", () => {
+  assertUnsupportedUserAgent(
+    "Mozilla/5.0 Chrome/153.0.8010.12 Safari/537.36 Chrome/155.0.8059.40",
+  );
+});
+
+test("unsupported browser observations do not leak into crosswalk reasons or alter frame diagnostics", () => {
+  const trace = parseTrace(readFixture("exact-ids.trace.json"));
+  const record = { trace: "exact-ids.trace.json", dataLossOccurred: false };
+  const known = analyzeTrace(trace, record, [], knownChromiumObservations);
+  const unsupported = analyzeTrace(trace, record, [], {
+    browser: {
+      product: "TRACE_PRIVATE_BROWSER_PRODUCT",
+      version: "TRACE_PRIVATE_BROWSER_VERSION",
+    },
+    status: "TRACE_PRIVATE_PROBE_STATUS",
+  });
+
+  for (const key of [
+    "counts",
+    "diagnostics",
+    "inputToPresentedFrameSamples",
+    "frameIntervals",
+  ]) {
+    assert.deepEqual(unsupported[key], known[key]);
+  }
+  const crosswalk = unsupported.discreteEventTimingCrosswalk;
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+});
 
 test("uses one-based nearest-rank percentiles and rejects invalid inputs", () => {
   assert.equal(nearestRank([4], 0.5), 4);
@@ -65,7 +232,7 @@ test("uses one-based nearest-rank percentiles and rejects invalid inputs", () =>
 });
 
 test("inverts the original EventTiming decimal token and proves only exact discrete entries", () => {
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(readFixture("event-timing-fallback.trace.json")),
     { trace: "event-timing-fallback.trace.json", dataLossOccurred: false },
   );
@@ -128,10 +295,13 @@ test("rejects ambiguous crosswalk identities instead of joining nearby entries",
   duplicateEnd.id = "0x4";
   trace.traceEvents.push(duplicate, duplicateEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.deepEqual(crosswalk.candidates, []);
   assert.ok(
@@ -156,10 +326,13 @@ test("distinguishes repeated EventTiming identities by exact processing endpoint
   modernEnd.ts = 11005;
   trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.deepEqual(
     crosswalk.candidates.map(({ durationUs }) => durationUs),
@@ -178,7 +351,7 @@ test("requires EventTiming frame values to use the observed string encoding", ()
     readFixture("event-timing-fallback.trace.json"),
   );
   legacyNumericFrame.traceEvents[0].args.data.frame = 123;
-  const legacyCrosswalk = analyzeTrace(
+  const legacyCrosswalk = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify(legacyNumericFrame)),
     {
       trace: "event-timing-fallback.trace.json",
@@ -196,7 +369,7 @@ test("requires EventTiming frame values to use the observed string encoding", ()
     readFixture("event-timing-fallback.trace.json"),
   );
   modernNumericFrame.traceEvents[1].args.event_timing.frame = 123;
-  const modernCrosswalk = analyzeTrace(
+  const modernCrosswalk = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify(modernNumericFrame)),
     {
       trace: "event-timing-fallback.trace.json",
@@ -218,10 +391,13 @@ test("requires the observed category for each typed EventTiming source", () => {
     if (event.name === "EventProcessing") event.cat = "devtools.timeline";
   }
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.deepEqual(crosswalk.candidates, []);
   assert.ok(
@@ -254,10 +430,13 @@ test("requires a consistent origin per capture, renderer, and frame scope", () =
   modernBegin.args.event_timing.interaction_offset = 3;
   trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.deepEqual(crosswalk.candidates, []);
   assert.ok(
@@ -293,10 +472,13 @@ test("keeps independent renderer scopes separate when origins differ", () => {
   modernBegin.args.event_timing.interaction_offset = 3;
   trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.equal(crosswalk.candidates.length, 2);
 });
@@ -326,10 +508,13 @@ test("keeps independent frame scopes separate when origins differ", () => {
   modernBegin.args.event_timing.interaction_offset = 3;
   trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.equal(crosswalk.candidates.length, 2);
 });
@@ -339,7 +524,7 @@ test("rejects a decimal timestamp with no exact binary64 microsecond preimage", 
     '"timeStamp": 1.0000000000000001',
     '"timeStamp": 1.0000000000000002',
   );
-  const crosswalk = analyzeTrace(parseTrace(text), {
+  const crosswalk = analyzeKnownChromiumTrace(parseTrace(text), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -356,7 +541,7 @@ test("requires explicit fallback-free evidence for the modern slice", () => {
   const missingFallback = readFixture(
     "event-timing-fallback.trace.json",
   ).replace('"fallback_reason": "None",\n', "");
-  const crosswalk = analyzeTrace(parseTrace(missingFallback), {
+  const crosswalk = analyzeKnownChromiumTrace(parseTrace(missingFallback), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -369,10 +554,13 @@ test("requires explicit fallback-free evidence for the modern slice", () => {
   const fallbackTimeUsPresent = readFixture(
     "event-timing-fallback.trace.json",
   ).replace('"pointer_id": 1', '"pointer_id": 1, "fallback_time_us": 0');
-  const contradicted = analyzeTrace(parseTrace(fallbackTimeUsPresent), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const contradicted = analyzeKnownChromiumTrace(
+    parseTrace(fallbackTimeUsPresent),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
   assert.deepEqual(contradicted.candidates, []);
   assert.ok(
     contradicted.rejectionCounts.some(
@@ -383,10 +571,13 @@ test("requires explicit fallback-free evidence for the modern slice", () => {
   const nonzeroFallbackTime = readFixture(
     "event-timing-fallback.trace.json",
   ).replace('"fallback_time": 0', '"fallback_time": 1');
-  const fallbackTimeCrosswalk = analyzeTrace(parseTrace(nonzeroFallbackTime), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const fallbackTimeCrosswalk = analyzeKnownChromiumTrace(
+    parseTrace(nonzeroFallbackTime),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
   assert.deepEqual(fallbackTimeCrosswalk.candidates, []);
   assert.ok(
     fallbackTimeCrosswalk.rejectionCounts.some(
@@ -400,7 +591,7 @@ test("rejects mismatched identity fields and typed track namespaces", () => {
     '"frame": "frame-A",\n          "node_id"',
     '"frame": "frame-B",\n          "node_id"',
   );
-  const frameCrosswalk = analyzeTrace(parseTrace(frameMismatch), {
+  const frameCrosswalk = analyzeKnownChromiumTrace(parseTrace(frameMismatch), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -414,10 +605,13 @@ test("rejects mismatched identity fields and typed track namespaces", () => {
   const trace = JSON.parse(readFixture("event-timing-fallback.trace.json"));
   delete trace.traceEvents[3].id;
   trace.traceEvents[3].id2 = { local: "0x1" };
-  const trackCrosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const trackCrosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
   assert.deepEqual(trackCrosswalk.candidates, []);
   assert.ok(
     trackCrosswalk.rejectionCounts.some(
@@ -464,10 +658,13 @@ test("supports id2.global tracks and optional key_code without using them as joi
   modernBegin.args.event_timing.key_code = 16;
   trace.traceEvents.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
 
-  const crosswalk = analyzeTrace(parseTrace(JSON.stringify(trace)), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const crosswalk = analyzeKnownChromiumTrace(
+    parseTrace(JSON.stringify(trace)),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
 
   assert.deepEqual(
     crosswalk.candidates.map(({ eventType }) => eventType),
@@ -480,7 +677,7 @@ test("rejects unknown fields and modern interaction values outside uint32", () =
     new URL("event-timing-fallback.trace.json", fixtures),
     "utf8",
   ).replace('"pointer_id": 1', '"pointer_id": 1, "joinKey": "private"');
-  const unknownCrosswalk = analyzeTrace(parseTrace(unknownField), {
+  const unknownCrosswalk = analyzeKnownChromiumTrace(parseTrace(unknownField), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -495,7 +692,7 @@ test("rejects unknown fields and modern interaction values outside uint32", () =
     '"interaction_id": 4294967295',
     '"interaction_id": 4294967296',
   );
-  const rangeCrosswalk = analyzeTrace(parseTrace(outOfRange), {
+  const rangeCrosswalk = analyzeKnownChromiumTrace(parseTrace(outOfRange), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -511,10 +708,13 @@ test("rejects processing endpoint mismatch and out-of-range legacy interaction I
   const endpointMismatch = readFixture(
     "event-timing-fallback.trace.json",
   ).replace('"ts": 10005', '"ts": 10004');
-  const endpointCrosswalk = analyzeTrace(parseTrace(endpointMismatch), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const endpointCrosswalk = analyzeKnownChromiumTrace(
+    parseTrace(endpointMismatch),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
   assert.deepEqual(endpointCrosswalk.candidates, []);
   assert.ok(
     endpointCrosswalk.rejectionCounts.some(
@@ -525,10 +725,13 @@ test("rejects processing endpoint mismatch and out-of-range legacy interaction I
   const invalidLegacyId = readFixture(
     "event-timing-fallback.trace.json",
   ).replace('"interactionId": -1', '"interactionId": -2147483649');
-  const identityCrosswalk = analyzeTrace(parseTrace(invalidLegacyId), {
-    trace: "event-timing-fallback.trace.json",
-    dataLossOccurred: false,
-  }).discreteEventTimingCrosswalk;
+  const identityCrosswalk = analyzeKnownChromiumTrace(
+    parseTrace(invalidLegacyId),
+    {
+      trace: "event-timing-fallback.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
   assert.deepEqual(identityCrosswalk.candidates, []);
   assert.ok(
     identityCrosswalk.rejectionCounts.some(
@@ -544,7 +747,7 @@ test("rejects processing spans outside their legacy event lifetime", () => {
       '"processingStart": 0.999',
     )
     .replace('"ts": 10001', '"ts": 9999');
-  const crosswalk = analyzeTrace(parseTrace(outsideInput), {
+  const crosswalk = analyzeKnownChromiumTrace(parseTrace(outsideInput), {
     trace: "event-timing-fallback.trace.json",
     dataLossOccurred: false,
   }).discreteEventTimingCrosswalk;
@@ -558,7 +761,7 @@ test("rejects processing spans outside their legacy event lifetime", () => {
 });
 
 test("does not promote an incidental discrete event into a continuous action sample", () => {
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(readFixture("continuous-input.trace.json")),
     {
       trace: "continuous-input.trace.json",
@@ -664,7 +867,7 @@ test("does not correlate adjacent int64 values that collapse to the same Number"
     '"event_latency_id": 9223372036854775807',
     '"event_latency_id": 9223372036854775806',
   );
-  const analysis = analyzeTrace(parseTrace(text), {
+  const analysis = analyzeKnownChromiumTrace(parseTrace(text), {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -692,7 +895,7 @@ test("a reporter with a different close endpoint cannot complete the chain", () 
     '"ts": 10050,\n      "id2": { "local": "0x1" }',
     '"ts": 10051,\n      "id2": { "local": "0x1" }',
   );
-  const analysis = analyzeTrace(parseTrace(text), {
+  const analysis = analyzeKnownChromiumTrace(parseTrace(text), {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -768,7 +971,7 @@ test("requires a unique containing parent occurrence for each nested stage", () 
     },
   );
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -811,7 +1014,7 @@ test("rejects same-track stages ordered after the EventLatency close", () => {
   ].map((event) => ({ ...event, ts: 10050 }));
   trace.traceEvents.push(...postCloseStages);
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -875,7 +1078,7 @@ test("accepts zero-duration stages ordered inside an equal-time parent boundary"
     },
   );
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -892,7 +1095,7 @@ test("requires both exact frame IDs from the matched presented reporter", () => 
   );
   reporterBegin.args.frame_reporter.display_trace_id -= 1n;
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -918,7 +1121,7 @@ test("rejects duplicate presented reporters with the same exact frame IDs", () =
     { ...reporterEnd, id2: { local: "0x2" } },
   );
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -934,7 +1137,7 @@ test("does not substitute a nearby frame swap or animation frame marker", () => 
   );
   reporterBegin.args.frame_reporter.state = "STATE_NO_UPDATE_DESIRED";
 
-  const analysis = analyzeTrace(trace, {
+  const analysis = analyzeKnownChromiumTrace(trace, {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -986,7 +1189,7 @@ test("rejects malformed numeric identity tokens without rounding them", () => {
     '"event_latency_id": 9223372036854775807',
     '"event_latency_id": 9.223372036854776e18',
   );
-  const analysis = analyzeTrace(parseTrace(text), {
+  const analysis = analyzeKnownChromiumTrace(parseTrace(text), {
     trace: "exact-ids.trace.json",
     dataLossOccurred: false,
   });
@@ -996,7 +1199,7 @@ test("rejects malformed numeric identity tokens without rounding them", () => {
 });
 
 test("diagnoses non-object trace entries without pairing them", () => {
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: [null, "malformed-event"] })),
     { trace: "invalid-events.trace.json", dataLossOccurred: false },
   );
@@ -1093,7 +1296,7 @@ test("keeps frame intervals inside declared action segments and streams", () => 
       activeWindows: [{ id: "zoom-one", startUs: 90, endUs: 120 }],
     },
   ];
-  const analysis = analyzeTrace(trace, traceRecord, segments);
+  const analysis = analyzeKnownChromiumTrace(trace, traceRecord, segments);
 
   assert.deepEqual(analysis.frameIntervals.samples, [
     {
@@ -1138,7 +1341,7 @@ test("does not bridge idle gaps between active windows in one action segment", (
       endpoint,
     }),
   );
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1205,7 +1408,7 @@ test("deduplicates fully identical presented-frame records once", () => {
       ],
     }),
   );
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     trace,
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1253,7 +1456,7 @@ test("rejects all linked trials that reuse an exact frame identity across window
       localId: "0x2",
     }),
   ];
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [1, 2].map((trial) => ({
@@ -1318,7 +1521,7 @@ test("rejects frame identity reuse across conflicting compositor streams", () =>
       localId: "0x2",
     }),
   ];
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1398,7 +1601,7 @@ test("rejects an ambiguous middle frame instead of bridging its neighbors", () =
       localId: "0x4",
     }),
   ];
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1463,7 +1666,7 @@ test("does not bridge a presented-frame reporter with a malformed endpoint", () 
       localId: "0x3",
     }),
   ];
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1515,7 +1718,7 @@ test("uses both exact frame IDs when identifying a presented frame", () => {
       endpoint: 30,
     }),
   ];
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1572,7 +1775,7 @@ test("rejects noncanonical segment action labels without echoing them", () => {
   ];
 
   for (const action of actionLabels) {
-    const analysis = analyzeTrace(
+    const analysis = analyzeKnownChromiumTrace(
       trace,
       { trace: "frames.trace.json", dataLossOccurred: false },
       [
@@ -1619,7 +1822,7 @@ test("does not form intervals when the presented stream identity is incomplete",
     }),
   ];
   delete events[0].args.frame_reporter.frame_source;
-  const analysis = analyzeTrace(
+  const analysis = analyzeKnownChromiumTrace(
     parseTrace(JSON.stringify({ traceEvents: events })),
     { trace: "frames.trace.json", dataLossOccurred: false },
     [
@@ -1674,11 +1877,11 @@ test("reports no interval series for absent segments or lossy traces", () => {
     activeWindows: [{ id: "pan-one", startUs: 0, endUs: 40 }],
   };
 
-  const noSegments = analyzeTrace(trace, {
+  const noSegments = analyzeKnownChromiumTrace(trace, {
     trace: "frames.trace.json",
     dataLossOccurred: false,
   });
-  const lossy = analyzeTrace(
+  const lossy = analyzeKnownChromiumTrace(
     trace,
     { trace: "frames.trace.json", dataLossOccurred: true },
     [segment],

@@ -112,6 +112,10 @@ const CROSSWALK_GATE_REASONS = [
   "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
 ];
 
+const BROWSER_SOURCE_PROFILE_UNSUPPORTED = "BROWSER_SOURCE_PROFILE_UNSUPPORTED";
+const PLAYWRIGHT_CHROMIUM_PRODUCT = "Playwright Chromium";
+const PLAYWRIGHT_RUNTIME_PRODUCT = `Chrome/${CROSSWALK_METHOD_SCOPE.observedBrowserVersion}`;
+
 export function nearestRank(values, percentile) {
   if (
     !Array.isArray(values) ||
@@ -1673,6 +1677,109 @@ function toSafeMicroseconds(value) {
   return Number(value);
 }
 
+function hasPinnedChromeProductTokens(userAgent) {
+  const versions = [...userAgent.matchAll(/(?:^|\s)Chrome\/([^\s]*)/g)].map(
+    ([, version]) => version,
+  );
+  return (
+    versions.length > 0 &&
+    versions.every(
+      (version) => version === CROSSWALK_METHOD_SCOPE.observedBrowserVersion,
+    )
+  );
+}
+
+function supportsEventTimingCrosswalkProfile(observations) {
+  if (
+    !isRecord(observations) ||
+    Object.keys(observations).some(
+      (key) =>
+        !["browser", "browserIdentity", "qualification", "status"].includes(
+          key,
+        ),
+    ) ||
+    !isRecord(observations.browser) ||
+    Object.keys(observations.browser).some(
+      (key) => !["product", "version"].includes(key),
+    ) ||
+    observations.browser.product !== PLAYWRIGHT_CHROMIUM_PRODUCT ||
+    observations.browser.version !==
+      CROSSWALK_METHOD_SCOPE.observedBrowserVersion ||
+    (observations.status !== undefined &&
+      observations.status !== "synthetic-method-pilot") ||
+    (observations.qualification !== undefined &&
+      observations.qualification !== "synthetic-method-pilot")
+  ) {
+    return false;
+  }
+
+  const identity = observations.browserIdentity;
+  if (identity === undefined) return true;
+  if (!isRecord(identity)) return false;
+  if (
+    Object.keys(identity).some(
+      (key) => !["runtime", "chromiumSourceIdentity"].includes(key),
+    )
+  ) {
+    return false;
+  }
+  if (
+    identity.chromiumSourceIdentity !== undefined &&
+    identity.chromiumSourceIdentity !== "unverified"
+  ) {
+    return false;
+  }
+
+  const runtime = identity.runtime;
+  if (runtime === undefined) return true;
+  if (!isRecord(runtime)) return false;
+  if (
+    Object.keys(runtime).some(
+      (key) => !["version", "product", "revision", "userAgent"].includes(key),
+    ) ||
+    (runtime.version !== undefined &&
+      runtime.version !== CROSSWALK_METHOD_SCOPE.observedBrowserVersion) ||
+    (runtime.product !== undefined &&
+      runtime.product !== PLAYWRIGHT_RUNTIME_PRODUCT) ||
+    (runtime.revision !== undefined &&
+      (typeof runtime.revision !== "string" ||
+        runtime.revision.replace(/^@/, "") !==
+          CROSSWALK_METHOD_SCOPE.pinnedSourceRevision)) ||
+    (runtime.userAgent !== undefined &&
+      (typeof runtime.userAgent !== "string" ||
+        !hasPinnedChromeProductTokens(runtime.userAgent) ||
+        /brave/i.test(runtime.userAgent)))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function unsupportedEventTimingCrosswalk() {
+  return {
+    status: "unavailable",
+    counts: {
+      legacyBeginCount: 0,
+      legacyEndCount: 0,
+      legacyCompleteEntries: 0,
+      modernBeginCount: 0,
+      modernEndCount: 0,
+      modernMarkerCount: 0,
+      modernCompleteEntries: 0,
+      exactIdentityGroupCount: 0,
+      exactMatchedIdentityCount: 0,
+      candidateCount: 0,
+    },
+    candidates: [],
+    rejectionCounts: [{ code: BROWSER_SOURCE_PROFILE_UNSUPPORTED, count: 1 }],
+    methodScope: null,
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+    gateReasonCodes: [BROWSER_SOURCE_PROFILE_UNSUPPORTED],
+  };
+}
+
 function discreteEventTimingCrosswalk(trace, traceRecord) {
   const rejectionCounts = new Map();
   const legacyPairs = pairTypedSlices(
@@ -1867,7 +1974,12 @@ function discreteEventTimingCrosswalk(trace, traceRecord) {
   };
 }
 
-export function analyzeTrace(trace, traceRecord, segments = []) {
+export function analyzeTrace(
+  trace,
+  traceRecord,
+  segments = [],
+  sourceObservations,
+) {
   if (
     !isRecord(trace) ||
     !Array.isArray(trace.traceEvents) ||
@@ -1896,7 +2008,11 @@ export function analyzeTrace(trace, traceRecord, segments = []) {
     reporterBegins,
     diagnosticCounts,
   );
-  const eventTimingCrosswalk = discreteEventTimingCrosswalk(trace, traceRecord);
+  const eventTimingCrosswalk = supportsEventTimingCrosswalkProfile(
+    sourceObservations,
+  )
+    ? discreteEventTimingCrosswalk(trace, traceRecord)
+    : unsupportedEventTimingCrosswalk();
 
   return {
     counts: {

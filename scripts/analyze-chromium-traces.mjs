@@ -443,7 +443,12 @@ function readTrace(directory, record) {
   return { bytes, trace };
 }
 
-function buildTraceReport(directory, record, measurementSegments) {
+function buildTraceReport(
+  directory,
+  record,
+  measurementSegments,
+  browserSourceObservations,
+) {
   const { bytes, trace } = readTrace(directory, record);
   const analysis = analyzeTrace(
     trace,
@@ -455,6 +460,7 @@ function buildTraceReport(directory, record, measurementSegments) {
           : undefined,
     },
     measurementSegments,
+    browserSourceObservations,
   );
   const reportedFrameIntervals = { ...analysis.frameIntervals };
   delete reportedFrameIntervals.qualifiedProtocolTrials;
@@ -702,11 +708,18 @@ function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
 
 function buildReport(manifest, manifestPath) {
   const manifestDirectory = dirname(manifestPath);
+  const browserSourceObservations = {
+    browser: manifest.browser,
+    browserIdentity: manifest.browserIdentity,
+    qualification: manifest.qualification,
+    status: manifest.status,
+  };
   const builtTraces = manifest.traces.map((record) =>
     buildTraceReport(
       manifestDirectory,
       record,
       manifest.measurementSegments ?? [],
+      browserSourceObservations,
     ),
   );
   const report = {
