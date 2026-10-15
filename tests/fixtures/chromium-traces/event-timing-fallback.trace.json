@@ -1,0 +1,87 @@
+{
+  "traceEvents": [
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10000,
+      "id": "0x1",
+      "args": {
+        "data": {
+          "type": "click",
+          "frame": "frame-A",
+          "nodeId": 311,
+          "cancelable": true,
+          "interactionId": -1,
+          "interactionOffset": -2,
+          "timeStamp": 1.0000000000000001,
+          "processingStart": 1.00099999999999999,
+          "processingEnd": 1.00499999999999999,
+          "duration": 0.008,
+          "commitFinishTime": 1.01,
+          "enqueuedToMainThreadTime": 1
+        }
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10001,
+      "id2": { "local": "0x2" },
+      "args": {
+        "event_timing": {
+          "type": "CLICK_EVENT",
+          "frame": "frame-A",
+          "node_id": 311,
+          "cancelable": true,
+          "interaction_id": 4294967295,
+          "interaction_offset": 4294967294,
+          "pointer_id": 1
+        },
+        "fallback_reason": "None",
+        "fallback_time": 0
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10005,
+      "id2": { "local": "0x2" }
+    },
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10008,
+      "id": "0x1"
+    },
+    {
+      "name": "EventsInAnimationFrame",
+      "cat": "devtools.timeline",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10008,
+      "id2": { "local": "0xf" }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "n",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10009,
+      "id2": { "local": "0x3" }
+    }
+  ]
+}

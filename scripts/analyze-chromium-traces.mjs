@@ -8,11 +8,57 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
-import { analyzeTrace, parseTrace } from "./chromium-trace-metrics.mjs";
+import {
+  analyzeTrace,
+  eventTimingInventory,
+  nearestRank,
+  parseTrace,
+} from "./chromium-trace-metrics.mjs";
 
 const USAGE =
   "Usage: node scripts/analyze-chromium-traces.mjs <manifest.json> [--out <new-report.json>]";
 const METADATA_TEXT_LIMIT = 256;
+const PROTOCOL_GROUP_LIMIT = 56;
+const PROTOCOL_SEGMENT_LIMIT = PROTOCOL_GROUP_LIMIT * 120;
+const PROTOCOL_ACTIONS = new Set([
+  "open",
+  "fit-all",
+  "pan",
+  "zoom",
+  "resize",
+  "append",
+  "scroll",
+]);
+const PROTOCOL_GROUP_KEYS = new Set([
+  "deviceKey",
+  "browserKey",
+  "workload",
+  "action",
+  "plannedTrials",
+  "sessions",
+  "trials",
+]);
+const PROTOCOL_SEGMENT_KEYS = new Set([
+  "trace",
+  "action",
+  "startUs",
+  "endUs",
+  "rendererPid",
+  "layerTreeHostId",
+  "frameSource",
+  "activeWindows",
+  "protocolGroupIndex",
+  "session",
+  "trial",
+]);
+const TRIAL_REASONS = new Map([
+  ["missing", new Set(["NOT_CAPTURED", "UNSUPPORTED_INPUT"])],
+  ["censored", new Set(["TRACE_TRUNCATED", "ACTION_INCOMPLETE"])],
+  [
+    "invalid",
+    new Set(["TRACE_DATA_LOSS", "AMBIGUOUS_CORRELATION", "MALFORMED_TRACE"]),
+  ],
+]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -52,6 +98,205 @@ function selectNumberFields(record, fieldNames) {
       )
       .map((name) => [name, record[name]]),
   );
+}
+
+function hasOnlyKeys(record, allowedKeys) {
+  return Object.keys(record).every((key) => allowedKeys.has(key));
+}
+
+function protocolError() {
+  throw new Error("Invalid protocol group or linked measurement segment.");
+}
+
+function validProtocolSegment(segment) {
+  if (
+    typeof segment.action !== "string" ||
+    !Number.isFinite(segment.startUs) ||
+    !Number.isFinite(segment.endUs) ||
+    segment.startUs >= segment.endUs ||
+    !Number.isInteger(segment.rendererPid) ||
+    segment.rendererPid <= 0 ||
+    !Number.isInteger(segment.layerTreeHostId) ||
+    segment.layerTreeHostId < 0 ||
+    !Number.isInteger(segment.frameSource) ||
+    segment.frameSource < 0 ||
+    !Array.isArray(segment.activeWindows) ||
+    segment.activeWindows.length === 0 ||
+    segment.activeWindows.length > 120
+  ) {
+    return false;
+  }
+
+  const ids = new Set();
+  let previousEnd = -Infinity;
+  for (const window of segment.activeWindows) {
+    if (
+      !isRecord(window) ||
+      !hasOnlyKeys(window, new Set(["id", "startUs", "endUs"])) ||
+      typeof window.id !== "string" ||
+      !/^[A-Za-z0-9_-]{1,64}$/.test(window.id) ||
+      ids.has(window.id) ||
+      !Number.isFinite(window.startUs) ||
+      !Number.isFinite(window.endUs) ||
+      window.startUs < segment.startUs ||
+      window.endUs > segment.endUs ||
+      window.startUs >= window.endUs ||
+      window.startUs < previousEnd
+    ) {
+      return false;
+    }
+    ids.add(window.id);
+    previousEnd = window.endUs;
+  }
+  return true;
+}
+
+function validateProtocolGroups(manifest) {
+  if (manifest.protocolGroups === undefined) return;
+  if (
+    !Array.isArray(manifest.protocolGroups) ||
+    manifest.protocolGroups.length === 0 ||
+    manifest.protocolGroups.length > PROTOCOL_GROUP_LIMIT
+  ) {
+    protocolError();
+  }
+
+  const groupKeys = new Set();
+  for (const group of manifest.protocolGroups) {
+    if (
+      !isRecord(group) ||
+      !hasOnlyKeys(group, PROTOCOL_GROUP_KEYS) ||
+      !["mac", "s25-ultra"].includes(group.deviceKey) ||
+      !["brave", "chrome", "samsung-internet"].includes(group.browserKey) ||
+      (group.deviceKey === "mac" && group.browserKey !== "brave") ||
+      !["100-interactive", "10000-chronological"].includes(group.workload) ||
+      !PROTOCOL_ACTIONS.has(group.action) ||
+      group.plannedTrials !== 120 ||
+      !Array.isArray(group.sessions) ||
+      group.sessions.length !== 3 ||
+      !Array.isArray(group.trials) ||
+      group.trials.length > 120
+    ) {
+      protocolError();
+    }
+
+    const cellKey = JSON.stringify([
+      group.deviceKey,
+      group.browserKey,
+      group.workload,
+      group.action,
+    ]);
+    if (groupKeys.has(cellKey)) protocolError();
+    groupKeys.add(cellKey);
+
+    const sessions = new Set();
+    for (const session of group.sessions) {
+      if (
+        !isRecord(session) ||
+        !hasOnlyKeys(session, new Set(["session", "plannedTrials"])) ||
+        !Number.isInteger(session.session) ||
+        session.session < 1 ||
+        session.session > 3 ||
+        session.plannedTrials !== 40 ||
+        sessions.has(session.session)
+      ) {
+        protocolError();
+      }
+      sessions.add(session.session);
+    }
+    if (sessions.size !== 3) protocolError();
+
+    const trials = new Set();
+    for (const trial of group.trials) {
+      if (
+        !isRecord(trial) ||
+        !hasOnlyKeys(
+          trial,
+          new Set(["session", "trial", "status", "reason"]),
+        ) ||
+        !Number.isInteger(trial.session) ||
+        trial.session < 1 ||
+        trial.session > 3 ||
+        !Number.isInteger(trial.trial) ||
+        trial.trial < 1 ||
+        trial.trial > 40 ||
+        !TRIAL_REASONS.has(trial.status) ||
+        !TRIAL_REASONS.get(trial.status).has(trial.reason)
+      ) {
+        protocolError();
+      }
+      const trialKey = `${trial.session}:${trial.trial}`;
+      if (trials.has(trialKey)) protocolError();
+      trials.add(trialKey);
+    }
+  }
+}
+
+function validateProtocolSegments(manifest) {
+  const groups = manifest.protocolGroups;
+  const segments = manifest.measurementSegments ?? [];
+  const traceNames = new Set(manifest.traces.map(({ trace }) => trace));
+  const linkedTrials = new Set();
+  const declaredNonValidTrials = new Set();
+  const linkedWindowsByTrace = new Map();
+
+  for (const [groupIndex, group] of (groups ?? []).entries()) {
+    for (const trial of group.trials) {
+      declaredNonValidTrials.add(
+        `${groupIndex}:${trial.session}:${trial.trial}`,
+      );
+    }
+  }
+
+  for (const segment of segments) {
+    if (!isRecord(segment)) continue;
+    const hasGroupReference =
+      Object.hasOwn(segment, "protocolGroupIndex") ||
+      Object.hasOwn(segment, "session") ||
+      Object.hasOwn(segment, "trial");
+    if (!hasGroupReference) continue;
+    if (
+      !hasOnlyKeys(segment, PROTOCOL_SEGMENT_KEYS) ||
+      !Array.isArray(groups) ||
+      !Number.isInteger(segment.protocolGroupIndex) ||
+      segment.protocolGroupIndex < 0 ||
+      segment.protocolGroupIndex >= groups.length ||
+      !Number.isInteger(segment.session) ||
+      segment.session < 1 ||
+      segment.session > 3 ||
+      !Number.isInteger(segment.trial) ||
+      segment.trial < 1 ||
+      segment.trial > 40 ||
+      !traceNames.has(segment.trace) ||
+      !validProtocolSegment(segment)
+    ) {
+      protocolError();
+    }
+
+    const group = groups[segment.protocolGroupIndex];
+    const trialKey = `${segment.protocolGroupIndex}:${segment.session}:${segment.trial}`;
+    if (
+      group.action !== segment.action ||
+      declaredNonValidTrials.has(trialKey) ||
+      linkedTrials.has(trialKey)
+    ) {
+      protocolError();
+    }
+    linkedTrials.add(trialKey);
+
+    for (const window of segment.activeWindows) {
+      const traceWindows = linkedWindowsByTrace.get(segment.trace) ?? [];
+      traceWindows.push({ startUs: window.startUs, endUs: window.endUs });
+      linkedWindowsByTrace.set(segment.trace, traceWindows);
+    }
+  }
+
+  for (const windows of linkedWindowsByTrace.values()) {
+    windows.sort((left, right) => left.startUs - right.startUs);
+    for (let index = 1; index < windows.length; index += 1) {
+      if (windows[index].startUs < windows[index - 1].endUs) protocolError();
+    }
+  }
 }
 
 function selectedMetadata(manifest) {
@@ -113,6 +358,12 @@ function validateManifest(manifest) {
   ) {
     throw new Error("Invalid manifest: measurementSegments must be an array.");
   }
+  if (
+    Array.isArray(manifest.measurementSegments) &&
+    manifest.measurementSegments.length > PROTOCOL_SEGMENT_LIMIT
+  ) {
+    throw new Error("Invalid manifest: too many measurement segments.");
+  }
 
   const traceNames = new Set();
   for (const record of manifest.traces) {
@@ -146,6 +397,9 @@ function validateManifest(manifest) {
       );
     }
   }
+
+  validateProtocolGroups(manifest);
+  validateProtocolSegments(manifest);
 
   return manifest;
 }
@@ -202,47 +456,272 @@ function buildTraceReport(directory, record, measurementSegments) {
     },
     measurementSegments,
   );
+  const reportedFrameIntervals = { ...analysis.frameIntervals };
+  delete reportedFrameIntervals.qualifiedProtocolTrials;
+  delete reportedFrameIntervals.unqualifiedProtocolTrials;
 
   return {
-    fixture: record.fixture,
-    trace: record.trace,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    dataLossOccurred:
-      typeof record.dataLossOccurred === "boolean"
-        ? record.dataLossOccurred
-        : null,
-    counts: analysis.counts,
-    inputToPresentedFrameSamples: analysis.inputToPresentedFrameSamples.map(
-      ({ durationUs, status, reasonCodes }) => ({
-        duration: durationUs,
+    analysis,
+    report: {
+      fixture: record.fixture,
+      trace: record.trace,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      dataLossOccurred:
+        typeof record.dataLossOccurred === "boolean"
+          ? record.dataLossOccurred
+          : null,
+      counts: analysis.counts,
+      eventTimingInventory: eventTimingInventory(trace),
+      discreteEventTimingCrosswalk: analysis.discreteEventTimingCrosswalk,
+      inputToPresentedFrameSamples: analysis.inputToPresentedFrameSamples.map(
+        ({ durationUs, status, reasonCodes }) => ({
+          duration: durationUs,
+          unit: "microseconds",
+          status,
+          reasonCodes,
+        }),
+      ),
+      frameIntervals: {
+        ...reportedFrameIntervals,
         unit: "microseconds",
-        status,
-        reasonCodes,
-      }),
-    ),
-    frameIntervals: {
-      ...analysis.frameIntervals,
-      unit: "microseconds",
+      },
+      diagnostics: analysis.diagnostics,
     },
-    diagnostics: analysis.diagnostics,
+  };
+}
+
+function countByStatus(trials, session) {
+  const counts = { missing: 0, censored: 0, invalid: 0 };
+  for (const trial of trials) {
+    if (session !== undefined && trial.session !== session) continue;
+    counts[trial.status] += 1;
+  }
+  return counts;
+}
+
+function countReasons(
+  trials,
+  session,
+  unreportedMissing = 0,
+  derivedTrials = [],
+) {
+  const counts = new Map();
+  for (const trial of trials) {
+    if (session !== undefined && trial.session !== session) continue;
+    counts.set(trial.reason, (counts.get(trial.reason) ?? 0) + 1);
+  }
+  for (const trial of derivedTrials) {
+    if (session !== undefined && trial.session !== session) continue;
+    counts.set(trial.reason, (counts.get(trial.reason) ?? 0) + 1);
+  }
+  if (unreportedMissing > 0) {
+    counts.set(
+      "NOT_CAPTURED",
+      (counts.get("NOT_CAPTURED") ?? 0) + unreportedMissing,
+    );
+  }
+  return Object.fromEntries(
+    [...counts].sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function countDerivedStatuses(trials, session) {
+  const counts = { missing: 0, censored: 0, invalid: 0 };
+  for (const trial of trials) {
+    if (session !== undefined && trial.session !== session) continue;
+    counts[trial.status] += 1;
+  }
+  return counts;
+}
+
+function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
+  const linkedBySession = [new Set(), new Set(), new Set()];
+  for (const segment of manifest.measurementSegments ?? []) {
+    if (segment.protocolGroupIndex !== groupIndex) continue;
+    linkedBySession[segment.session - 1].add(segment.trial);
+  }
+
+  const protocolSamples = builtTraces.flatMap(({ analysis }) =>
+    analysis.frameIntervals.samples.filter(
+      (sample) => sample.protocolGroupIndex === groupIndex,
+    ),
+  );
+  const intervalSamples = protocolSamples.map((sample) => sample.intervalUs);
+  const qualifiedBySession = [new Set(), new Set(), new Set()];
+  for (const { analysis } of builtTraces) {
+    for (const trial of analysis.frameIntervals.qualifiedProtocolTrials) {
+      if (trial.protocolGroupIndex === groupIndex) {
+        qualifiedBySession[trial.session - 1].add(trial.trial);
+      }
+    }
+  }
+  const intervalTrialsBySession = [new Set(), new Set(), new Set()];
+  const unqualifiedBySession = [[], [], []];
+  for (const sample of protocolSamples) {
+    intervalTrialsBySession[sample.session - 1].add(sample.trial);
+  }
+  for (const { analysis } of builtTraces) {
+    for (const trial of analysis.frameIntervals.unqualifiedProtocolTrials) {
+      if (trial.protocolGroupIndex === groupIndex) {
+        unqualifiedBySession[trial.session - 1].push(trial);
+      }
+    }
+  }
+
+  const sessions = group.sessions
+    .slice()
+    .sort((left, right) => left.session - right.session)
+    .map(({ session, plannedTrials }) => {
+      const declared = countByStatus(group.trials, session);
+      const linked = linkedBySession[session - 1];
+      const qualified = qualifiedBySession[session - 1];
+      const derived = countDerivedStatuses(unqualifiedBySession[session - 1]);
+      const unreportedTrials = Math.max(
+        0,
+        plannedTrials -
+          declared.missing -
+          declared.censored -
+          declared.invalid -
+          linked.size,
+      );
+      return {
+        session,
+        plannedTrials,
+        trialCounts: {
+          qualifiedFrameTrials: qualified.size,
+          noAdjacentPresentedFrameTrials:
+            qualified.size - intervalTrialsBySession[session - 1].size,
+          missing: declared.missing + unreportedTrials + derived.missing,
+          censored: declared.censored + derived.censored,
+          invalid: declared.invalid + derived.invalid,
+        },
+        trialReasonCounts: countReasons(
+          group.trials,
+          session,
+          unreportedTrials,
+          unqualifiedBySession[session - 1],
+        ),
+        frameIntervalSampleCount: protocolSamples.filter(
+          (sample) => sample.session === session,
+        ).length,
+      };
+    });
+
+  const declared = countByStatus(group.trials);
+  const qualifiedTrialCount = qualifiedBySession.reduce(
+    (total, trials) => total + trials.size,
+    0,
+  );
+  const linkedTrialCount = linkedBySession.reduce(
+    (total, trials) => total + trials.size,
+    0,
+  );
+  const unqualifiedLinkedTrials = linkedTrialCount - qualifiedTrialCount;
+  const derivedStatuses = countDerivedStatuses(unqualifiedBySession.flat());
+  const unreportedTrials = Math.max(
+    0,
+    group.plannedTrials -
+      declared.missing -
+      declared.censored -
+      declared.invalid -
+      linkedTrialCount,
+  );
+  const missing = declared.missing + unreportedTrials + derivedStatuses.missing;
+  const intervalTrialCount = intervalTrialsBySession.reduce(
+    (total, trials) => total + trials.size,
+    0,
+  );
+  const noAdjacentPresentedFrameTrials =
+    qualifiedTrialCount - intervalTrialCount;
+  const frameIntervals = {
+    status: "unavailable",
+    sampleCount: intervalSamples.length,
+    qualifiedTrialCount,
+    noAdjacentPresentedFrameTrials,
+    minimums: { intervals: 100, qualifiedTrials: 100 },
+    p50: null,
+    p95: null,
+    unit: "microseconds",
+    reasonCodes: [],
+  };
+  if (unqualifiedLinkedTrials > 0) {
+    frameIntervals.reasonCodes.push("UNQUALIFIED_LINKED_TRIALS");
+  }
+  if (intervalSamples.length >= 100 && qualifiedTrialCount >= 100) {
+    frameIntervals.status = "observed-only";
+    frameIntervals.p50 = nearestRank(intervalSamples, 0.5);
+    frameIntervals.p95 = nearestRank(intervalSamples, 0.95);
+    frameIntervals.reasonCodes.push("SOURCE_COMPLETENESS_UNPROVEN");
+    if (noAdjacentPresentedFrameTrials > 0) {
+      frameIntervals.reasonCodes.push("NO_ADJACENT_PRESENTED_FRAME");
+    }
+    if (qualifiedTrialCount < group.plannedTrials) {
+      frameIntervals.reasonCodes.push("INCOMPLETE_PLANNED_COVERAGE");
+    }
+  } else {
+    if (noAdjacentPresentedFrameTrials > 0) {
+      frameIntervals.reasonCodes.push("NO_ADJACENT_PRESENTED_FRAME");
+    }
+    frameIntervals.reasonCodes.push("INSUFFICIENT_VALID_SAMPLES");
+  }
+
+  return {
+    deviceKey: group.deviceKey,
+    browserKey: group.browserKey,
+    workload: group.workload,
+    action: group.action,
+    plannedTrials: group.plannedTrials,
+    trialCounts: {
+      planned: group.plannedTrials,
+      qualifiedFrameTrials: qualifiedTrialCount,
+      noAdjacentPresentedFrameTrials:
+        qualifiedTrialCount -
+        intervalTrialsBySession.reduce(
+          (total, trials) => total + trials.size,
+          0,
+        ),
+      missing,
+      censored: declared.censored + derivedStatuses.censored,
+      invalid: declared.invalid + derivedStatuses.invalid,
+    },
+    trialReasonCounts: countReasons(
+      group.trials,
+      undefined,
+      unreportedTrials,
+      unqualifiedBySession.flat(),
+    ),
+    sessions,
+    nextPaint: {
+      status: "unavailable",
+      samples: [],
+      reasonCodes: ["NEXT_PAINT_METHOD_UNPROVEN"],
+    },
+    frameIntervals,
   };
 }
 
 function buildReport(manifest, manifestPath) {
   const manifestDirectory = dirname(manifestPath);
-  return {
+  const builtTraces = manifest.traces.map((record) =>
+    buildTraceReport(
+      manifestDirectory,
+      record,
+      manifest.measurementSegments ?? [],
+    ),
+  );
+  const report = {
     schemaVersion: 1,
     status: "diagnostic-only",
     metric: "input-to-presented-frame",
     metadata: selectedMetadata(manifest),
-    traces: manifest.traces.map((record) =>
-      buildTraceReport(
-        manifestDirectory,
-        record,
-        manifest.measurementSegments ?? [],
-      ),
-    ),
+    traces: builtTraces.map(({ report: traceReport }) => traceReport),
   };
+  if (manifest.protocolGroups !== undefined) {
+    report.protocolGroups = manifest.protocolGroups.map((group, index) =>
+      buildProtocolGroupReport(group, index, manifest, builtTraces),
+    );
+  }
+  return report;
 }
 
 function writeExclusive(outputPath, contents) {
