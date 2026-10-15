@@ -22,7 +22,11 @@ test("sample PNGs have reproducible dimensions and distinct content", () => {
 });
 
 test("seed SQL uses the fixed normal local account, seeded references, and conditional updates", () => {
-  const media = demoAssets.map((asset) => ({ ...asset, size: 1024, etag: "a".repeat(32) }));
+  const media = demoAssets.map((asset) => ({
+    ...asset,
+    size: 1024,
+    etag: "a".repeat(32),
+  }));
   const sql = seedSql(media, "2026-10-15T00:00:00.000Z");
   assert.match(sql, /us_local_test/);
   assert.match(sql, /tl_demo_weekend/);
@@ -32,8 +36,10 @@ test("seed SQL uses the fixed normal local account, seeded references, and condi
   assert.doesNotMatch(sql, /INSERT OR REPLACE|DROP TABLE|DELETE FROM users/);
 });
 
-test("demo seed is local-only and idempotent against real D1/R2 bindings", { timeout: 180_000 }, () => {
-  const persistence = resolve(root, ".wrangler/demo-tests/" + randomUUID());
+test("demo seed is local-only and idempotent against real D1/R2 bindings", {
+  timeout: 180_000,
+}, () => {
+  const persistence = resolve(root, `.wrangler/demo-tests/${randomUUID()}`);
   const env = { ...process.env, AGES_DEMO_PERSIST_TO: persistence };
   delete env.CLOUDFLARE_API_TOKEN;
   delete env.CLOUDFLARE_ACCOUNT_ID;
@@ -47,16 +53,31 @@ test("demo seed is local-only and idempotent against real D1/R2 bindings", { tim
   try {
     for (let iteration = 0; iteration < 2; iteration++)
       execFileSync(process.execPath, [demo, "--seed-only"], opts);
-    const query = "SELECT " +
+    const query =
+      "SELECT " +
       "(SELECT COUNT(*) FROM assets WHERE owner_id='us_local_test' AND status='ready') AS photos," +
       "(SELECT COUNT(*) FROM timelines WHERE owner_id='us_local_test') AS timelines," +
       "(SELECT COUNT(*) FROM distribution_links WHERE owner_id='us_local_test') AS links," +
       "(SELECT storage_used_bytes FROM usage_quotas WHERE user_id='us_local_test') AS storage," +
       "(SELECT SUM(size_bytes) FROM assets WHERE owner_id='us_local_test' AND status='ready') AS expected";
-    const output = execFileSync(process.execPath, [
-      cli, "d1", "execute", "DB", "--command", query, "--json",
-      "--local", "--env", "", "--persist-to", persistence,
-    ], opts);
+    const output = execFileSync(
+      process.execPath,
+      [
+        cli,
+        "d1",
+        "execute",
+        "DB",
+        "--command",
+        query,
+        "--json",
+        "--local",
+        "--env",
+        "",
+        "--persist-to",
+        persistence,
+      ],
+      opts,
+    );
     assert.match(output, /"photos"\s*:\s*4/);
     assert.match(output, /"timelines"\s*:\s*2/);
     assert.match(output, /"links"\s*:\s*1/);
