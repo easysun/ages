@@ -177,6 +177,12 @@ test("reports sanitized exact discrete candidates without promoting formal actio
     traceText: traceBytes.toString("utf8"),
     traceName: "crosswalk.trace.json",
   });
+  input.manifest.browser = {
+    product: "Playwright Chromium",
+    version: "153.0.8010.12",
+  };
+  input.manifest.status = "synthetic-method-pilot";
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
   const result = runCli([input.manifestPath]);
 
   assert.equal(result.status, 0, result.stderr);
@@ -215,6 +221,72 @@ test("reports sanitized exact discrete candidates without promoting formal actio
   assert.equal(result.stdout.includes('"node_id"'), false);
   assert.equal(result.stdout.includes('"interaction_id"'), false);
   assert.equal(result.stdout.includes(privateMarker), false);
+});
+
+test("keeps Brave schema-probe crosswalks unavailable despite a forged Chromium top-level version", (t) => {
+  const traceBytes = readFileSync(eventTimingFixturePath);
+  const input = makeFixture(t, {
+    traceText: traceBytes.toString("utf8"),
+    traceName: "brave-probe.trace.json",
+  });
+  const knownManifest = {
+    ...input.manifest,
+    browser: { product: "Playwright Chromium", version: "153.0.8010.12" },
+    status: "synthetic-method-pilot",
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(knownManifest));
+  const knownResult = runCli([input.manifestPath]);
+  assert.equal(knownResult.status, 0, knownResult.stderr);
+  const knownTrace = JSON.parse(knownResult.stdout).traces[0];
+
+  const braveManifest = {
+    ...knownManifest,
+    browserIdentity: {
+      bundle: {
+        identifier: "com.brave.Browser",
+        shortVersion: "155.1.97.56",
+        bundleVersion: "155.1.97.56",
+      },
+      executableSha256: "a".repeat(64),
+      runtime: {
+        version: "153.0.8010.12",
+        product: "Chrome/153.0.8010.12",
+        revision: "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+        userAgent: "Mozilla/5.0 Chrome/153.0.8010.12 Safari/537.36",
+      },
+      chromiumSourceIdentity: "unverified",
+    },
+    qualification: "installed-brave-schema-probe",
+    status: "installed-brave-schema-probe",
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(braveManifest));
+  const braveResult = runCli([input.manifestPath]);
+
+  assert.equal(braveResult.status, 0, braveResult.stderr);
+  const braveTrace = JSON.parse(braveResult.stdout).traces[0];
+  assert.equal(braveTrace.discreteEventTimingCrosswalk.status, "unavailable");
+  assert.deepEqual(braveTrace.discreteEventTimingCrosswalk.candidates, []);
+  assert.equal(braveTrace.discreteEventTimingCrosswalk.methodScope, null);
+  assert.equal(
+    braveTrace.discreteEventTimingCrosswalk.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(
+    braveTrace.discreteEventTimingCrosswalk.formalActionSamples,
+    [],
+  );
+  assert.deepEqual(braveTrace.discreteEventTimingCrosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  for (const key of [
+    "counts",
+    "eventTimingInventory",
+    "inputToPresentedFrameSamples",
+    "frameIntervals",
+    "diagnostics",
+  ]) {
+    assert.deepEqual(braveTrace[key], knownTrace[key]);
+  }
 });
 
 test("reports isolated protocol-cell frame quantiles and rejects legacy EventTiming as next paint", (t) => {
