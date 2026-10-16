@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
   closeSync,
+  constants,
+  fstatSync,
   lstatSync,
   openSync,
   readFileSync,
@@ -18,6 +20,8 @@ import {
 const USAGE =
   "Usage: node scripts/analyze-chromium-traces.mjs <manifest.json> [--out <new-report.json>]";
 const METADATA_TEXT_LIMIT = 256;
+const OBSERVER_TRACE_BYTE_LIMIT = 16 * 1024 * 1024;
+const OBSERVER_SIDECAR_BYTE_LIMIT = 256 * 1024;
 const PROTOCOL_GROUP_LIMIT = 56;
 const PROTOCOL_SEGMENT_LIMIT = PROTOCOL_GROUP_LIMIT * 120;
 const PROTOCOL_ACTIONS = new Set([
@@ -414,7 +418,110 @@ function parseManifest(bytes) {
   return validateManifest(manifest);
 }
 
-function readTrace(directory, record) {
+function isSafeManifestBasename(fileName) {
+  return (
+    typeof fileName === "string" &&
+    fileName.length > 0 &&
+    fileName !== "." &&
+    fileName !== ".." &&
+    fileName === basename(fileName) &&
+    !/[\\/]/.test(fileName)
+  );
+}
+
+function readVerifiedRegularFile(
+  directory,
+  fileName,
+  {
+    byteCount,
+    sha256,
+    maxBytes,
+    invalidFileMessage,
+    integrityMessage,
+    tooLargeMessage,
+  },
+) {
+  if (!isSafeManifestBasename(fileName)) {
+    throw new Error(invalidFileMessage);
+  }
+  const filePath = resolve(directory, fileName);
+  if (dirname(filePath) !== directory) throw new Error(invalidFileMessage);
+
+  let descriptor;
+  try {
+    descriptor = openSync(
+      filePath,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error(invalidFileMessage);
+  }
+
+  try {
+    const fileInfo = fstatSync(descriptor);
+    if (!fileInfo.isFile()) throw new Error(invalidFileMessage);
+    if (fileInfo.size > maxBytes) {
+      throw new Error(tooLargeMessage ?? integrityMessage);
+    }
+    if (
+      !Number.isSafeInteger(byteCount) ||
+      byteCount < 1 ||
+      byteCount > maxBytes ||
+      typeof sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(sha256) ||
+      fileInfo.size !== byteCount
+    ) {
+      throw new Error(integrityMessage);
+    }
+
+    const bytes = readFileSync(descriptor);
+    if (
+      bytes.byteLength !== byteCount ||
+      createHash("sha256").update(bytes).digest("hex") !== sha256
+    ) {
+      throw new Error(integrityMessage);
+    }
+    return bytes;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      [invalidFileMessage, integrityMessage, tooLargeMessage].includes(
+        error.message,
+      )
+    ) {
+      throw error;
+    }
+    throw new Error(invalidFileMessage);
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // Preserve a read or verification error if the descriptor already closed.
+    }
+  }
+}
+
+function readTrace(directory, record, verifyObserverIntegrity = false) {
+  if (verifyObserverIntegrity) {
+    const bytes = readVerifiedRegularFile(directory, record.trace, {
+      byteCount: record.byteCount,
+      sha256: record.sha256,
+      maxBytes: OBSERVER_TRACE_BYTE_LIMIT,
+      invalidFileMessage: "Unable to read observer trace.",
+      integrityMessage: "Observer trace integrity check failed.",
+      tooLargeMessage: "Observer trace exceeds the 16 MiB limit.",
+    });
+    let trace;
+    try {
+      trace = parseTrace(bytes.toString("utf8"));
+    } catch {
+      throw new Error("Invalid observer trace JSON.");
+    }
+    return { bytes, trace };
+  }
+
   const tracePath = resolve(directory, record.trace);
   let fileInfo;
   try {
@@ -443,24 +550,121 @@ function readTrace(directory, record) {
   return { bytes, trace };
 }
 
+function parseObserverSidecar(bytes) {
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("Invalid observer sidecar JSON.");
+  }
+}
+
+function loadObserverInputs(manifest, directory) {
+  if (!Array.isArray(manifest.cases)) {
+    throw new Error("Invalid observer case and trace linkage.");
+  }
+
+  const linkedCases = new Map();
+  const usedCases = new Set();
+  for (const traceRecord of manifest.traces) {
+    const candidates = manifest.cases.filter(
+      (caseRecord) =>
+        isRecord(caseRecord) &&
+        (caseRecord.fixture === traceRecord.fixture ||
+          caseRecord.trace === traceRecord.trace),
+    );
+    if (
+      candidates.length !== 1 ||
+      candidates[0].fixture !== traceRecord.fixture ||
+      candidates[0].trace !== traceRecord.trace ||
+      usedCases.has(candidates[0])
+    ) {
+      throw new Error("Invalid observer case and trace linkage.");
+    }
+    usedCases.add(candidates[0]);
+    linkedCases.set(traceRecord.trace, candidates[0]);
+  }
+
+  const traceInputs = new Map();
+  for (const traceRecord of manifest.traces) {
+    traceInputs.set(traceRecord.trace, readTrace(directory, traceRecord, true));
+  }
+
+  const sidecarsByCase = new Map();
+  const referencedNames = new Set();
+  for (const caseRecord of manifest.cases) {
+    if (!isRecord(caseRecord)) {
+      throw new Error("Invalid observer case and trace linkage.");
+    }
+    const declaration = caseRecord.trustedStimulusObservation;
+    const hasFileName =
+      isRecord(declaration) && Object.hasOwn(declaration, "fileName");
+    if (!hasFileName) {
+      if (usedCases.has(caseRecord)) {
+        throw new Error("Invalid observer sidecar reference.");
+      }
+      continue;
+    }
+
+    const fileName = declaration.fileName;
+    if (!isSafeManifestBasename(fileName) || referencedNames.has(fileName)) {
+      throw new Error("Invalid observer sidecar reference.");
+    }
+    referencedNames.add(fileName);
+    const bytes = readVerifiedRegularFile(directory, fileName, {
+      byteCount: declaration.byteCount,
+      sha256: declaration.sha256,
+      maxBytes: OBSERVER_SIDECAR_BYTE_LIMIT,
+      invalidFileMessage: "Unable to read observer sidecar.",
+      integrityMessage: "Observer sidecar integrity check failed.",
+    });
+    sidecarsByCase.set(caseRecord, parseObserverSidecar(bytes));
+  }
+
+  const evidenceByTrace = new Map();
+  for (const traceRecord of manifest.traces) {
+    const caseRecord = linkedCases.get(traceRecord.trace);
+    const sidecar = sidecarsByCase.get(caseRecord);
+    if (sidecar === undefined) {
+      throw new Error("Invalid observer sidecar reference.");
+    }
+    evidenceByTrace.set(traceRecord.trace, {
+      declaration: manifest.observationEvidence,
+      sidecar,
+      capture: {
+        sourceHashSha256: manifest.sourceHashSha256,
+        caseRecord,
+      },
+    });
+  }
+
+  return { traceInputs, evidenceByTrace };
+}
+
 function buildTraceReport(
   directory,
   record,
   measurementSegments,
   browserSourceObservations,
+  preparedInput,
+  observerEvidence,
 ) {
-  const { bytes, trace } = readTrace(directory, record);
+  const { bytes, trace } = preparedInput ?? readTrace(directory, record);
+  const traceRecordForAnalysis =
+    observerEvidence === undefined
+      ? {
+          trace: record.trace,
+          dataLossOccurred:
+            typeof record.dataLossOccurred === "boolean"
+              ? record.dataLossOccurred
+              : undefined,
+        }
+      : record;
   const analysis = analyzeTrace(
     trace,
-    {
-      trace: record.trace,
-      dataLossOccurred:
-        typeof record.dataLossOccurred === "boolean"
-          ? record.dataLossOccurred
-          : undefined,
-    },
+    traceRecordForAnalysis,
     measurementSegments,
     browserSourceObservations,
+    observerEvidence,
   );
   const reportedFrameIntervals = { ...analysis.frameIntervals };
   delete reportedFrameIntervals.qualifiedProtocolTrials;
@@ -492,6 +696,9 @@ function buildTraceReport(
         unit: "microseconds",
       },
       diagnostics: analysis.diagnostics,
+      ...(observerEvidence === undefined
+        ? {}
+        : { observedDiscreteInputs: analysis.observedDiscreteInputs }),
     },
   };
 }
@@ -708,6 +915,10 @@ function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
 
 function buildReport(manifest, manifestPath) {
   const manifestDirectory = dirname(manifestPath);
+  const observerInputs =
+    manifest.observationEvidence === undefined
+      ? undefined
+      : loadObserverInputs(manifest, manifestDirectory);
   const browserSourceObservations = {
     browser: manifest.browser,
     browserIdentity: manifest.browserIdentity,
@@ -720,6 +931,8 @@ function buildReport(manifest, manifestPath) {
       record,
       manifest.measurementSegments ?? [],
       browserSourceObservations,
+      observerInputs?.traceInputs.get(record.trace),
+      observerInputs?.evidenceByTrace.get(record.trace),
     ),
   );
   const report = {

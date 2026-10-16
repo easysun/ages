@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,11 +85,215 @@ function makeFixture(
   return { directory, manifest, manifestPath, traceBytes, tracePath };
 }
 
-function runCli(args) {
+const observedCollectorHash =
+  "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
+const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
+const observedTargetToken = "t-bbbbbbbbbbbbbbbbbbbbbbbb";
+const observedManifestDeclaration = {
+  evidenceClass: "synthetic-Playwright-stimulus-discovery",
+  instrumented: true,
+  qualification: "diagnostic-only",
+  inputMethod:
+    "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
+  performanceEventTiming: {
+    status: "thresholded",
+    durationThresholdMs: 16,
+    buffered: false,
+    quantized: true,
+    continuousInputExcluded: true,
+  },
+  recordLimit: 512,
+  recordByteLimit: 240 * 1024,
+  sidecarByteLimit: 256 * 1024,
+  nextPaint: {
+    status: "unproven",
+    reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+  },
+};
+
+function observedTraceText() {
+  let traceText = readFileSync(eventTimingFixturePath, "utf8");
+  for (const [before, after] of [
+    ['"interactionId": -1', '"interactionId": 17'],
+    ['"interactionOffset": -2', '"interactionOffset": 18'],
+    ['"interaction_id": 4294967295', '"interaction_id": 17'],
+    ['"interaction_offset": 4294967294', '"interaction_offset": 18'],
+  ]) {
+    assert.ok(traceText.includes(before), before);
+    traceText = traceText.replace(before, after);
+  }
+  return traceText;
+}
+
+function makeObservedFixture(t) {
+  const input = makeFixture(t, {
+    traceText: observedTraceText(),
+    traceName: "synthetic-open.trace.json",
+  });
+  const fixture = "synthetic-open";
+  const records = [
+    {
+      kind: "event-timing",
+      documentId: observedDocumentId,
+      type: "click",
+      startTime: 10,
+      processingStart: 11,
+      processingEnd: 15,
+      duration: 20,
+      interactionId: 17,
+      targetToken: observedTargetToken,
+      targetLabel: "open-primary",
+      targetResolution: "registered-target",
+      deliveryPhase: "immediate",
+    },
+    {
+      kind: "dom",
+      documentId: observedDocumentId,
+      type: "click",
+      timeStamp: 10,
+      isTrusted: true,
+      targetToken: observedTargetToken,
+      targetLabel: "open-primary",
+      targetResolution: "registered-target",
+      phase: "primary",
+    },
+  ];
+  const frameSnapshot = { frameId: "frame-A", loaderId: "loader-A" };
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "synthetic-Playwright-stimulus-discovery",
+    instrumented: true,
+    qualification: "diagnostic-only",
+    fixture,
+    inputMethod:
+      "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.",
+    interpretation: {
+      eventTiming:
+        "PerformanceEventTiming is thresholded at 16 ms and browser-quantized; continuous input is excluded.",
+      targets:
+        "Target IDs are opaque per-document tokens; unknown, null, and removed targets remain uncertain.",
+    },
+    observation: {
+      schemaVersion: 1,
+      status: "diagnostic",
+      reasonCode: null,
+      documentId: observedDocumentId,
+      apiStatus: "thresholded",
+      apiMetadata: {
+        entryType: "event",
+        durationThresholdMs: 16,
+        buffered: false,
+        quantized: true,
+        continuousInputExcluded: true,
+      },
+      records,
+      recordCount: records.length,
+      recordBytes: Buffer.byteLength(JSON.stringify(records), "utf8"),
+      frameProvenance: {
+        schemaVersion: 1,
+        status: "stable",
+        reasonCode: null,
+        documentId: observedDocumentId,
+        beforeArm: frameSnapshot,
+        afterArm: frameSnapshot,
+        afterDrain: frameSnapshot,
+      },
+    },
+  };
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar, null, 2)}\n`);
+  const caseRecord = {
+    fixture,
+    trace: input.manifest.traces[0].trace,
+    action: "open",
+    actionStatus: "completed",
+    dataLossOccurred: false,
+    measurementStatus: "resolved",
+    trustedStimulusObservation: {
+      fileName: `${fixture}.stimulus.json`,
+      byteCount: sidecarBytes.byteLength,
+      sha256: sha256(sidecarBytes),
+      evidenceClass: "synthetic-Playwright-stimulus-discovery",
+      status: "diagnostic",
+      reasonCode: null,
+      recordCount: records.length,
+      apiStatus: "thresholded",
+    },
+  };
+  const traceRecord = input.manifest.traces[0];
+  Object.assign(traceRecord, {
+    fixture,
+    byteCount: input.traceBytes.byteLength,
+    sha256: sha256(input.traceBytes),
+    dataLossOccurred: false,
+  });
+  input.manifest.browser = {
+    product: "Runtime browser observation",
+    version: "155.0.8059.80",
+  };
+  input.manifest.browserIdentity = {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.57",
+      bundleVersion: "197.57",
+      scmRevision: "7bfa200812971b7811541ae6e5b72620abebe3a7",
+    },
+    executableSha256:
+      "a17d7d68343726bb2a601ef237b90198bf1bb0133952dc3935435c8fed70d6f5",
+    runtime: {
+      version: "155.0.8059.80",
+      product: "Chrome/155.0.8059.80",
+      revision: "@7bfa200812971b7811541ae6e5b72620abebe3a",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  input.manifest.qualification = "installed-brave-schema-probe";
+  input.manifest.status = "installed-brave-schema-probe";
+  input.manifest.sourceHashSha256 = observedCollectorHash;
+  input.manifest.observationEvidence = structuredClone(
+    observedManifestDeclaration,
+  );
+  input.manifest.cases = [caseRecord];
+  input.sidecarPath = join(input.directory, `${fixture}.stimulus.json`);
+  input.caseRecord = caseRecord;
+  input.sidecar = sidecar;
+  input.traceRecord = traceRecord;
+  writeFileSync(input.sidecarPath, sidecarBytes, { flag: "wx" });
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
+  return input;
+}
+
+function rewriteObservedSidecar(input, sidecar) {
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar, null, 2)}\n`);
+  writeFileSync(input.sidecarPath, sidecarBytes, { flag: "w" });
+  Object.assign(input.caseRecord.trustedStimulusObservation, {
+    byteCount: sidecarBytes.byteLength,
+    sha256: sha256(sidecarBytes),
+  });
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
+}
+
+function writeObservedManifest(input) {
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
+}
+
+function runCli(args, { timeout } = {}) {
   return spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    timeout,
   });
+}
+
+function createFifo(t, path) {
+  if (process.platform === "win32") {
+    t.skip("FIFO tests require POSIX named pipes");
+    return false;
+  }
+  const result = spawnSync("mkfifo", [path], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  return true;
 }
 
 function sha256(bytes) {
@@ -138,6 +343,7 @@ test("prints a sanitized diagnostic summary without changing trace bytes", (t) =
   assert.equal(traceReport.counts.eventCount, 10);
   assert.equal(traceReport.counts.completedEventLatencySlices, 1);
   assert.equal(traceReport.counts.completedPipelineReporterSlices, 1);
+  assert.equal(traceReport.observedDiscreteInputs, undefined);
   assert.deepEqual(traceReport.inputToPresentedFrameSamples, [
     {
       duration: 50,
@@ -1174,4 +1380,251 @@ test("refuses an output path that names an existing raw input", (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /output.*(exist|exclusive)/i);
   assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+});
+
+test("loads an integrity-checked observer sidecar and emits only sanitized diagnostics", (t) => {
+  const input = makeObservedFixture(t);
+  const traceBefore = readFileSync(input.tracePath);
+  const sidecarBefore = readFileSync(input.sidecarPath);
+
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  const traceReport = report.traces[0];
+  assert.deepEqual(traceReport.observedDiscreteInputs, {
+    status: "diagnostic-only",
+    counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+    entries: [
+      {
+        dispatchPhase: "primary",
+        actionLabel: "open-primary",
+        eventType: "click",
+        durationUs: 8,
+        processingEndToPresentationUs: 3,
+        status: "diagnostic-only",
+      },
+    ],
+    rejectionCounts: [],
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+  });
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(
+    traceReport.discreteEventTimingCrosswalk.formalActionSamples,
+    [],
+  );
+  for (const privateValue of [
+    observedDocumentId,
+    observedTargetToken,
+    "frame-A",
+    "interactionId",
+    "interaction_id",
+    "node_id",
+    "nodeId",
+    "Synthetic Playwright stimulus",
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false, privateValue);
+  }
+  assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+  assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+});
+
+test("rejects altered or missing observer evidence bytes before producing a report", async (t) => {
+  const scenarios = [
+    [
+      "sidecar bytes changed",
+      (input) => {
+        writeFileSync(
+          input.sidecarPath,
+          Buffer.concat([readFileSync(input.sidecarPath), Buffer.from(" ")]),
+        );
+      },
+    ],
+    [
+      "sidecar hash changed",
+      (input) => {
+        input.caseRecord.trustedStimulusObservation.sha256 = "0".repeat(64);
+        writeObservedManifest(input);
+      },
+    ],
+    [
+      "sidecar missing",
+      (input) => {
+        rmSync(input.sidecarPath);
+      },
+    ],
+    [
+      "trace bytes changed",
+      (input) => {
+        writeFileSync(
+          input.tracePath,
+          Buffer.concat([readFileSync(input.tracePath), Buffer.from(" \n")]),
+        );
+      },
+    ],
+    [
+      "trace hash changed",
+      (input) => {
+        input.traceRecord.sha256 = "0".repeat(64);
+        writeObservedManifest(input);
+      },
+    ],
+  ];
+
+  for (const [name, mutate] of scenarios) {
+    await t.test(name, (subtest) => {
+      const input = makeObservedFixture(subtest);
+      mutate(input);
+      const result = runCli([input.manifestPath]);
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.equal(result.stderr.includes(privateMarker), false);
+    });
+  }
+});
+
+test("rejects observer sidecar symlinks and traversal references", async (t) => {
+  await t.test("symlink sidecar", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    const targetPath = join(input.directory, "sidecar-target.json");
+    writeFileSync(targetPath, readFileSync(input.sidecarPath), { flag: "wx" });
+    rmSync(input.sidecarPath);
+    symlinkSync(targetPath, input.sidecarPath);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.equal(lstatSync(input.sidecarPath).isSymbolicLink(), true);
+  });
+
+  await t.test("path traversal sidecar", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    input.caseRecord.trustedStimulusObservation.fileName = `../${basename(input.sidecarPath)}`;
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  });
+});
+
+test("rejects duplicate or mismatched observer case and sidecar links", async (t) => {
+  await t.test("duplicate case to trace link", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    input.manifest.cases.push(structuredClone(input.caseRecord));
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("case linked to a different trace", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    input.caseRecord.trace = "other.trace.json";
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("duplicate sidecar filename reference", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    const otherCase = structuredClone(input.caseRecord);
+    otherCase.fixture = "unlinked-case";
+    otherCase.trace = null;
+    input.manifest.cases.push(otherCase);
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+  });
+
+  await t.test("sidecar fixture mismatch stays unavailable", (subtest) => {
+    const input = makeObservedFixture(subtest);
+    const sidecar = structuredClone(input.sidecar);
+    sidecar.fixture = "another-case";
+    rewriteObservedSidecar(input, sidecar);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const observed = JSON.parse(result.stdout).traces[0].observedDiscreteInputs;
+    assert.equal(observed.status, "unavailable");
+    assert.equal(observed.counts.accepted, 0);
+    assert.ok(
+      observed.rejectionCounts.some(
+        ({ code }) => code === "OBSERVER_EVIDENCE_INVALID",
+      ),
+    );
+  });
+});
+
+test("passes original malformed observer envelopes to the closed validator without leaking them", (t) => {
+  const input = makeObservedFixture(t);
+  const sidecar = structuredClone(input.sidecar);
+  sidecar.observation.privateContent = "TRACE_PRIVATE_SIDECAR_CONTENT";
+  rewriteObservedSidecar(input, sidecar);
+
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const observed = JSON.parse(result.stdout).traces[0].observedDiscreteInputs;
+  assert.equal(observed.status, "unavailable");
+  assert.equal(observed.counts.accepted, 0);
+  assert.ok(
+    observed.rejectionCounts.some(
+      ({ code }) => code === "OBSERVER_EVIDENCE_INVALID",
+    ),
+  );
+  assert.equal(result.stdout.includes("TRACE_PRIVATE_SIDECAR_CONTENT"), false);
+});
+
+test("bounds observer trace reads at the capture limit", (t) => {
+  const input = makeObservedFixture(t);
+  truncateSync(input.tracePath, 16 * 1024 * 1024 + 1);
+  writeObservedManifest(input);
+
+  const result = runCli([input.manifestPath]);
+
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /observer trace exceeds the 16 MiB limit/i);
+});
+
+test("rejects an observer trace FIFO without blocking", (t) => {
+  const input = makeObservedFixture(t);
+  rmSync(input.tracePath);
+  if (!createFifo(t, input.tracePath)) return;
+
+  const result = runCli([input.manifestPath], { timeout: 2_000 });
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "trace FIFO open blocked");
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Unable to read observer trace/i);
+});
+
+test("rejects an observer sidecar FIFO without blocking", (t) => {
+  const input = makeObservedFixture(t);
+  rmSync(input.sidecarPath);
+  if (!createFifo(t, input.sidecarPath)) return;
+
+  const result = runCli([input.manifestPath], { timeout: 2_000 });
+
+  assert.notEqual(result.error?.code, "ETIMEDOUT", "sidecar FIFO open blocked");
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Unable to read observer sidecar/i);
 });

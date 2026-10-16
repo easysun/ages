@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
@@ -141,6 +142,33 @@ const knownBrave155Observations = {
   status: "installed-brave-schema-probe",
 };
 
+const knownBrave15580Observations = {
+  browser: {
+    product: "Runtime browser observation",
+    version: "155.0.8059.80",
+  },
+  browserIdentity: {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.57",
+      bundleVersion: "197.57",
+      scmRevision: "7bfa200812971b7811541ae6e5b72620abebe3a7",
+    },
+    executableSha256:
+      "a17d7d68343726bb2a601ef237b90198bf1bb0133952dc3935435c8fed70d6f5",
+    runtime: {
+      version: "155.0.8059.80",
+      product: "Chrome/155.0.8059.80",
+      revision: "@7bfa200812971b7811541ae6e5b72620abebe3a",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-brave-schema-probe",
+  status: "installed-brave-schema-probe",
+};
+
 function withBrave155InteractionValues(trace) {
   const legacy = trace.traceEvents[0].args.data;
   const modern = trace.traceEvents[1].args.event_timing;
@@ -175,6 +203,18 @@ function brave155Crosswalk(
   ).discreteEventTimingCrosswalk;
 }
 
+function brave15580Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownBrave15580Observations,
+) {
+  return analyzeTrace(
+    trace,
+    { trace: "brave15580-synthetic.trace.json", dataLossOccurred: false },
+    [],
+    observations,
+  ).discreteEventTimingCrosswalk;
+}
+
 function assertUnsupportedBrave155(crosswalk) {
   assert.equal(crosswalk.status, "unavailable");
   assert.deepEqual(crosswalk.candidates, []);
@@ -185,6 +225,194 @@ function assertUnsupportedBrave155(crosswalk) {
     "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
   ]);
   assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+function assertUnsupportedBrave15580(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+const observedSourceHash =
+  "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
+const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
+const observedTargetToken = "t-bbbbbbbbbbbbbbbbbbbbbbbb";
+const observedFrameId = "frame-A";
+const observedManifestEvidence = {
+  evidenceClass: "synthetic-Playwright-stimulus-discovery",
+  instrumented: true,
+  qualification: "diagnostic-only",
+  inputMethod:
+    "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
+  performanceEventTiming: {
+    status: "thresholded",
+    durationThresholdMs: 16,
+    buffered: false,
+    quantized: true,
+    continuousInputExcluded: true,
+  },
+  recordLimit: 512,
+  recordByteLimit: 240 * 1024,
+  sidecarByteLimit: 256 * 1024,
+  nextPaint: {
+    status: "unproven",
+    reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+  },
+};
+
+function observedApiEntry(overrides = {}) {
+  return {
+    kind: "event-timing",
+    documentId: observedDocumentId,
+    type: "click",
+    startTime: 10,
+    processingStart: 11,
+    processingEnd: 15,
+    duration: 20,
+    interactionId: 17,
+    targetToken: observedTargetToken,
+    targetLabel: "open-primary",
+    targetResolution: "registered-target",
+    deliveryPhase: "immediate",
+    ...overrides,
+  };
+}
+
+function observedDomEntry(overrides = {}) {
+  return {
+    kind: "dom",
+    documentId: observedDocumentId,
+    type: "click",
+    timeStamp: 10,
+    isTrusted: true,
+    targetToken: observedTargetToken,
+    targetLabel: "open-primary",
+    targetResolution: "registered-target",
+    phase: "primary",
+    ...overrides,
+  };
+}
+
+function makeObserverEvidence({
+  records = [observedApiEntry(), observedDomEntry()],
+  observationOverrides = {},
+  frameProvenanceOverrides = {},
+  sidecarOverrides = {},
+  declarationOverrides = {},
+  caseObservationOverrides = {},
+  caseRecordOverrides = {},
+  traceRecordOverrides = {},
+  sourceHashSha256 = observedSourceHash,
+  traceDataLossOccurred = false,
+} = {}) {
+  const frameSnapshot = { frameId: observedFrameId, loaderId: "loader-A" };
+  const observation = {
+    schemaVersion: 1,
+    status: "diagnostic",
+    reasonCode: null,
+    documentId: observedDocumentId,
+    apiStatus: "thresholded",
+    apiMetadata: {
+      entryType: "event",
+      durationThresholdMs: 16,
+      buffered: false,
+      quantized: true,
+      continuousInputExcluded: true,
+    },
+    records,
+    recordCount: records.length,
+    recordBytes: Buffer.byteLength(JSON.stringify(records), "utf8"),
+    frameProvenance: {
+      schemaVersion: 1,
+      status: "stable",
+      reasonCode: null,
+      documentId: observedDocumentId,
+      beforeArm: frameSnapshot,
+      afterArm: frameSnapshot,
+      afterDrain: frameSnapshot,
+      ...frameProvenanceOverrides,
+    },
+    ...observationOverrides,
+  };
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "synthetic-Playwright-stimulus-discovery",
+    instrumented: true,
+    qualification: "diagnostic-only",
+    fixture: "synthetic-open",
+    inputMethod:
+      "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.",
+    interpretation: {
+      eventTiming:
+        "PerformanceEventTiming is thresholded at 16 ms and browser-quantized; continuous input is excluded.",
+      targets:
+        "Target IDs are opaque per-document tokens; unknown, null, and removed targets remain uncertain.",
+    },
+    observation,
+    ...sidecarOverrides,
+  };
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar, null, 2)}\n`);
+  const caseObservationDeclaration = {
+    fileName: "synthetic-open.stimulus.json",
+    byteCount: sidecarBytes.byteLength,
+    sha256: createHash("sha256").update(sidecarBytes).digest("hex"),
+    evidenceClass: "synthetic-Playwright-stimulus-discovery",
+    status: observation.status,
+    reasonCode: observation.reasonCode,
+    recordCount: observation.recordCount,
+    apiStatus: observation.apiStatus,
+    ...caseObservationOverrides,
+  };
+  const declaration = {
+    ...structuredClone(observedManifestEvidence),
+    ...declarationOverrides,
+  };
+  const caseRecord = {
+    fixture: "synthetic-open",
+    trace: "synthetic-open.trace.json",
+    action: "open",
+    actionStatus: "completed",
+    dataLossOccurred: false,
+    measurementStatus: "resolved",
+    trustedStimulusObservation: caseObservationDeclaration,
+    ...caseRecordOverrides,
+  };
+  return {
+    declaration,
+    sidecar,
+    capture: { sourceHashSha256, caseRecord },
+    traceRecord: {
+      fixture: "synthetic-open",
+      trace: "synthetic-open.trace.json",
+      dataLossOccurred: traceDataLossOccurred,
+      ...traceRecordOverrides,
+    },
+  };
+}
+
+function analyzeObservedTrace({
+  trace = makeBrave155Trace(),
+  evidence,
+  traceRecord,
+} = {}) {
+  const observerEvidence = evidence ?? makeObserverEvidence();
+  return analyzeTrace(
+    trace,
+    traceRecord ?? observerEvidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: observerEvidence.declaration,
+      sidecar: observerEvidence.sidecar,
+      capture: observerEvidence.capture,
+    },
+  ).observedDiscreteInputs;
 }
 
 test("accepts the complete installed Brave 155 tuple as a separate diagnostic profile", () => {
@@ -223,6 +451,85 @@ test("accepts the complete installed Brave 155 tuple as a separate diagnostic pr
   }
   assert.equal(crosswalk.formalActionStatus, "unavailable");
   assert.deepEqual(crosswalk.formalActionSamples, []);
+});
+
+test("accepts only the exact Brave 155.0.8059.80 published-source projection", () => {
+  const crosswalk = brave15580Crosswalk();
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.equal("publishedBraveCoreRevision" in crosswalk.methodScope, false);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.80",
+    pinnedSourceRevision: "43a195105613ac83c21d3f14de279f4a045c7da0",
+    observedBundleRevision: "7bfa200812971b7811541ae6e5b72620abebe3a7",
+    evidenceClass: "installed-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes("INSTALLED_BRAVE_SCHEMA_PROBE_ONLY"),
+  );
+  assert.ok(
+    crosswalk.gateReasonCodes.includes("VENDOR_PATCH_IDENTITY_UNVERIFIED"),
+  );
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+
+  const changedIdentityPaths = [
+    ["browser", "product"],
+    ["browser", "version"],
+    ["browserIdentity", "bundle", "identifier"],
+    ["browserIdentity", "bundle", "shortVersion"],
+    ["browserIdentity", "bundle", "bundleVersion"],
+    ["browserIdentity", "bundle", "scmRevision"],
+    ["browserIdentity", "executableSha256"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+    ["qualification"],
+    ["status"],
+  ];
+
+  for (const path of changedIdentityPaths) {
+    const observations = structuredClone(knownBrave15580Observations);
+    let parent = observations;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    parent[path.at(-1)] = `TRACE_PRIVATE_${path.join("_")}`;
+    assertUnsupportedBrave15580(brave15580Crosswalk(undefined, observations));
+  }
+
+  const extraFieldMutations = [
+    (observations) => {
+      observations.extra = "TRACE_PRIVATE_ROOT";
+    },
+    (observations) => {
+      observations.browser.extra = "TRACE_PRIVATE_BROWSER";
+    },
+    (observations) => {
+      observations.browserIdentity.extra = "TRACE_PRIVATE_IDENTITY";
+    },
+    (observations) => {
+      observations.browserIdentity.bundle.extra = "TRACE_PRIVATE_BUNDLE";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.extra = "TRACE_PRIVATE_RUNTIME";
+    },
+  ];
+  for (const mutate of extraFieldMutations) {
+    const observations = structuredClone(knownBrave15580Observations);
+    mutate(observations);
+    assertUnsupportedBrave15580(brave15580Crosswalk(undefined, observations));
+  }
 });
 
 test("requires every asserted Brave 155 observation and rejects independent tuple mutations", () => {
@@ -1103,6 +1410,516 @@ test("requires explicit fallback-free evidence for the modern slice", () => {
       ({ code }) => code === "FALLBACK_UNPROVEN",
     ),
   );
+});
+
+test("associates one observed click through trusted DOM dispatch and the exact raw trace index", () => {
+  const evidence = makeObserverEvidence({
+    records: [
+      observedApiEntry({ deliveryPhase: "secondary" }),
+      observedDomEntry({ phase: "primary" }),
+    ],
+  });
+  const analysis = analyzeTrace(
+    makeBrave155Trace(),
+    evidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  );
+
+  assert.deepEqual(analysis.observedDiscreteInputs, {
+    status: "diagnostic-only",
+    counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+    entries: [
+      {
+        dispatchPhase: "primary",
+        actionLabel: "open-primary",
+        eventType: "click",
+        durationUs: 8,
+        processingEndToPresentationUs: 3,
+        status: "diagnostic-only",
+      },
+    ],
+    rejectionCounts: [],
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(analysis.observedDiscreteInputs),
+    /d-aaaaaaaa|t-bbbbbbbb|frame-A|loader-A|targetToken|timeStamp|startTime|interactionId|event-timing/,
+  );
+
+  const withoutEvidence = analyzeTrace(
+    makeBrave155Trace(),
+    evidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+  );
+  assert.equal(Object.hasOwn(withoutEvidence, "observedDiscreteInputs"), false);
+  assert.deepEqual(withoutEvidence.discreteEventTimingCrosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+});
+
+test("selects the crosswalk candidate by the associated raw begin index", () => {
+  const raw = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const secondEvents = structuredClone(raw.traceEvents.slice(0, 4));
+  secondEvents[0].ts = 20000;
+  secondEvents[0].id = "0x3";
+  secondEvents[0].args.data.interactionId = 18;
+  secondEvents[0].args.data.interactionOffset = 19;
+  secondEvents[0].args.data.timeStamp = 11;
+  secondEvents[0].args.data.processingStart = 11.001;
+  secondEvents[0].args.data.processingEnd = 11.003;
+  secondEvents[1].ts = 20001;
+  secondEvents[1].id2.local = "0x4";
+  secondEvents[1].args.event_timing.interaction_id = 18;
+  secondEvents[1].args.event_timing.interaction_offset = 19;
+  secondEvents[2].ts = 20003;
+  secondEvents[2].id2.local = "0x4";
+  secondEvents[3].ts = 20008;
+  secondEvents[3].id = "0x3";
+  raw.traceEvents.push(...secondEvents);
+  const trace = withBrave155InteractionValues(parseTrace(JSON.stringify(raw)));
+  trace.traceEvents[6].args.data.interactionId = 18n;
+  trace.traceEvents[6].args.data.interactionOffset = 19n;
+  const evidence = makeObserverEvidence({
+    records: [observedApiEntry({ interactionId: 18 }), observedDomEntry()],
+  });
+  const analysis = analyzeTrace(
+    trace,
+    evidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  );
+
+  assert.deepEqual(analysis.discreteEventTimingCrosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 5,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.equal(analysis.observedDiscreteInputs.counts.accepted, 1);
+  assert.deepEqual(analysis.observedDiscreteInputs.entries, [
+    {
+      dispatchPhase: "primary",
+      actionLabel: "open-primary",
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 5,
+      status: "diagnostic-only",
+    },
+  ]);
+});
+
+test("counts duplicate API identities before rejecting a target miss", () => {
+  const evidence = makeObserverEvidence({
+    records: [
+      observedApiEntry(),
+      observedApiEntry({ targetToken: "t-cccccccccccccccccccccccc" }),
+      observedDomEntry(),
+    ],
+  });
+  const result = analyzeObservedTrace({ evidence });
+
+  assert.deepEqual(result.counts, { apiEntries: 2, accepted: 0, rejected: 2 });
+  assert.deepEqual(result.entries, []);
+  assert.deepEqual(result.rejectionCounts, [
+    { code: "API_IDENTITY_AMBIGUOUS", count: 2 },
+  ]);
+  assert.equal(result.formalActionStatus, "unavailable");
+  assert.deepEqual(result.formalActionSamples, []);
+});
+
+test("counts duplicate raw EventTiming begins before endpoint and fallback filtering", () => {
+  const trace = makeBrave155Trace();
+  trace.traceEvents.push({
+    ...structuredClone(trace.traceEvents[0]),
+    pid: 999,
+    tid: 99,
+    id: "0xduplicate",
+  });
+  const result = analyzeObservedTrace({
+    evidence: makeObserverEvidence(),
+    trace,
+  });
+
+  assert.deepEqual(result.counts, { apiEntries: 1, accepted: 0, rejected: 1 });
+  assert.deepEqual(result.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+});
+
+test("rejects an unclassifiable raw begin instead of allowing it to create a singleton", () => {
+  const trace = makeBrave155Trace();
+  trace.traceEvents.push({
+    name: "EventTiming",
+    cat: "devtools.timeline",
+    ph: "b",
+    pid: 999,
+    tid: 99,
+    ts: 10001n,
+    id: "0xmalformed",
+    args: { data: { type: "click" } },
+  });
+  const result = analyzeObservedTrace({
+    evidence: makeObserverEvidence(),
+    trace,
+  });
+
+  assert.deepEqual(result.counts, { apiEntries: 1, accepted: 0, rejected: 1 });
+  assert.deepEqual(result.rejectionCounts, [
+    { code: "TRACE_CONTENDER_UNCLASSIFIABLE", count: 1 },
+  ]);
+});
+
+test("rejects an unknown EventTiming type but excludes pinned known legacy types", () => {
+  const unknownTypeTrace = makeBrave155Trace();
+  unknownTypeTrace.traceEvents.push({
+    name: "EventTiming",
+    cat: "devtools.timeline",
+    ph: "b",
+    pid: 999,
+    tid: 99,
+    ts: 10001n,
+    id: "0xunknown",
+    args: {
+      data: {
+        type: "mysterypointergesture",
+        frame: observedFrameId,
+        interactionId: 17n,
+      },
+    },
+  });
+  const unknownResult = analyzeObservedTrace({
+    evidence: makeObserverEvidence(),
+    trace: unknownTypeTrace,
+  });
+  assert.deepEqual(unknownResult.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(unknownResult.rejectionCounts, [
+    { code: "TRACE_CONTENDER_UNCLASSIFIABLE", count: 1 },
+  ]);
+
+  const knownExcludedTrace = makeBrave155Trace();
+  knownExcludedTrace.traceEvents.push({
+    name: "EventTiming",
+    cat: "devtools.timeline",
+    ph: "b",
+    pid: 999,
+    tid: 99,
+    ts: 10001n,
+    id: "0xknown-excluded",
+    args: { data: { type: "gotpointercapture" } },
+  });
+  const knownExcludedResult = analyzeObservedTrace({
+    evidence: makeObserverEvidence(),
+    trace: knownExcludedTrace,
+  });
+  assert.deepEqual(knownExcludedResult.counts, {
+    apiEntries: 1,
+    accepted: 1,
+    rejected: 0,
+  });
+});
+
+test("rejects nonpositive and overflow API interaction IDs", () => {
+  const evidence = makeObserverEvidence({
+    records: [
+      observedApiEntry({ interactionId: 0 }),
+      observedApiEntry({ interactionId: 2147483648 }),
+      observedDomEntry(),
+    ],
+  });
+  const result = analyzeObservedTrace({ evidence });
+
+  assert.deepEqual(result.counts, { apiEntries: 2, accepted: 0, rejected: 2 });
+  assert.deepEqual(result.rejectionCounts, [
+    { code: "API_INTERACTION_ID_INVALID", count: 2 },
+  ]);
+});
+
+test("rejects stale frame provenance and exact DOM target misses", () => {
+  const staleProvenance = makeObserverEvidence({
+    frameProvenanceOverrides: {
+      status: "unknown",
+      reasonCode: "PROVENANCE_DOCUMENT_ID_MISMATCH",
+    },
+  });
+  const staleResult = analyzeObservedTrace({ evidence: staleProvenance });
+  assert.deepEqual(staleResult.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(staleResult.rejectionCounts, [
+    { code: "FRAME_PROVENANCE_UNSTABLE", count: 1 },
+  ]);
+
+  const targetMiss = makeObserverEvidence({
+    records: [
+      observedApiEntry({ targetToken: "t-cccccccccccccccccccccccc" }),
+      observedDomEntry(),
+    ],
+  });
+  const targetResult = analyzeObservedTrace({ evidence: targetMiss });
+  assert.deepEqual(targetResult.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(targetResult.rejectionCounts, [
+    { code: "DOM_COUNTERPART_UNAVAILABLE", count: 1 },
+  ]);
+});
+
+test("requires collector hash, completed action, loss-free trace, and an allowed measurement state", () => {
+  const invalidCases = [
+    {
+      name: "capture failure reason",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: { actionReasonCode: "TRACE_CAPTURE_FAILED" },
+      }),
+      code: "COLLECTOR_LIFECYCLE_INVALID",
+    },
+    {
+      name: "missing original source hash",
+      evidence: makeObserverEvidence({ sourceHashSha256: null }),
+      code: "COLLECTOR_SOURCE_HASH_MISMATCH",
+    },
+    {
+      name: "changed original source hash",
+      evidence: makeObserverEvidence({ sourceHashSha256: "0".repeat(64) }),
+      code: "COLLECTOR_SOURCE_HASH_MISMATCH",
+    },
+    {
+      name: "unknown measurement state",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: { measurementStatus: "unknown" },
+      }),
+      code: "COLLECTOR_LIFECYCLE_INVALID",
+    },
+    {
+      name: "resolved measurement with a reason",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: {
+          measurementStatus: "resolved",
+          measurementReasonCode: "FRAME_STREAM_MISSING",
+        },
+      }),
+      code: "COLLECTOR_LIFECYCLE_INVALID",
+    },
+    {
+      name: "unavailable measurement with another reason",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: {
+          measurementStatus: "unavailable",
+          measurementReasonCode: "TRACE_CAPTURE_FAILED",
+        },
+      }),
+      code: "COLLECTOR_LIFECYCLE_INVALID",
+    },
+    {
+      name: "case trace loss",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: { dataLossOccurred: true },
+      }),
+      code: "TRACE_DATA_LOSS_OR_LINK_MISMATCH",
+    },
+    {
+      name: "linked trace loss",
+      evidence: makeObserverEvidence({ traceDataLossOccurred: true }),
+      code: "TRACE_DATA_LOSS_OR_LINK_MISMATCH",
+    },
+    {
+      name: "case trace mismatch",
+      evidence: makeObserverEvidence({
+        caseRecordOverrides: { trace: "other.trace.json" },
+      }),
+      code: "TRACE_DATA_LOSS_OR_LINK_MISMATCH",
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    const result = analyzeObservedTrace({ evidence: invalidCase.evidence });
+    assert.deepEqual(
+      result.counts,
+      { apiEntries: 1, accepted: 0, rejected: 1 },
+      invalidCase.name,
+    );
+    assert.deepEqual(
+      result.rejectionCounts,
+      [{ code: invalidCase.code, count: 1 }],
+      invalidCase.name,
+    );
+  }
+
+  for (const caseRecordOverrides of [
+    { measurementStatus: "resolved" },
+    {
+      measurementStatus: "unavailable",
+      measurementReasonCode: "FRAME_STREAM_MISSING",
+    },
+  ]) {
+    const evidence = makeObserverEvidence({ caseRecordOverrides });
+    assert.equal(analyzeObservedTrace({ evidence }).counts.accepted, 1);
+  }
+});
+
+test("validates the original manifest declaration separately from the case summary", () => {
+  const invalidManifestEvidence = [
+    makeObserverEvidence({
+      declarationOverrides: { unexpected: "private-value" },
+    }),
+    makeObserverEvidence({
+      declarationOverrides: { inputMethod: "other synthetic method" },
+    }),
+    makeObserverEvidence({
+      declarationOverrides: {
+        performanceEventTiming: {
+          ...observedManifestEvidence.performanceEventTiming,
+          durationThresholdMs: 8,
+        },
+      },
+    }),
+    makeObserverEvidence({ declarationOverrides: { recordLimit: 513 } }),
+    makeObserverEvidence({ declarationOverrides: { recordByteLimit: 1 } }),
+    makeObserverEvidence({
+      declarationOverrides: {
+        nextPaint: { status: "resolved", reasonCode: null },
+      },
+    }),
+    makeObserverEvidence({
+      caseObservationOverrides: { fileName: "other-case.stimulus.json" },
+    }),
+  ];
+  for (const evidence of invalidManifestEvidence) {
+    const result = analyzeObservedTrace({ evidence });
+    assert.deepEqual(result.counts, {
+      apiEntries: 1,
+      accepted: 0,
+      rejected: 1,
+    });
+    assert.deepEqual(result.rejectionCounts, [
+      { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+    ]);
+  }
+
+  const evidence = makeObserverEvidence();
+  const caseSummaryAsManifestDeclaration = analyzeTrace(
+    makeBrave155Trace(),
+    evidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: evidence.capture.caseRecord.trustedStimulusObservation,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  );
+  assert.equal(
+    caseSummaryAsManifestDeclaration.observedDiscreteInputs.counts.accepted,
+    0,
+  );
+  assert.deepEqual(
+    caseSummaryAsManifestDeclaration.observedDiscreteInputs.rejectionCounts,
+    [{ code: "OBSERVER_EVIDENCE_INVALID", count: 1 }],
+  );
+
+  const changedSidecar = makeObserverEvidence({
+    sidecarOverrides: { unexpected: "private-value" },
+  });
+  const sidecarResult = analyzeObservedTrace({ evidence: changedSidecar });
+  assert.deepEqual(sidecarResult.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(sidecarResult.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+
+  const malformedApi = makeObserverEvidence({
+    records: [
+      (() => {
+        const api = observedApiEntry();
+        delete api.interactionId;
+        return api;
+      })(),
+      observedDomEntry(),
+    ],
+  });
+  const malformedApiResult = analyzeObservedTrace({ evidence: malformedApi });
+  assert.deepEqual(malformedApiResult.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(malformedApiResult.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+});
+
+test("requires the original trace fixture to match the case and sidecar fixtures", () => {
+  const missingFixture = makeObserverEvidence();
+  delete missingFixture.traceRecord.fixture;
+  const mismatchedFixture = makeObserverEvidence({
+    traceRecordOverrides: { fixture: "another-case" },
+  });
+
+  for (const evidence of [missingFixture, mismatchedFixture]) {
+    const result = analyzeObservedTrace({ evidence });
+    assert.deepEqual(result.counts, {
+      apiEntries: 1,
+      accepted: 0,
+      rejected: 1,
+    });
+    assert.deepEqual(result.rejectionCounts, [
+      { code: "TRACE_DATA_LOSS_OR_LINK_MISMATCH", count: 1 },
+    ]);
+  }
+});
+
+test("does not let pointer release, key, resize, or delivery phase select an action", () => {
+  const evidence = makeObserverEvidence({
+    records: [
+      observedApiEntry({ type: "pointerup", interactionId: 17 }),
+      observedDomEntry({ type: "pointerup", phase: "primary" }),
+      observedApiEntry({ type: "keydown", interactionId: 18 }),
+      observedDomEntry({ type: "keydown", phase: "primary" }),
+      observedDomEntry({ type: "resize", targetLabel: "window" }),
+    ],
+  });
+  const result = analyzeObservedTrace({ evidence });
+
+  assert.deepEqual(result.counts, { apiEntries: 2, accepted: 0, rejected: 2 });
+  assert.deepEqual(result.entries, []);
+  assert.equal(result.formalActionStatus, "unavailable");
 });
 
 test("rejects mismatched identity fields and typed track namespaces", () => {
