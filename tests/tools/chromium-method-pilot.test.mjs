@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   mkdirSync,
   mkdtempSync,
@@ -12,8 +14,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 import * as runner from "../../scripts/capture-chromium-method-pilot.mjs";
 import {
+  artifactRootsForBrowser,
   buildCaptureCases,
   buildLocalWorkerConfig,
   buildMeasurementSegment,
@@ -1691,12 +1695,1132 @@ test("installed Brave mode requires its exact explicit flag pair", () => {
     ["--run", "--browser=installed-brave", "--user-data-dir=/tmp/profile"],
     ["--run", "--browser=installed-brave", "--profile-directory=Default"],
     ["--run", "--browser=installed-brave", "--fallback=chromium"],
+    ["--run", "--observe-inputs"],
+    ["--observe-inputs", "--run", "--browser=installed-brave"],
+    [
+      "--run",
+      "--browser=installed-brave",
+      "--observe-inputs",
+      "--observe-inputs",
+    ],
     ["--browser=installed-brave", "--run"],
   ]) {
     assert.throws(() => parseRunnerArgs(args), /unsupported capture option/);
   }
   assert.deepEqual(parseRunnerArgs([]), { mode: "preview" });
   assert.deepEqual(parseRunnerArgs(["--run"]), { mode: "run" });
+  assert.deepEqual(
+    parseRunnerArgs(["--run", "--browser=installed-brave", "--observe-inputs"]),
+    { mode: "run", browser: "installed-brave", observeInputs: true },
+  );
+});
+
+function createObserverBrowserHarness({ supported = true } = {}) {
+  const listeners = new Map();
+  const windowListeners = new Map();
+  const observers = [];
+  const performanceNow = { value: 10 };
+  const target = { nodeType: 1, isConnected: true, parentNode: null };
+  const document = {
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    removeEventListener(type, listener) {
+      if (listeners.get(type) === listener) listeners.delete(type);
+    },
+  };
+  class FakePerformanceObserver {
+    static supportedEntryTypes = supported ? ["event"] : [];
+
+    constructor(callback) {
+      this.callback = callback;
+      this.pending = [];
+      this.disconnected = false;
+      observers.push(this);
+    }
+
+    observe(options) {
+      this.options = options;
+    }
+
+    takeRecords() {
+      const pending = this.pending;
+      this.pending = [];
+      return pending;
+    }
+
+    disconnect() {
+      this.disconnected = true;
+    }
+  }
+  const sandbox = {
+    document,
+    performance: { now: () => performanceNow.value },
+    PerformanceObserver: FakePerformanceObserver,
+    TextEncoder,
+    Uint8Array,
+    WeakMap,
+    Map,
+    Array,
+    Object,
+    Number,
+    Math,
+    JSON,
+    Promise,
+    setTimeout: (callback) => {
+      callback();
+      return 1;
+    },
+    clearTimeout: () => undefined,
+    crypto: {
+      getRandomValues(bytes) {
+        bytes.fill(7);
+        return bytes;
+      },
+    },
+    addEventListener(type, listener) {
+      windowListeners.set(type, listener);
+    },
+    removeEventListener(type, listener) {
+      if (windowListeners.get(type) === listener) windowListeners.delete(type);
+    },
+  };
+  sandbox.window = sandbox;
+  sandbox.globalThis = sandbox;
+  return {
+    sandbox,
+    listeners,
+    windowListeners,
+    observers,
+    target,
+    performanceNow,
+    initialize(source) {
+      runInNewContext(`(${source.toString()})()`, sandbox);
+      return sandbox.__agesTrustedStimulusObserver;
+    },
+    dispatch({
+      type = "click",
+      timeStamp,
+      isTrusted = true,
+      eventTarget = target,
+    } = {}) {
+      const eventListeners = type === "resize" ? windowListeners : listeners;
+      eventListeners.get(type)?.({
+        type,
+        timeStamp,
+        isTrusted,
+        target: type === "resize" ? sandbox : eventTarget,
+      });
+    },
+  };
+}
+
+function validTrustedStimulusPayload(overrides = {}) {
+  const records = overrides.records ?? [];
+  const recordBytes = new TextEncoder().encode(
+    JSON.stringify(records),
+  ).byteLength;
+  return {
+    schemaVersion: 1,
+    status: "diagnostic",
+    reasonCode: null,
+    documentId: "d-0123456789abcdef01234567",
+    apiStatus: "thresholded",
+    apiMetadata: {
+      entryType: "event",
+      durationThresholdMs: 16,
+      buffered: false,
+      quantized: true,
+      continuousInputExcluded: true,
+    },
+    records,
+    recordCount: records.length,
+    recordBytes,
+    ...overrides,
+  };
+}
+
+function maximumEventTimingRecords(documentId, count) {
+  return Array.from({ length: count }, () => ({
+    kind: "event-timing",
+    documentId,
+    type: "pointerdown",
+    startTime: Number.MAX_VALUE,
+    processingStart: Number.MAX_VALUE,
+    processingEnd: Number.MAX_VALUE,
+    duration: Number.MAX_VALUE,
+    interactionId: Number.MAX_SAFE_INTEGER,
+    targetToken: "t-0123456789abcdef01234567",
+    targetLabel: "calendar-viewport",
+    targetResolution: "registered-target",
+    deliveryPhase: "completion-hold",
+  }));
+}
+
+function maximumEventTimingEntries(target, count) {
+  return Array.from({ length: count }, () => ({
+    name: "pointerdown",
+    startTime: Number.MAX_VALUE,
+    processingStart: Number.MAX_VALUE,
+    processingEnd: Number.MAX_VALUE,
+    duration: Number.MAX_VALUE,
+    interactionId: Number.MAX_SAFE_INTEGER,
+    target,
+  }));
+}
+
+function inputFrameTreeResponse(
+  frameId = "root-frame-1",
+  loaderId = "root-loader-1",
+) {
+  return {
+    frameTree: {
+      frame: {
+        id: frameId,
+        loaderId,
+        url: "https://private.invalid/story",
+        name: "private frame name",
+        securityOrigin: "https://private.invalid",
+      },
+    },
+  };
+}
+
+function createInputFrameProvenanceSession(responses = []) {
+  const session = new EventEmitter();
+  session.requests = [];
+  let frameTreeRequestCount = 0;
+  session.send = async (method, params) => {
+    session.requests.push({
+      method,
+      params,
+      lifecycleListenerCount: [
+        "Page.frameNavigated",
+        "Page.frameDetached",
+        "Runtime.executionContextsCleared",
+        "Inspector.detached",
+        "Inspector.targetCrashed",
+        "close",
+      ].reduce(
+        (total, eventName) => total + session.listenerCount(eventName),
+        0,
+      ),
+    });
+    if (method === "Page.enable" || method === "Runtime.enable") return {};
+    if (method !== "Page.getFrameTree")
+      throw new Error("unexpected CDP request");
+    const response = responses[frameTreeRequestCount] ?? responses.at(-1);
+    frameTreeRequestCount += 1;
+    return typeof response === "function" ? response() : response;
+  };
+  return session;
+}
+
+function requireInputFrameProvenanceTracker() {
+  assert.equal(typeof runner.createInputFrameProvenanceTracker, "function");
+  return runner.createInputFrameProvenanceTracker;
+}
+
+function validInputFrameProvenance(documentId = "d-0123456789abcdef01234567") {
+  const root = { frameId: "root-frame-1", loaderId: "root-loader-1" };
+  return {
+    schemaVersion: 1,
+    status: "stable",
+    reasonCode: null,
+    documentId,
+    beforeArm: root,
+    afterArm: root,
+    afterDrain: root,
+  };
+}
+
+test("observer initialization is serializable and excludes pre-arm DOM input", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  assert.ok(state);
+  assert.equal(
+    JSON.stringify(harness.observers[0].options),
+    JSON.stringify({
+      type: "event",
+      buffered: false,
+      durationThreshold: 16,
+    }),
+  );
+  harness.dispatch({ timeStamp: 9 });
+  harness.performanceNow.value = 20;
+  assert.equal(state.arm().status, "armed");
+  state.setPhase("primary");
+  harness.dispatch({ timeStamp: 19 });
+  harness.dispatch({ timeStamp: 21, isTrusted: false });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.status, "diagnostic");
+  assert.equal(payload.records.length, 1);
+  assert.equal(
+    JSON.stringify(payload.records[0]),
+    JSON.stringify({
+      kind: "dom",
+      documentId: state.documentId,
+      type: "click",
+      timeStamp: 21,
+      isTrusted: false,
+      targetToken: "t-070707070707070707070707",
+      targetLabel: null,
+      targetResolution: "unknown",
+      phase: "primary",
+    }),
+  );
+  assert.equal(harness.observers[0].disconnected, true);
+  assert.equal(harness.listeners.size, 0);
+});
+
+test("late pre-arm event timing is ignored without failing later entries", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  harness.performanceNow.value = 20;
+  state.arm();
+  harness.observers[0].callback({
+    getEntries: () => [
+      {
+        name: "click",
+        startTime: 19,
+        processingStart: 20,
+        processingEnd: 21,
+        duration: 18,
+        interactionId: 1,
+        target: harness.target,
+      },
+      {
+        name: "click",
+        startTime: 21,
+        processingStart: 22,
+        processingEnd: 23,
+        duration: 18,
+        interactionId: 2,
+        target: harness.target,
+      },
+    ],
+  });
+  harness.dispatch({ timeStamp: 21 });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.status, "diagnostic");
+  assert.equal(payload.apiStatus, "thresholded");
+  assert.deepEqual(
+    Array.from(payload.records)
+      .filter((record) => record.kind === "event-timing")
+      .map((record) => record.startTime),
+    [21],
+  );
+  assert.equal(payload.records.length, 2);
+});
+
+test("observer records DOM dispatch phase and API delivery phase separately", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  const parent = { nodeType: 1, isConnected: true, parentNode: null };
+  const child = { nodeType: 1, isConnected: true, parentNode: parent };
+  state.registerTarget(parent, "fit-all");
+  state.arm();
+  state.setPhase("immediate");
+  harness.dispatch({ timeStamp: 11, eventTarget: child });
+  state.setPhase("completion");
+  harness.observers[0].callback({
+    getEntries: () => [
+      {
+        name: "click",
+        startTime: 11,
+        processingStart: 12,
+        processingEnd: 13,
+        duration: 17,
+        interactionId: 0,
+        target: parent,
+      },
+    ],
+  });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.records[0].phase, "immediate");
+  assert.equal(payload.records[0].targetLabel, "fit-all");
+  assert.equal(payload.records[1].deliveryPhase, "completion");
+  assert.equal(Object.hasOwn(payload.records[1], "phase"), false);
+  assert.equal(Object.hasOwn(payload.records[1], "isTrusted"), false);
+  assert.equal(payload.records[1].interactionId, 0);
+});
+
+test("drain resets quiet periods when API callbacks arrive during sleep", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  state.arm();
+  const observer = harness.observers[0];
+  const deliveries = [
+    { at: 10, startTime: 11, interactionId: 1 },
+    { at: 30, startTime: 31, interactionId: 2 },
+    { at: 50, startTime: 51, interactionId: 3 },
+  ];
+  let elapsed = 0;
+  harness.sandbox.setTimeout = (callback, delay) => {
+    const next = elapsed + delay;
+    for (const delivery of deliveries) {
+      if (delivery.at > elapsed && delivery.at <= next) {
+        observer.callback({
+          getEntries: () => [
+            {
+              name: "click",
+              startTime: delivery.startTime,
+              processingStart: delivery.startTime + 1,
+              processingEnd: delivery.startTime + 2,
+              duration: 18,
+              interactionId: delivery.interactionId,
+              target: harness.target,
+            },
+          ],
+        });
+      }
+    }
+    elapsed = next;
+    harness.performanceNow.value += delay;
+    callback();
+    return 1;
+  };
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.status, "diagnostic");
+  assert.deepEqual(
+    Array.from(payload.records)
+      .filter((record) => record.kind === "event-timing")
+      .map((record) => record.startTime),
+    [11, 31, 51],
+  );
+  assert.ok(elapsed >= 80);
+  assert.ok(elapsed <= observerModule.OBSERVATION_LIMITS.drainTimeoutMs);
+});
+
+test("observer caps combined records and validates record byte budgets", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  state.arm();
+  state.setPhase("primary");
+  for (let index = 0; index < 256; index += 1) {
+    harness.dispatch({ timeStamp: 11 + index });
+  }
+  harness.observers[0].callback({
+    getEntries: () =>
+      Array.from({ length: 257 }, (_, index) => ({
+        name: "click",
+        startTime: 300 + index,
+        processingStart: 301 + index,
+        processingEnd: 302 + index,
+        duration: 17,
+        interactionId: index,
+        target: harness.target,
+      })),
+  });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.records.length, 512);
+  assert.equal(payload.status, "censored");
+  assert.equal(payload.reasonCode, "OBSERVATION_RECORD_LIMIT_EXCEEDED");
+  assert.equal(payload.recordCount, 512);
+  assert.ok(
+    payload.recordBytes <= observerModule.OBSERVATION_LIMITS.recordBytes,
+  );
+
+  const oversized = validTrustedStimulusPayload({
+    recordBytes: observerModule.OBSERVATION_LIMITS.recordBytes + 1,
+  });
+  assert.throws(
+    () =>
+      observerModule.validateTrustedStimulusObservation(
+        oversized,
+        oversized.documentId,
+      ),
+    { message: "OBSERVATION_RECORD_BYTES_EXCEEDED" },
+  );
+});
+
+test("browser caps the exact serialized sidecar before transport", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  state.registerTarget(harness.target, "calendar-viewport");
+  state.arm();
+  harness.observers[0].callback({
+    getEntries: () => maximumEventTimingEntries(harness.target, 512),
+  });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.status, "censored");
+  assert.equal(payload.reasonCode, "OBSERVATION_SIDECAR_BYTE_LIMIT_EXCEEDED");
+  assert.ok(payload.recordCount < 512);
+  assert.ok(
+    payload.recordBytes <= observerModule.OBSERVATION_LIMITS.recordBytes,
+  );
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: observerModule.TRUSTED_STIMULUS_EVIDENCE_CLASS,
+    instrumented: true,
+    qualification: "diagnostic-only",
+    fixture: "x".repeat(101),
+    inputMethod:
+      "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.",
+    interpretation: {
+      eventTiming:
+        "PerformanceEventTiming is thresholded at 16 ms and browser-quantized; continuous input is excluded.",
+      targets:
+        "Target IDs are opaque per-document tokens; unknown, null, and removed targets remain uncertain.",
+    },
+    observation: {
+      ...payload,
+      frameProvenance: {
+        schemaVersion: 1,
+        status: "unknown",
+        reasonCode: "PROVENANCE_DOCUMENT_ID_MISMATCH",
+        documentId: payload.documentId,
+        beforeArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+        afterArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+        afterDrain: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+      },
+    },
+  };
+  assert.ok(
+    Buffer.byteLength(`${JSON.stringify(sidecar, null, 2)}\n`) <=
+      observerModule.OBSERVATION_LIMITS.sidecarBytes,
+  );
+  assert.equal(harness.observers[0].disconnected, true);
+  assert.equal(harness.listeners.size, 0);
+});
+
+test("unsupported event timing is explicit while DOM observations remain censored", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness({ supported: false });
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  state.arm();
+  harness.dispatch({ timeStamp: 11 });
+  const payload = await state.finish(state.documentId);
+  assert.equal(payload.status, "censored");
+  assert.equal(payload.reasonCode, "PERFORMANCE_EVENT_TIMING_UNSUPPORTED");
+  assert.equal(payload.apiStatus, "unsupported");
+  assert.equal(payload.records.length, 1);
+  assert.equal(payload.records[0].kind, "dom");
+});
+
+test("observer validation rejects unknown fields without echoing private values", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const payload = validTrustedStimulusPayload({ privateValue: "secret-value" });
+  assert.throws(
+    () =>
+      observerModule.validateTrustedStimulusObservation(
+        payload,
+        payload.documentId,
+      ),
+    (error) => {
+      assert.equal(error.message, "OBSERVATION_PAYLOAD_INVALID");
+      assert.doesNotMatch(error.message, /secret-value/);
+      return true;
+    },
+  );
+});
+
+test("observer marks replacement documents lost and bounds drain failures", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  const armed = state.arm();
+  harness.dispatch({ timeStamp: 11 });
+  const lost = await state.finish("d-ffffffffffffffffffffffff");
+  assert.equal(lost.status, "censored");
+  assert.equal(lost.reasonCode, "NAVIGATION_OBSERVATION_LOST");
+  assert.equal(lost.records.length, 0);
+  assert.equal(harness.observers[0].disconnected, true);
+  assert.equal(harness.listeners.size, 0);
+
+  const drainHarness = createObserverBrowserHarness();
+  const drainState = drainHarness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+  );
+  drainState.arm();
+  drainHarness.observers[0].takeRecords = () => {
+    throw new Error("private browser detail");
+  };
+  const drainFailure = await drainState.finish(drainState.documentId);
+  assert.equal(drainFailure.status, "censored");
+  assert.equal(drainFailure.reasonCode, "OBSERVATION_DRAIN_TIMEOUT");
+  assert.equal(drainHarness.observers[0].disconnected, true);
+  assert.equal(drainHarness.listeners.size, 0);
+
+  let evaluationCount = 0;
+  let closedAfterTimeout = false;
+  const timedOut = await observerModule.finishTrustedStimulusObserver(
+    {
+      async evaluate() {
+        evaluationCount += 1;
+        if (evaluationCount === 1) return new Promise(() => {});
+        closedAfterTimeout = true;
+        return undefined;
+      },
+    },
+    armed.documentId,
+    5,
+  );
+  assert.equal(timedOut.status, "unavailable");
+  assert.equal(timedOut.reasonCode, "OBSERVATION_DRAIN_TIMEOUT");
+  assert.equal(evaluationCount, 2);
+  assert.equal(closedAfterTimeout, true);
+});
+
+test("missing observer at drain censors the whole document observation", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const page = {
+    async evaluate(callback, expected) {
+      return runInNewContext(`(${callback.toString()})(expected)`, {
+        expected,
+        globalThis: {},
+      });
+    },
+  };
+  const payload = await observerModule.finishTrustedStimulusObserver(
+    page,
+    "d-0123456789abcdef01234567",
+  );
+  assert.equal(payload.status, "censored");
+  assert.equal(payload.reasonCode, "NAVIGATION_OBSERVATION_LOST");
+  assert.equal(payload.recordCount, 0);
+  assert.deepEqual(payload.records, []);
+});
+
+test("observer sidecars use exclusive writes and return verified hashes", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-stimulus-sidecar-"));
+  const frameProvenance = validInputFrameProvenance();
+  try {
+    const oversized = validTrustedStimulusPayload({
+      records: maximumEventTimingRecords("d-0123456789abcdef01234567", 512),
+    });
+    assert.ok(
+      oversized.recordBytes <= observerModule.OBSERVATION_LIMITS.recordBytes,
+    );
+    assert.throws(
+      () =>
+        observerModule.writeTrustedStimulusSidecar({
+          directory,
+          fixture: "x".repeat(101),
+          payload: oversized,
+          frameProvenance,
+        }),
+      { message: "OBSERVATION_SIDECAR_BYTE_LIMIT_EXCEEDED" },
+    );
+
+    const payload = validTrustedStimulusPayload();
+    const written = observerModule.writeTrustedStimulusSidecar({
+      directory,
+      fixture: "100-interactive-pan",
+      payload,
+      frameProvenance,
+    });
+    const bytes = readFileSync(join(directory, written.fileName));
+    assert.equal(written.byteCount, bytes.byteLength);
+    assert.ok(
+      bytes.byteLength <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
+    );
+    assert.equal(
+      written.sha256,
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    assert.equal(written.recordCount, 0);
+    assert.equal(
+      written.evidenceClass,
+      "synthetic-Playwright-stimulus-discovery",
+    );
+    assert.throws(
+      () =>
+        observerModule.writeTrustedStimulusSidecar({
+          directory,
+          fixture: "100-interactive-pan",
+          payload,
+          frameProvenance,
+        }),
+      { message: "OBSERVATION_SIDECAR_WRITE_FAILED" },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("frame provenance binds three unchanged root snapshots to the observer document", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const provenance = await tracker.finish(documentId);
+
+  assert.deepEqual(provenance, {
+    schemaVersion: 1,
+    status: "stable",
+    reasonCode: null,
+    documentId,
+    beforeArm: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+    afterArm: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+    afterDrain: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+  });
+  assert.deepEqual(
+    session.requests.map(({ method }) => method),
+    [
+      "Page.enable",
+      "Runtime.enable",
+      "Page.getFrameTree",
+      "Page.getFrameTree",
+      "Page.getFrameTree",
+    ],
+  );
+  assert.ok(
+    session.requests
+      .filter(({ method }) => method === "Page.getFrameTree")
+      .every(({ lifecycleListenerCount }) => lifecycleListenerCount === 6),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(provenance),
+    /private\.invalid|private frame/,
+  );
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Page.frameDetached"), 0);
+});
+
+test("disabled frame provenance adds no CDP requests or lifecycle listeners", () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession();
+
+  assert.equal(createTracker(session, { enabled: false }), null);
+  assert.deepEqual(session.requests, []);
+  assert.equal(session.eventNames().length, 0);
+});
+
+test("only stable frame provenance permits trace measurement", () => {
+  assert.equal(
+    typeof runner.inputFrameProvenanceMeasurementFailure,
+    "function",
+  );
+  const measurementFailure = runner.inputFrameProvenanceMeasurementFailure;
+  assert.equal(measurementFailure(validInputFrameProvenance()), null);
+  assert.equal(
+    measurementFailure({ ...validInputFrameProvenance(), status: "invalid" }),
+    "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+  );
+  assert.equal(
+    measurementFailure({ ...validInputFrameProvenance(), status: "unknown" }),
+    "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+  );
+});
+
+test("frame provenance permanently invalidates every root lifecycle loss", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const documentId = "d-0123456789abcdef01234567";
+  const cases = [
+    [
+      "Page.frameNavigated",
+      { frame: { id: "root-frame-1", loaderId: "root-loader-2" } },
+      "ROOT_DOCUMENT_NAVIGATED",
+    ],
+    [
+      "Page.frameDetached",
+      { frameId: "root-frame-1", reason: "remove" },
+      "ROOT_FRAME_DETACHED",
+    ],
+    ["Runtime.executionContextsCleared", {}, "EXECUTION_CONTEXTS_CLEARED"],
+    ["Inspector.detached", { reason: "target_closed" }, "CDP_SESSION_LOST"],
+    ["Inspector.targetCrashed", {}, "TARGET_CRASHED"],
+    ["close", undefined, "CDP_SESSION_LOST"],
+  ];
+
+  for (const [eventName, eventPayload, reasonCode] of cases) {
+    const session = createInputFrameProvenanceSession([
+      inputFrameTreeResponse(),
+      inputFrameTreeResponse(),
+      inputFrameTreeResponse(),
+    ]);
+    const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+    await tracker.captureBeforeArm();
+    await tracker.captureAfterArm(documentId);
+    session.emit(eventName, eventPayload);
+    const provenance = await tracker.finish(documentId);
+
+    assert.equal(provenance.status, "invalid", eventName);
+    assert.equal(provenance.reasonCode, reasonCode, eventName);
+    assert.equal(session.listenerCount(eventName), 0, eventName);
+  }
+});
+
+test("root navigation followed by restoration stays invalid despite matching final IDs", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  session.emit("Page.frameNavigated", {
+    frame: { id: "root-frame-1", loaderId: "temporary-loader" },
+  });
+  session.emit("Page.frameNavigated", {
+    frame: { id: "root-frame-1", loaderId: "root-loader-1" },
+  });
+  const provenance = await tracker.finish(documentId);
+
+  assert.deepEqual(provenance.afterDrain, {
+    frameId: "root-frame-1",
+    loaderId: "root-loader-1",
+  });
+  assert.equal(provenance.status, "invalid");
+  assert.equal(provenance.reasonCode, "ROOT_DOCUMENT_NAVIGATED");
+});
+
+test("frame provenance invalidates changed root frame or loader snapshots", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const documentId = "d-0123456789abcdef01234567";
+  const cases = [
+    [
+      [
+        inputFrameTreeResponse("root-frame-1", "root-loader-1"),
+        inputFrameTreeResponse("root-frame-2", "root-loader-2"),
+        inputFrameTreeResponse("root-frame-2", "root-loader-2"),
+      ],
+      "ROOT_FRAME_CHANGED",
+    ],
+    [
+      [
+        inputFrameTreeResponse("root-frame-1", "root-loader-1"),
+        inputFrameTreeResponse("root-frame-1", "root-loader-2"),
+        inputFrameTreeResponse("root-frame-1", "root-loader-2"),
+      ],
+      "ROOT_DOCUMENT_CHANGED",
+    ],
+  ];
+
+  for (const [responses, reasonCode] of cases) {
+    const session = createInputFrameProvenanceSession(responses);
+    const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+    await tracker.captureBeforeArm();
+    await tracker.captureAfterArm(documentId);
+    const provenance = await tracker.finish(documentId);
+
+    assert.equal(provenance.status, "invalid");
+    assert.equal(provenance.reasonCode, reasonCode);
+    assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  }
+});
+
+test("root lifecycle events before the first snapshot conservatively invalidate ownership", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  session.emit("Page.frameDetached", { frameId: "unknown-root-or-child" });
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm("d-0123456789abcdef01234567");
+  const provenance = await tracker.finish("d-0123456789abcdef01234567");
+
+  assert.equal(provenance.status, "invalid");
+  assert.equal(provenance.reasonCode, "ROOT_EVENT_BEFORE_BASELINE");
+});
+
+test("frame provenance marks malformed snapshots unknown and rejects private or unknown fields", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const malformed = createInputFrameProvenanceSession([
+    {
+      frameTree: {
+        frame: {
+          id: "root-frame-1",
+          url: "https://private.invalid/secret-path",
+          securityOrigin: "https://private.invalid",
+        },
+      },
+    },
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(malformed, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const result = await tracker.finish(documentId);
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.reasonCode, "PROVENANCE_MALFORMED_RESPONSE");
+  assert.equal(result.beforeArm, null);
+  assert.doesNotMatch(JSON.stringify(result), /private\.invalid|secret-path/);
+  assert.deepEqual(
+    observerModule.validateInputFrameProvenance(
+      validInputFrameProvenance(documentId),
+      documentId,
+    ),
+    validInputFrameProvenance(documentId),
+  );
+  assert.throws(
+    () =>
+      observerModule.validateInputFrameProvenance(
+        { ...validInputFrameProvenance(documentId), privateValue: "secret" },
+        documentId,
+      ),
+    { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+  );
+  assert.throws(
+    () =>
+      observerModule.validateInputFrameProvenance(
+        {
+          ...validInputFrameProvenance(documentId),
+          beforeArm: { frameId: "f".repeat(129), loaderId: "root-loader-1" },
+        },
+        documentId,
+      ),
+    { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+  );
+});
+
+test("frame provenance snapshot timeout remains bounded and removes listeners", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    () => new Promise(() => {}),
+    () => new Promise(() => {}),
+    () => new Promise(() => {}),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 10 });
+  const documentId = "d-0123456789abcdef01234567";
+  const startedAt = Date.now();
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const provenance = await tracker.finish(documentId);
+
+  assert.equal(provenance.status, "unknown");
+  assert.equal(provenance.reasonCode, "PROVENANCE_TIMEOUT");
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Page.frameDetached"), 0);
+  assert.equal(session.listenerCount("Runtime.executionContextsCleared"), 0);
+  assert.equal(session.listenerCount("Inspector.detached"), 0);
+  assert.equal(session.listenerCount("Inspector.targetCrashed"), 0);
+  assert.equal(session.listenerCount("close"), 0);
+});
+
+test("frame provenance domain enable timeout prevents untracked snapshots", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([inputFrameTreeResponse()]);
+  session.send = async (method) => {
+    session.requests.push({ method });
+    if (method === "Page.enable") return new Promise(() => {});
+    if (method === "Runtime.enable") return {};
+    if (method === "Page.getFrameTree") return inputFrameTreeResponse();
+    throw new Error("unexpected CDP request");
+  };
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 10 });
+  const startedAt = Date.now();
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm("d-0123456789abcdef01234567");
+  const provenance = await tracker.finish("d-0123456789abcdef01234567");
+
+  assert.equal(provenance.status, "unknown");
+  assert.equal(provenance.reasonCode, "PROVENANCE_TIMEOUT");
+  assert.ok(Date.now() - startedAt < 250);
+  assert.deepEqual(
+    session.requests.map(({ method }) => method),
+    ["Page.enable", "Runtime.enable"],
+  );
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Runtime.executionContextsCleared"), 0);
+});
+
+test("frame provenance sidecars validate closed metadata and enforce the byte cap", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-frame-provenance-"));
+  const documentId = "d-0123456789abcdef01234567";
+  const frameProvenance = {
+    ...validInputFrameProvenance(documentId),
+    beforeArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+    afterArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+    afterDrain: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+  };
+  try {
+    const written = observerModule.writeTrustedStimulusSidecar({
+      directory,
+      fixture: "100-interactive-pan",
+      payload: validTrustedStimulusPayload({ documentId }),
+      frameProvenance,
+    });
+    const sidecar = JSON.parse(
+      readFileSync(join(directory, written.fileName), "utf8"),
+    );
+    assert.deepEqual(sidecar.observation.frameProvenance, frameProvenance);
+    assert.ok(
+      written.byteCount <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
+    );
+    assert.throws(
+      () =>
+        observerModule.writeTrustedStimulusSidecar({
+          directory,
+          fixture: "100-interactive-zoom",
+          payload: validTrustedStimulusPayload({ documentId }),
+          frameProvenance: {
+            ...frameProvenance,
+            url: "https://private.invalid",
+          },
+        }),
+      { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("frame provenance failures censor observations while preserving raw evidence", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-provenance-censored-"));
+  const documentId = "d-0123456789abcdef01234567";
+  const records = maximumEventTimingRecords(documentId, 1);
+  const failures = [
+    {
+      status: "invalid",
+      reasonCode: "ROOT_DOCUMENT_NAVIGATED",
+    },
+    {
+      status: "unknown",
+      reasonCode: "PROVENANCE_TIMEOUT",
+      beforeArm: null,
+      afterArm: null,
+      afterDrain: null,
+    },
+  ];
+  try {
+    for (const [index, failure] of failures.entries()) {
+      const frameProvenance = {
+        ...validInputFrameProvenance(documentId),
+        ...failure,
+      };
+      const payload = validTrustedStimulusPayload({ documentId, records });
+      const summary = observerModule.writeTrustedStimulusSidecar({
+        directory,
+        fixture: `100-interactive-provenance-${index}`,
+        payload,
+        frameProvenance,
+      });
+      const sidecar = JSON.parse(
+        readFileSync(join(directory, summary.fileName), "utf8"),
+      );
+
+      assert.equal(summary.status, "censored");
+      assert.equal(summary.reasonCode, "INPUT_FRAME_PROVENANCE_UNAVAILABLE");
+      assert.equal(summary.apiStatus, "thresholded");
+      assert.equal(summary.recordCount, records.length);
+      assert.equal(sidecar.observation.status, "censored");
+      assert.equal(
+        sidecar.observation.reasonCode,
+        "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+      );
+      assert.equal(sidecar.observation.apiStatus, "thresholded");
+      assert.deepEqual(sidecar.observation.apiMetadata, payload.apiMetadata);
+      assert.deepEqual(sidecar.observation.records, records);
+      assert.deepEqual(sidecar.observation.frameProvenance, frameProvenance);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("opt-in observation keeps default modes and case matrix unchanged", () => {
+  assert.deepEqual(parseRunnerArgs([]), { mode: "preview" });
+  assert.deepEqual(parseRunnerArgs(["--run"]), { mode: "run" });
+  assert.deepEqual(
+    artifactRootsForBrowser("installed-brave"),
+    artifactRootsForBrowser("installed-brave", false),
+  );
+  assert.notDeepEqual(
+    artifactRootsForBrowser("installed-brave", true),
+    artifactRootsForBrowser("installed-brave"),
+  );
+  assert.equal(buildCaptureCases().length, 14);
+});
+
+test("observation manifest status aggregates actual per-case API outcomes", () => {
+  const aggregate = runner.aggregateTrustedStimulusApiStatus;
+  assert.equal(typeof aggregate, "function");
+  assert.equal(aggregate([]), "unknown");
+  assert.equal(
+    aggregate([
+      { trustedStimulusObservation: { apiStatus: "thresholded" } },
+      { trustedStimulusObservation: { apiStatus: "thresholded" } },
+    ]),
+    "thresholded",
+  );
+  assert.equal(
+    aggregate([
+      { trustedStimulusObservation: { apiStatus: "unsupported" } },
+      { trustedStimulusObservation: { apiStatus: "unsupported" } },
+    ]),
+    "unsupported",
+  );
+  assert.equal(
+    aggregate([
+      { trustedStimulusObservation: { apiStatus: "thresholded" } },
+      { trustedStimulusObservation: { apiStatus: "failed" } },
+    ]),
+    "mixed",
+  );
+  assert.equal(aggregate([{}]), "unknown");
 });
 
 test("installed Brave validation fails closed for missing and redirected bundles", async () => {

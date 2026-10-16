@@ -84,6 +84,14 @@ Owners can replace each Link’s exact tags, channel labels, five UTM values, an
 
 Before running `npm run check` for the first time, install the browser with `npx playwright install chromium` (CI installs Chromium and system dependencies). Browser tests run the built client through actual HTTP at `http://127.0.0.1:8791`, with `.wrangler/e2e` persistence and synthetic users, hashed sessions, and PNG media seeded by local Wrangler CLI commands. Session cookies are injected only by Playwright fixtures, with no production authentication or fixture endpoint. Tests cover anonymous gating, foreign asset isolation, real media, tag persistence, pagination, desktop keyboard controls, 375-pixel touch layouts, request races (including upload/filter and upload/sign-out), upload recovery, focus restoration after tag edits, Timeline create/edit/append/share flows, 100-item ordering, stale-version recovery, viewport navigation, and API/client routing. Test screenshots and traces are written to ignored `test-results/`.
 
+The local Chromium method pilot can optionally record bounded synthetic input observations with installed Brave:
+
+```sh
+node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run --browser=installed-brave --observe-inputs
+```
+
+This opt-in writes diagnostic sidecars under `.superpowers/sdd/trusted-stimulus-discovery/runs/`. The events come from synthetic Playwright actions; DOM `isTrusted` only identifies browser-dispatched events and does not prove human input. Input-to-next-paint remains unproven.
+
 Local upload browser scenarios simulate only the signed R2 transport: Playwright intercepts the synthetic S3 hostname, checks the PUT headers and binary body, seeds that object into local R2, and calls the real completion API. These are **simulated upload transport** checks, not evidence of cloud signature enforcement or CORS. Actual Google sign-in and live browser PUT remain the existing credentialed cloud smoke gates.
 
 ## Direct media upload
