@@ -68,7 +68,25 @@ const ALLOWED_REASON_CODES = new Set([
   "PERFORMANCE_EVENT_TIMING_UNSUPPORTED",
   "PERFORMANCE_EVENT_TIMING_UNAVAILABLE",
   "OBSERVATION_SIDECAR_WRITE_FAILED",
+  "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
 ]);
+const ALLOWED_INPUT_FRAME_PROVENANCE_REASONS = new Set([
+  "PROVENANCE_ACQUISITION_FAILED",
+  "PROVENANCE_DOCUMENT_ID_MISMATCH",
+  "PROVENANCE_MALFORMED_RESPONSE",
+  "PROVENANCE_NOT_ARMED",
+  "PROVENANCE_NOT_CAPTURED",
+  "PROVENANCE_TIMEOUT",
+  "ROOT_DOCUMENT_CHANGED",
+  "ROOT_DOCUMENT_NAVIGATED",
+  "ROOT_EVENT_BEFORE_BASELINE",
+  "ROOT_FRAME_CHANGED",
+  "ROOT_FRAME_DETACHED",
+  "EXECUTION_CONTEXTS_CLEARED",
+  "CDP_SESSION_LOST",
+  "TARGET_CRASHED",
+]);
+const INPUT_FRAME_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -82,6 +100,77 @@ function hasExactKeys(value, expected) {
     keys.length === allowed.length &&
     keys.every((key, index) => key === allowed[index])
   );
+}
+
+export function validateInputFrameProvenance(payload, expectedDocumentId) {
+  const fail = () => {
+    throw new Error("INPUT_FRAME_PROVENANCE_INVALID");
+  };
+  const isSnapshot = (snapshot) =>
+    snapshot === null ||
+    (hasExactKeys(snapshot, ["frameId", "loaderId"]) &&
+      typeof snapshot.frameId === "string" &&
+      INPUT_FRAME_ID_PATTERN.test(snapshot.frameId) &&
+      typeof snapshot.loaderId === "string" &&
+      INPUT_FRAME_ID_PATTERN.test(snapshot.loaderId));
+
+  if (
+    !hasExactKeys(payload, [
+      "schemaVersion",
+      "status",
+      "reasonCode",
+      "documentId",
+      "beforeArm",
+      "afterArm",
+      "afterDrain",
+    ]) ||
+    payload.schemaVersion !== 1 ||
+    !["stable", "invalid", "unknown"].includes(payload.status) ||
+    (payload.reasonCode !== null &&
+      (typeof payload.reasonCode !== "string" ||
+        !ALLOWED_INPUT_FRAME_PROVENANCE_REASONS.has(payload.reasonCode))) ||
+    (payload.documentId !== null &&
+      (typeof payload.documentId !== "string" ||
+        !/^d-[a-f0-9]{24}$/.test(payload.documentId))) ||
+    (expectedDocumentId !== null &&
+      (typeof expectedDocumentId !== "string" ||
+        !/^d-[a-f0-9]{24}$/.test(expectedDocumentId))) ||
+    (payload.documentId !== null &&
+      expectedDocumentId !== null &&
+      payload.documentId !== expectedDocumentId) ||
+    !isSnapshot(payload.beforeArm) ||
+    !isSnapshot(payload.afterArm) ||
+    !isSnapshot(payload.afterDrain)
+  ) {
+    fail();
+  }
+
+  const snapshots = [payload.beforeArm, payload.afterArm, payload.afterDrain];
+  const sameRootDocument = snapshots.every(
+    (snapshot) =>
+      snapshot !== null &&
+      snapshot.frameId === snapshots[0]?.frameId &&
+      snapshot.loaderId === snapshots[0]?.loaderId,
+  );
+  if (
+    (payload.status === "stable" &&
+      (payload.reasonCode !== null ||
+        payload.documentId === null ||
+        !sameRootDocument)) ||
+    (payload.status !== "stable" && payload.reasonCode === null)
+  ) {
+    fail();
+  }
+
+  return {
+    schemaVersion: 1,
+    status: payload.status,
+    reasonCode: payload.reasonCode,
+    documentId: payload.documentId,
+    beforeArm: payload.beforeArm ? { ...payload.beforeArm } : null,
+    afterArm: payload.afterArm ? { ...payload.afterArm } : null,
+    afterDrain: payload.afterDrain ? { ...payload.afterDrain } : null,
+  };
 }
 
 function byteLength(value) {
@@ -406,7 +495,27 @@ export function initializeTrustedStimulusObserver() {
               targets:
                 "Target IDs are opaque per-document tokens; unknown, null, and removed targets remain uncertain.",
             },
-            observation: currentObservation,
+            observation: {
+              ...currentObservation,
+              frameProvenance: {
+                schemaVersion: 1,
+                status: "unknown",
+                reasonCode: "PROVENANCE_DOCUMENT_ID_MISMATCH",
+                documentId: currentObservation.documentId,
+                beforeArm: {
+                  frameId: "f".repeat(128),
+                  loaderId: "l".repeat(128),
+                },
+                afterArm: {
+                  frameId: "f".repeat(128),
+                  loaderId: "l".repeat(128),
+                },
+                afterDrain: {
+                  frameId: "f".repeat(128),
+                  loaderId: "l".repeat(128),
+                },
+              },
+            },
           },
           null,
           2,
@@ -867,7 +976,12 @@ export async function finishTrustedStimulusObserver(
   }
 }
 
-export function writeTrustedStimulusSidecar({ directory, fixture, payload }) {
+export function writeTrustedStimulusSidecar({
+  directory,
+  fixture,
+  payload,
+  frameProvenance,
+}) {
   if (
     typeof fixture !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9_-]{0,100}$/.test(fixture)
@@ -887,6 +1001,23 @@ export function writeTrustedStimulusSidecar({ directory, fixture, payload }) {
     payload,
     payload?.documentId,
   );
+  const safeFrameProvenance = validateInputFrameProvenance(
+    frameProvenance ?? {
+      schemaVersion: 1,
+      status: "unknown",
+      reasonCode: "PROVENANCE_NOT_CAPTURED",
+      documentId: null,
+      beforeArm: null,
+      afterArm: null,
+      afterDrain: null,
+    },
+    observation.documentId,
+  );
+  observation.frameProvenance = safeFrameProvenance;
+  if (safeFrameProvenance.status !== "stable") {
+    observation.status = "censored";
+    observation.reasonCode = "INPUT_FRAME_PROVENANCE_UNAVAILABLE";
+  }
   const sidecar = {
     schemaVersion: 1,
     evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,

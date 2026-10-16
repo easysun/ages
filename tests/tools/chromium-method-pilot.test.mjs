@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   mkdirSync,
   mkdtempSync,
@@ -1868,6 +1869,71 @@ function maximumEventTimingEntries(target, count) {
   }));
 }
 
+function inputFrameTreeResponse(
+  frameId = "root-frame-1",
+  loaderId = "root-loader-1",
+) {
+  return {
+    frameTree: {
+      frame: {
+        id: frameId,
+        loaderId,
+        url: "https://private.invalid/story",
+        name: "private frame name",
+        securityOrigin: "https://private.invalid",
+      },
+    },
+  };
+}
+
+function createInputFrameProvenanceSession(responses = []) {
+  const session = new EventEmitter();
+  session.requests = [];
+  let frameTreeRequestCount = 0;
+  session.send = async (method, params) => {
+    session.requests.push({
+      method,
+      params,
+      lifecycleListenerCount: [
+        "Page.frameNavigated",
+        "Page.frameDetached",
+        "Runtime.executionContextsCleared",
+        "Inspector.detached",
+        "Inspector.targetCrashed",
+        "close",
+      ].reduce(
+        (total, eventName) => total + session.listenerCount(eventName),
+        0,
+      ),
+    });
+    if (method === "Page.enable" || method === "Runtime.enable") return {};
+    if (method !== "Page.getFrameTree")
+      throw new Error("unexpected CDP request");
+    const response = responses[frameTreeRequestCount] ?? responses.at(-1);
+    frameTreeRequestCount += 1;
+    return typeof response === "function" ? response() : response;
+  };
+  return session;
+}
+
+function requireInputFrameProvenanceTracker() {
+  assert.equal(typeof runner.createInputFrameProvenanceTracker, "function");
+  return runner.createInputFrameProvenanceTracker;
+}
+
+function validInputFrameProvenance(documentId = "d-0123456789abcdef01234567") {
+  const root = { frameId: "root-frame-1", loaderId: "root-loader-1" };
+  return {
+    schemaVersion: 1,
+    status: "stable",
+    reasonCode: null,
+    documentId,
+    beforeArm: root,
+    afterArm: root,
+    afterDrain: root,
+  };
+}
+
 test("observer initialization is serializable and excludes pre-arm DOM input", async () => {
   const observerModule = await import(
     "../../scripts/browser-stimulus-observer.mjs"
@@ -2127,7 +2193,18 @@ test("browser caps the exact serialized sidecar before transport", async () => {
       targets:
         "Target IDs are opaque per-document tokens; unknown, null, and removed targets remain uncertain.",
     },
-    observation: payload,
+    observation: {
+      ...payload,
+      frameProvenance: {
+        schemaVersion: 1,
+        status: "unknown",
+        reasonCode: "PROVENANCE_DOCUMENT_ID_MISMATCH",
+        documentId: payload.documentId,
+        beforeArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+        afterArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+        afterDrain: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+      },
+    },
   };
   assert.ok(
     Buffer.byteLength(`${JSON.stringify(sidecar, null, 2)}\n`) <=
@@ -2252,6 +2329,7 @@ test("observer sidecars use exclusive writes and return verified hashes", async 
     "../../scripts/browser-stimulus-observer.mjs"
   );
   const directory = mkdtempSync(join(tmpdir(), "ages-stimulus-sidecar-"));
+  const frameProvenance = validInputFrameProvenance();
   try {
     const oversized = validTrustedStimulusPayload({
       records: maximumEventTimingRecords("d-0123456789abcdef01234567", 512),
@@ -2265,6 +2343,7 @@ test("observer sidecars use exclusive writes and return verified hashes", async 
           directory,
           fixture: "x".repeat(101),
           payload: oversized,
+          frameProvenance,
         }),
       { message: "OBSERVATION_SIDECAR_BYTE_LIMIT_EXCEEDED" },
     );
@@ -2274,6 +2353,7 @@ test("observer sidecars use exclusive writes and return verified hashes", async 
       directory,
       fixture: "100-interactive-pan",
       payload,
+      frameProvenance,
     });
     const bytes = readFileSync(join(directory, written.fileName));
     assert.equal(written.byteCount, bytes.byteLength);
@@ -2295,9 +2375,407 @@ test("observer sidecars use exclusive writes and return verified hashes", async 
           directory,
           fixture: "100-interactive-pan",
           payload,
+          frameProvenance,
         }),
       { message: "OBSERVATION_SIDECAR_WRITE_FAILED" },
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("frame provenance binds three unchanged root snapshots to the observer document", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const provenance = await tracker.finish(documentId);
+
+  assert.deepEqual(provenance, {
+    schemaVersion: 1,
+    status: "stable",
+    reasonCode: null,
+    documentId,
+    beforeArm: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+    afterArm: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+    afterDrain: { frameId: "root-frame-1", loaderId: "root-loader-1" },
+  });
+  assert.deepEqual(
+    session.requests.map(({ method }) => method),
+    [
+      "Page.enable",
+      "Runtime.enable",
+      "Page.getFrameTree",
+      "Page.getFrameTree",
+      "Page.getFrameTree",
+    ],
+  );
+  assert.ok(
+    session.requests
+      .filter(({ method }) => method === "Page.getFrameTree")
+      .every(({ lifecycleListenerCount }) => lifecycleListenerCount === 6),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(provenance),
+    /private\.invalid|private frame/,
+  );
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Page.frameDetached"), 0);
+});
+
+test("disabled frame provenance adds no CDP requests or lifecycle listeners", () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession();
+
+  assert.equal(createTracker(session, { enabled: false }), null);
+  assert.deepEqual(session.requests, []);
+  assert.equal(session.eventNames().length, 0);
+});
+
+test("only stable frame provenance permits trace measurement", () => {
+  assert.equal(
+    typeof runner.inputFrameProvenanceMeasurementFailure,
+    "function",
+  );
+  const measurementFailure = runner.inputFrameProvenanceMeasurementFailure;
+  assert.equal(measurementFailure(validInputFrameProvenance()), null);
+  assert.equal(
+    measurementFailure({ ...validInputFrameProvenance(), status: "invalid" }),
+    "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+  );
+  assert.equal(
+    measurementFailure({ ...validInputFrameProvenance(), status: "unknown" }),
+    "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+  );
+});
+
+test("frame provenance permanently invalidates every root lifecycle loss", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const documentId = "d-0123456789abcdef01234567";
+  const cases = [
+    [
+      "Page.frameNavigated",
+      { frame: { id: "root-frame-1", loaderId: "root-loader-2" } },
+      "ROOT_DOCUMENT_NAVIGATED",
+    ],
+    [
+      "Page.frameDetached",
+      { frameId: "root-frame-1", reason: "remove" },
+      "ROOT_FRAME_DETACHED",
+    ],
+    ["Runtime.executionContextsCleared", {}, "EXECUTION_CONTEXTS_CLEARED"],
+    ["Inspector.detached", { reason: "target_closed" }, "CDP_SESSION_LOST"],
+    ["Inspector.targetCrashed", {}, "TARGET_CRASHED"],
+    ["close", undefined, "CDP_SESSION_LOST"],
+  ];
+
+  for (const [eventName, eventPayload, reasonCode] of cases) {
+    const session = createInputFrameProvenanceSession([
+      inputFrameTreeResponse(),
+      inputFrameTreeResponse(),
+      inputFrameTreeResponse(),
+    ]);
+    const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+    await tracker.captureBeforeArm();
+    await tracker.captureAfterArm(documentId);
+    session.emit(eventName, eventPayload);
+    const provenance = await tracker.finish(documentId);
+
+    assert.equal(provenance.status, "invalid", eventName);
+    assert.equal(provenance.reasonCode, reasonCode, eventName);
+    assert.equal(session.listenerCount(eventName), 0, eventName);
+  }
+});
+
+test("root navigation followed by restoration stays invalid despite matching final IDs", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  session.emit("Page.frameNavigated", {
+    frame: { id: "root-frame-1", loaderId: "temporary-loader" },
+  });
+  session.emit("Page.frameNavigated", {
+    frame: { id: "root-frame-1", loaderId: "root-loader-1" },
+  });
+  const provenance = await tracker.finish(documentId);
+
+  assert.deepEqual(provenance.afterDrain, {
+    frameId: "root-frame-1",
+    loaderId: "root-loader-1",
+  });
+  assert.equal(provenance.status, "invalid");
+  assert.equal(provenance.reasonCode, "ROOT_DOCUMENT_NAVIGATED");
+});
+
+test("frame provenance invalidates changed root frame or loader snapshots", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const documentId = "d-0123456789abcdef01234567";
+  const cases = [
+    [
+      [
+        inputFrameTreeResponse("root-frame-1", "root-loader-1"),
+        inputFrameTreeResponse("root-frame-2", "root-loader-2"),
+        inputFrameTreeResponse("root-frame-2", "root-loader-2"),
+      ],
+      "ROOT_FRAME_CHANGED",
+    ],
+    [
+      [
+        inputFrameTreeResponse("root-frame-1", "root-loader-1"),
+        inputFrameTreeResponse("root-frame-1", "root-loader-2"),
+        inputFrameTreeResponse("root-frame-1", "root-loader-2"),
+      ],
+      "ROOT_DOCUMENT_CHANGED",
+    ],
+  ];
+
+  for (const [responses, reasonCode] of cases) {
+    const session = createInputFrameProvenanceSession(responses);
+    const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+    await tracker.captureBeforeArm();
+    await tracker.captureAfterArm(documentId);
+    const provenance = await tracker.finish(documentId);
+
+    assert.equal(provenance.status, "invalid");
+    assert.equal(provenance.reasonCode, reasonCode);
+    assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  }
+});
+
+test("root lifecycle events before the first snapshot conservatively invalidate ownership", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 25 });
+  session.emit("Page.frameDetached", { frameId: "unknown-root-or-child" });
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm("d-0123456789abcdef01234567");
+  const provenance = await tracker.finish("d-0123456789abcdef01234567");
+
+  assert.equal(provenance.status, "invalid");
+  assert.equal(provenance.reasonCode, "ROOT_EVENT_BEFORE_BASELINE");
+});
+
+test("frame provenance marks malformed snapshots unknown and rejects private or unknown fields", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const malformed = createInputFrameProvenanceSession([
+    {
+      frameTree: {
+        frame: {
+          id: "root-frame-1",
+          url: "https://private.invalid/secret-path",
+          securityOrigin: "https://private.invalid",
+        },
+      },
+    },
+    inputFrameTreeResponse(),
+    inputFrameTreeResponse(),
+  ]);
+  const tracker = createTracker(malformed, { enabled: true, timeoutMs: 25 });
+  const documentId = "d-0123456789abcdef01234567";
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const result = await tracker.finish(documentId);
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.reasonCode, "PROVENANCE_MALFORMED_RESPONSE");
+  assert.equal(result.beforeArm, null);
+  assert.doesNotMatch(JSON.stringify(result), /private\.invalid|secret-path/);
+  assert.deepEqual(
+    observerModule.validateInputFrameProvenance(
+      validInputFrameProvenance(documentId),
+      documentId,
+    ),
+    validInputFrameProvenance(documentId),
+  );
+  assert.throws(
+    () =>
+      observerModule.validateInputFrameProvenance(
+        { ...validInputFrameProvenance(documentId), privateValue: "secret" },
+        documentId,
+      ),
+    { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+  );
+  assert.throws(
+    () =>
+      observerModule.validateInputFrameProvenance(
+        {
+          ...validInputFrameProvenance(documentId),
+          beforeArm: { frameId: "f".repeat(129), loaderId: "root-loader-1" },
+        },
+        documentId,
+      ),
+    { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+  );
+});
+
+test("frame provenance snapshot timeout remains bounded and removes listeners", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([
+    () => new Promise(() => {}),
+    () => new Promise(() => {}),
+    () => new Promise(() => {}),
+  ]);
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 10 });
+  const documentId = "d-0123456789abcdef01234567";
+  const startedAt = Date.now();
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm(documentId);
+  const provenance = await tracker.finish(documentId);
+
+  assert.equal(provenance.status, "unknown");
+  assert.equal(provenance.reasonCode, "PROVENANCE_TIMEOUT");
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Page.frameDetached"), 0);
+  assert.equal(session.listenerCount("Runtime.executionContextsCleared"), 0);
+  assert.equal(session.listenerCount("Inspector.detached"), 0);
+  assert.equal(session.listenerCount("Inspector.targetCrashed"), 0);
+  assert.equal(session.listenerCount("close"), 0);
+});
+
+test("frame provenance domain enable timeout prevents untracked snapshots", async () => {
+  const createTracker = requireInputFrameProvenanceTracker();
+  const session = createInputFrameProvenanceSession([inputFrameTreeResponse()]);
+  session.send = async (method) => {
+    session.requests.push({ method });
+    if (method === "Page.enable") return new Promise(() => {});
+    if (method === "Runtime.enable") return {};
+    if (method === "Page.getFrameTree") return inputFrameTreeResponse();
+    throw new Error("unexpected CDP request");
+  };
+  const tracker = createTracker(session, { enabled: true, timeoutMs: 10 });
+  const startedAt = Date.now();
+  await tracker.captureBeforeArm();
+  await tracker.captureAfterArm("d-0123456789abcdef01234567");
+  const provenance = await tracker.finish("d-0123456789abcdef01234567");
+
+  assert.equal(provenance.status, "unknown");
+  assert.equal(provenance.reasonCode, "PROVENANCE_TIMEOUT");
+  assert.ok(Date.now() - startedAt < 250);
+  assert.deepEqual(
+    session.requests.map(({ method }) => method),
+    ["Page.enable", "Runtime.enable"],
+  );
+  assert.equal(session.listenerCount("Page.frameNavigated"), 0);
+  assert.equal(session.listenerCount("Runtime.executionContextsCleared"), 0);
+});
+
+test("frame provenance sidecars validate closed metadata and enforce the byte cap", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-frame-provenance-"));
+  const documentId = "d-0123456789abcdef01234567";
+  const frameProvenance = {
+    ...validInputFrameProvenance(documentId),
+    beforeArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+    afterArm: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+    afterDrain: { frameId: "f".repeat(128), loaderId: "l".repeat(128) },
+  };
+  try {
+    const written = observerModule.writeTrustedStimulusSidecar({
+      directory,
+      fixture: "100-interactive-pan",
+      payload: validTrustedStimulusPayload({ documentId }),
+      frameProvenance,
+    });
+    const sidecar = JSON.parse(
+      readFileSync(join(directory, written.fileName), "utf8"),
+    );
+    assert.deepEqual(sidecar.observation.frameProvenance, frameProvenance);
+    assert.ok(
+      written.byteCount <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
+    );
+    assert.throws(
+      () =>
+        observerModule.writeTrustedStimulusSidecar({
+          directory,
+          fixture: "100-interactive-zoom",
+          payload: validTrustedStimulusPayload({ documentId }),
+          frameProvenance: {
+            ...frameProvenance,
+            url: "https://private.invalid",
+          },
+        }),
+      { message: "INPUT_FRAME_PROVENANCE_INVALID" },
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("frame provenance failures censor observations while preserving raw evidence", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-provenance-censored-"));
+  const documentId = "d-0123456789abcdef01234567";
+  const records = maximumEventTimingRecords(documentId, 1);
+  const failures = [
+    {
+      status: "invalid",
+      reasonCode: "ROOT_DOCUMENT_NAVIGATED",
+    },
+    {
+      status: "unknown",
+      reasonCode: "PROVENANCE_TIMEOUT",
+      beforeArm: null,
+      afterArm: null,
+      afterDrain: null,
+    },
+  ];
+  try {
+    for (const [index, failure] of failures.entries()) {
+      const frameProvenance = {
+        ...validInputFrameProvenance(documentId),
+        ...failure,
+      };
+      const payload = validTrustedStimulusPayload({ documentId, records });
+      const summary = observerModule.writeTrustedStimulusSidecar({
+        directory,
+        fixture: `100-interactive-provenance-${index}`,
+        payload,
+        frameProvenance,
+      });
+      const sidecar = JSON.parse(
+        readFileSync(join(directory, summary.fileName), "utf8"),
+      );
+
+      assert.equal(summary.status, "censored");
+      assert.equal(summary.reasonCode, "INPUT_FRAME_PROVENANCE_UNAVAILABLE");
+      assert.equal(summary.apiStatus, "thresholded");
+      assert.equal(summary.recordCount, records.length);
+      assert.equal(sidecar.observation.status, "censored");
+      assert.equal(
+        sidecar.observation.reasonCode,
+        "INPUT_FRAME_PROVENANCE_UNAVAILABLE",
+      );
+      assert.equal(sidecar.observation.apiStatus, "thresholded");
+      assert.deepEqual(sidecar.observation.apiMetadata, payload.apiMetadata);
+      assert.deepEqual(sidecar.observation.records, records);
+      assert.deepEqual(sidecar.observation.frameProvenance, frameProvenance);
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

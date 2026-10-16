@@ -190,6 +190,256 @@ const CLOUD_AUTH_KEYS = [
 const isRecord = (value) =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+const INPUT_FRAME_PROVENANCE_DOCUMENT_ID = /^d-[a-f0-9]{24}$/;
+const INPUT_FRAME_PROVENANCE_OPAQUE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+const INPUT_FRAME_PROVENANCE_TIMEOUT_MS = 1000;
+
+export function createInputFrameProvenanceTracker(
+  session,
+  { enabled = true, timeoutMs = INPUT_FRAME_PROVENANCE_TIMEOUT_MS } = {},
+) {
+  if (!enabled) return null;
+
+  const boundedTimeout =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.min(INPUT_FRAME_PROVENANCE_TIMEOUT_MS, Math.floor(timeoutMs))
+      : INPUT_FRAME_PROVENANCE_TIMEOUT_MS;
+  const listeners = [];
+  let beforeArm = null;
+  let afterArm = null;
+  let afterDrain = null;
+  let beforeArmTaken = false;
+  let afterArmTaken = false;
+  let documentId = null;
+  let rootFrameId = null;
+  let rootLoaderId = null;
+  let invalidReasonCode = null;
+  let unknownReasonCode = null;
+  let domainsEnabled = false;
+  let closed = false;
+  let finalResult = null;
+
+  const invalidate = (reasonCode) => {
+    invalidReasonCode ??= reasonCode;
+  };
+  const markUnknown = (reasonCode) => {
+    unknownReasonCode ??= reasonCode;
+  };
+  const onFrameNavigated = (payload) => {
+    const frame = payload?.frame;
+    if (
+      !isRecord(payload) ||
+      !isRecord(frame) ||
+      typeof frame.id !== "string" ||
+      !INPUT_FRAME_PROVENANCE_OPAQUE_ID.test(frame.id) ||
+      (Object.hasOwn(frame, "parentId") && typeof frame.parentId !== "string")
+    ) {
+      markUnknown("PROVENANCE_MALFORMED_RESPONSE");
+      return;
+    }
+    if (typeof frame.parentId === "string" && frame.parentId.length > 0) return;
+    if (rootFrameId === null) {
+      invalidate("ROOT_EVENT_BEFORE_BASELINE");
+    } else if (frame.id !== rootFrameId) {
+      invalidate("ROOT_FRAME_CHANGED");
+    } else {
+      invalidate("ROOT_DOCUMENT_NAVIGATED");
+    }
+  };
+  const onFrameDetached = (payload) => {
+    if (
+      !isRecord(payload) ||
+      typeof payload.frameId !== "string" ||
+      !INPUT_FRAME_PROVENANCE_OPAQUE_ID.test(payload.frameId)
+    ) {
+      markUnknown("PROVENANCE_MALFORMED_RESPONSE");
+      return;
+    }
+    if (rootFrameId === null) {
+      invalidate("ROOT_EVENT_BEFORE_BASELINE");
+    } else if (payload.frameId === rootFrameId) {
+      invalidate("ROOT_FRAME_DETACHED");
+    }
+  };
+  const bindings = [
+    ["Page.frameNavigated", onFrameNavigated],
+    ["Page.frameDetached", onFrameDetached],
+    [
+      "Runtime.executionContextsCleared",
+      () => invalidate("EXECUTION_CONTEXTS_CLEARED"),
+    ],
+    ["Inspector.detached", () => invalidate("CDP_SESSION_LOST")],
+    ["Inspector.targetCrashed", () => invalidate("TARGET_CRASHED")],
+    ["close", () => invalidate("CDP_SESSION_LOST")],
+  ];
+
+  const removeListeners = () => {
+    if (closed) return;
+    closed = true;
+    for (const [eventName, listener] of listeners) {
+      try {
+        if (typeof session?.off === "function")
+          session.off(eventName, listener);
+        else session?.removeListener?.(eventName, listener);
+      } catch {}
+    }
+    listeners.length = 0;
+  };
+
+  let listenersInstalled = false;
+  if (typeof session?.on !== "function") {
+    markUnknown("PROVENANCE_ACQUISITION_FAILED");
+    closed = true;
+  } else {
+    try {
+      for (const [eventName, listener] of bindings) {
+        session.on(eventName, listener);
+        listeners.push([eventName, listener]);
+      }
+      listenersInstalled = true;
+    } catch {
+      markUnknown("PROVENANCE_ACQUISITION_FAILED");
+      removeListeners();
+    }
+  }
+
+  const domainsReady = (async () => {
+    if (!listenersInstalled || closed || typeof session?.send !== "function") {
+      markUnknown("PROVENANCE_ACQUISITION_FAILED");
+      return false;
+    }
+    try {
+      await withTimeout(
+        Promise.all([
+          session.send("Page.enable"),
+          session.send("Runtime.enable"),
+        ]),
+        boundedTimeout,
+        "PROVENANCE_TIMEOUT",
+      );
+      domainsEnabled = true;
+      return true;
+    } catch (error) {
+      markUnknown(
+        error?.message === "PROVENANCE_TIMEOUT"
+          ? "PROVENANCE_TIMEOUT"
+          : "PROVENANCE_ACQUISITION_FAILED",
+      );
+      return false;
+    }
+  })();
+
+  const captureSnapshot = async () => {
+    if (closed || !(await domainsReady) || !domainsEnabled) {
+      markUnknown("PROVENANCE_ACQUISITION_FAILED");
+      return null;
+    }
+    try {
+      const response = await withTimeout(
+        session.send("Page.getFrameTree"),
+        boundedTimeout,
+        "PROVENANCE_TIMEOUT",
+      );
+      const frame = response?.frameTree?.frame;
+      if (
+        !isRecord(response) ||
+        !isRecord(response.frameTree) ||
+        !isRecord(frame) ||
+        typeof frame.id !== "string" ||
+        !INPUT_FRAME_PROVENANCE_OPAQUE_ID.test(frame.id) ||
+        typeof frame.loaderId !== "string" ||
+        !INPUT_FRAME_PROVENANCE_OPAQUE_ID.test(frame.loaderId)
+      ) {
+        markUnknown("PROVENANCE_MALFORMED_RESPONSE");
+        return null;
+      }
+      const snapshot = { frameId: frame.id, loaderId: frame.loaderId };
+      if (rootFrameId === null) {
+        rootFrameId = snapshot.frameId;
+        rootLoaderId = snapshot.loaderId;
+      } else if (snapshot.frameId !== rootFrameId) {
+        invalidate("ROOT_FRAME_CHANGED");
+      } else if (snapshot.loaderId !== rootLoaderId) {
+        invalidate("ROOT_DOCUMENT_CHANGED");
+      }
+      return snapshot;
+    } catch (error) {
+      markUnknown(
+        error?.message === "PROVENANCE_TIMEOUT"
+          ? "PROVENANCE_TIMEOUT"
+          : "PROVENANCE_ACQUISITION_FAILED",
+      );
+      return null;
+    }
+  };
+
+  const bindDocumentId = (candidate) => {
+    if (
+      typeof candidate !== "string" ||
+      !INPUT_FRAME_PROVENANCE_DOCUMENT_ID.test(candidate)
+    ) {
+      markUnknown("PROVENANCE_NOT_ARMED");
+      return;
+    }
+    if (documentId === null) documentId = candidate;
+    else if (documentId !== candidate)
+      invalidate("PROVENANCE_DOCUMENT_ID_MISMATCH");
+  };
+
+  return {
+    async captureBeforeArm() {
+      if (beforeArmTaken || finalResult) {
+        markUnknown("PROVENANCE_ACQUISITION_FAILED");
+        return;
+      }
+      beforeArmTaken = true;
+      beforeArm = await captureSnapshot();
+    },
+    async captureAfterArm(observerDocumentId) {
+      if (afterArmTaken || finalResult) {
+        markUnknown("PROVENANCE_ACQUISITION_FAILED");
+        return;
+      }
+      afterArmTaken = true;
+      bindDocumentId(observerDocumentId);
+      afterArm = await captureSnapshot();
+    },
+    async finish(observerDocumentId) {
+      if (finalResult) return finalResult;
+      if (typeof observerDocumentId === "string")
+        bindDocumentId(observerDocumentId);
+      else if (documentId === null) markUnknown("PROVENANCE_NOT_ARMED");
+      if (!beforeArmTaken || !afterArmTaken)
+        markUnknown("PROVENANCE_NOT_CAPTURED");
+      afterDrain = await captureSnapshot();
+      if (beforeArm === null || afterArm === null || afterDrain === null)
+        markUnknown("PROVENANCE_NOT_CAPTURED");
+      const status = invalidReasonCode
+        ? "invalid"
+        : unknownReasonCode
+          ? "unknown"
+          : "stable";
+      finalResult = {
+        schemaVersion: 1,
+        status,
+        reasonCode: invalidReasonCode ?? unknownReasonCode ?? null,
+        documentId,
+        beforeArm,
+        afterArm,
+        afterDrain,
+      };
+      removeListeners();
+      return finalResult;
+    },
+  };
+}
+
+export function inputFrameProvenanceMeasurementFailure(provenance) {
+  return provenance?.status === "stable"
+    ? null
+    : "INPUT_FRAME_PROVENANCE_UNAVAILABLE";
+}
+
 function safeDirectory(path) {
   const info = lstatSync(path);
   if (!info.isDirectory() || info.isSymbolicLink()) {
@@ -2540,6 +2790,21 @@ async function captureCase(
   let observationDocumentId = null;
   let stimulusObservation = null;
   let observationArtifact = null;
+  let frameProvenanceTracker = null;
+  let frameProvenance = null;
+
+  const finishFrameProvenance = async () => {
+    if (!observeInputs || frameProvenance) return frameProvenance;
+    if (!frameProvenanceTracker) {
+      actionReason ??= "INPUT_FRAME_PROVENANCE_UNAVAILABLE";
+      return null;
+    }
+    frameProvenance = await frameProvenanceTracker.finish(
+      observationDocumentId,
+    );
+    actionReason ??= inputFrameProvenanceMeasurementFailure(frameProvenance);
+    return frameProvenance;
+  };
 
   const saveStimulusObservation = () => {
     if (!observeInputs) return null;
@@ -2552,6 +2817,7 @@ async function captureCase(
         directory: runDirectory,
         fixture: `${item.workload}-${item.action}`,
         payload,
+        frameProvenance,
       });
     } catch {
       observationArtifact = {
@@ -2640,6 +2906,9 @@ async function captureCase(
       }
     }
     session = await context.newCDPSession(page);
+    frameProvenanceTracker = createInputFrameProvenanceTracker(session, {
+      enabled: observeInputs,
+    });
     const names = markerNames(item);
     captureStartedAtUtc = new Date().toISOString();
 
@@ -2649,19 +2918,25 @@ async function captureCase(
       categories,
       async () => {
         if (observeInputs) {
+          await frameProvenanceTracker?.captureBeforeArm();
           try {
             const armed = await armTrustedStimulusObserver(page);
             if (armed.status === "armed") {
               observationDocumentId = armed.documentId;
+              await frameProvenanceTracker?.captureAfterArm(
+                observationDocumentId,
+              );
             } else {
               stimulusObservation = createUnavailableTrustedStimulusObservation(
                 "OBSERVATION_DRAIN_FAILED",
               );
+              await frameProvenanceTracker?.captureAfterArm(null);
             }
           } catch {
             stimulusObservation = createUnavailableTrustedStimulusObservation(
               "OBSERVATION_DRAIN_FAILED",
             );
+            await frameProvenanceTracker?.captureAfterArm(null);
           }
         }
         try {
@@ -2713,16 +2988,24 @@ async function captureCase(
           actionReason = outcomeReason(error, item.action);
           throw error;
         } finally {
-          if (observeInputs && observationDocumentId) {
-            stimulusObservation = await finishTrustedStimulusObserver(
-              page,
-              observationDocumentId,
-            );
-            if (
-              stimulusObservation.reasonCode === "NAVIGATION_OBSERVATION_LOST"
-            ) {
-              actionReason = "NAVIGATION_OBSERVATION_LOST";
+          if (observeInputs) {
+            if (observationDocumentId) {
+              stimulusObservation = await finishTrustedStimulusObserver(
+                page,
+                observationDocumentId,
+              );
+              if (
+                stimulusObservation.reasonCode === "NAVIGATION_OBSERVATION_LOST"
+              ) {
+                actionReason = "NAVIGATION_OBSERVATION_LOST";
+              }
+            } else {
+              stimulusObservation ??=
+                createUnavailableTrustedStimulusObservation(
+                  "OBSERVATION_NOT_ARMED",
+                );
             }
+            await finishFrameProvenance();
           }
         }
         return actionOutcome;
@@ -2730,6 +3013,7 @@ async function captureCase(
       actionDiagnostic,
     );
 
+    await finishFrameProvenance();
     const safeStimulusObservation = saveStimulusObservation();
     const safeActionDiagnostic = serializeActionDiagnostic(actionDiagnostic);
 
@@ -2863,6 +3147,7 @@ async function captureCase(
       segment: null,
     };
   } catch {
+    await finishFrameProvenance();
     const code = actionReason ?? "CASE_SETUP_FAILED";
     const safeStimulusObservation = saveStimulusObservation();
     return {
@@ -2894,6 +3179,7 @@ async function captureCase(
       segment: null,
     };
   } finally {
+    await finishFrameProvenance();
     if (observeInputs) await closeTrustedStimulusObserver(page);
     try {
       if (setup?.cleanup)
