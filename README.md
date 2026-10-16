@@ -92,6 +92,8 @@ node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run 
 
 This opt-in writes diagnostic sidecars under `.superpowers/sdd/trusted-stimulus-discovery/runs/`. The events come from synthetic Playwright actions; DOM `isTrusted` only identifies browser-dispatched events and does not prove human input. Input-to-next-paint remains unproven.
 
+Offline trace analysis verifies the manifest-declared trace and sidecar bytes, then reports bounded, sanitized discrete-input diagnostics. Formal action samples and input-to-next-paint measurements remain unavailable.
+
 Local upload browser scenarios simulate only the signed R2 transport: Playwright intercepts the synthetic S3 hostname, checks the PUT headers and binary body, seeds that object into local R2, and calls the real completion API. These are **simulated upload transport** checks, not evidence of cloud signature enforcement or CORS. Actual Google sign-in and live browser PUT remain the existing credentialed cloud smoke gates.
 
 ## Direct media upload
