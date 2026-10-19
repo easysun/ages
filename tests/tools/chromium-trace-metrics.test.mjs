@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import {
+  RETAINED_NODE_EVIDENCE_POLICY,
+  RETAINED_NODE_RECORD_BYTE_LIMIT,
+} from "../../scripts/browser-stimulus-observer.mjs";
 import {
   analyzeTrace,
   nearestRank,
@@ -9,6 +16,7 @@ import {
 } from "../../scripts/chromium-trace-metrics.mjs";
 
 const fixtures = new URL("../fixtures/chromium-traces/", import.meta.url);
+const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 function readFixture(name) {
   return readFileSync(new URL(name, fixtures), "utf8");
@@ -241,6 +249,64 @@ function assertUnsupportedBrave15580(crosswalk) {
 
 const observedSourceHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
+const currentRetainedCollectorSourceHash =
+  "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
+
+test("pins current collector lifecycle hashes to explicit producer inputs", () => {
+  const collectorSource = readFileSync(
+    resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
+    "utf8",
+  );
+  const extrasDeclaration = collectorSource.match(
+    /const extras = \[([\s\S]*?)\];/,
+  );
+  assert.ok(extrasDeclaration, "collector must declare explicit hash inputs");
+  const extras = Array.from(
+    extrasDeclaration[1].matchAll(/"([^"]+)"/g),
+    ([, path]) => path,
+  );
+  assert.ok(extras.includes("scripts/retained-input-node-evidence.mjs"));
+  assert.ok(!extras.includes("scripts/chromium-trace-metrics.mjs"));
+  assert.ok(!extras.includes("scripts/analyze-chromium-traces.mjs"));
+
+  const tracked = execFileSync("git", ["ls-files", "-z", "src", "migrations"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
+  const producerInputs = [...new Set([...tracked, ...extras])].sort();
+  assert.ok(
+    producerInputs.includes("scripts/retained-input-node-evidence.mjs"),
+  );
+  assert.ok(!producerInputs.includes("scripts/chromium-trace-metrics.mjs"));
+  assert.ok(!producerInputs.includes("scripts/analyze-chromium-traces.mjs"));
+
+  const sourceHash = createHash("sha256");
+  for (const path of producerInputs) {
+    sourceHash.update(path);
+    sourceHash.update("\0");
+    sourceHash.update(readFileSync(resolve(repoRoot, path)));
+  }
+  const actualHash = sourceHash.digest("hex");
+  const metricsSource = readFileSync(
+    resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
+    "utf8",
+  );
+  const lifecycleHash = (entryName) => {
+    const entry = metricsSource.match(
+      new RegExp(`${entryName}: Object\\.freeze\\(\\{([\\s\\S]*?)\\n  \\}\\)`),
+    );
+    assert.ok(entry, `missing ${entryName} lifecycle entry`);
+    const hash = entry[1].match(/sha256: "([a-f0-9]{64})"/);
+    assert.ok(hash, `missing SHA-256 in ${entryName}`);
+    return hash[1];
+  };
+
+  assert.equal(lifecycleHash("currentVersionOneRetentionDisabled"), actualHash);
+  assert.equal(lifecycleHash("currentVersionTwoRetentionEnabled"), actualHash);
+});
+
 const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
 const observedTargetToken = "t-bbbbbbbbbbbbbbbbbbbbbbbb";
 const observedFrameId = "frame-A";
@@ -413,6 +479,153 @@ function analyzeObservedTrace({
       capture: observerEvidence.capture,
     },
   ).observedDiscreteInputs;
+}
+
+function validRetainedNodeEvidence(overrides = {}) {
+  const snapshot = {
+    documentId: observedDocumentId,
+    frameId: observedFrameId,
+    loaderId: "loader-A",
+  };
+  return {
+    status: "complete",
+    reasonCode: null,
+    mappings: [{ targetToken: observedTargetToken, backendNodeId: 311 }],
+    executionContext: {
+      uniqueId: "context-A",
+      frameId: observedFrameId,
+      isDefault: true,
+    },
+    documentId: observedDocumentId,
+    snapshots: {
+      beforeArm: { ...snapshot },
+      afterArm: { ...snapshot },
+      afterDrain: { ...snapshot },
+      afterMapping: { ...snapshot },
+      afterCleanup: { ...snapshot },
+    },
+    protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    lifecycle: {
+      coverage: "complete",
+      lossReasonCode: null,
+      overflow: false,
+    },
+    scope: {
+      rootIsSelectedDocument: true,
+      pointerCaptureUncertain: false,
+      shadowTreeUncertain: false,
+    },
+    cleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+    ...overrides,
+  };
+}
+
+function makeVersionTwoObserverEvidence({
+  records = [observedApiEntry(), observedDomEntry()],
+  retainedOverrides = {},
+  observationOverrides = {},
+  sidecarOverrides = {},
+  declarationOverrides = {},
+  traceRecordOverrides = {},
+  sourceHashSha256 = currentRetainedCollectorSourceHash,
+  traceDataLossOccurred = false,
+} = {}) {
+  const base = makeObserverEvidence({
+    records,
+    observationOverrides,
+    traceRecordOverrides,
+    sourceHashSha256,
+    traceDataLossOccurred,
+  });
+  const observation = {
+    ...base.sidecar.observation,
+    schemaVersion: 2,
+    retainedNodeEvidence: validRetainedNodeEvidence(retainedOverrides),
+  };
+  const sidecar = {
+    ...base.sidecar,
+    schemaVersion: 2,
+    observation,
+    ...sidecarOverrides,
+  };
+  const declaration = {
+    ...base.declaration,
+    schemaVersion: 2,
+    recordByteLimit: RETAINED_NODE_RECORD_BYTE_LIMIT,
+    retainedNodeEvidence: {
+      enabled: true,
+      maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+      mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    },
+    ...declarationOverrides,
+  };
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar)}\n`);
+  const caseRecord = {
+    ...base.capture.caseRecord,
+    trustedStimulusObservation: {
+      ...base.capture.caseRecord.trustedStimulusObservation,
+      byteCount: sidecarBytes.byteLength,
+      sha256: createHash("sha256").update(sidecarBytes).digest("hex"),
+    },
+  };
+  return {
+    declaration,
+    sidecar,
+    capture: { sourceHashSha256, caseRecord },
+    traceRecord: base.traceRecord,
+  };
+}
+
+function makeVersionTwoTrace({
+  trace = makeBrave155Trace(),
+  frame = observedFrameId,
+  processId = 101,
+  metadataEvents = [],
+  initialFrames,
+} = {}) {
+  const frames = initialFrames ?? [{ frame, processId }];
+  trace.traceEvents.unshift({
+    name: "TracingStartedInBrowser",
+    cat: "disabled-by-default-devtools.timeline",
+    ph: "I",
+    pid: 1,
+    tid: 1,
+    ts: 0n,
+    args: { data: { persistentIds: true, frames } },
+  });
+  trace.traceEvents.push(...metadataEvents);
+  return trace;
+}
+
+function analyzeVersionTwoTrace({
+  evidence = makeVersionTwoObserverEvidence(),
+  trace = makeVersionTwoTrace(),
+} = {}) {
+  return analyzeTrace(
+    trace,
+    evidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  ).observedDiscreteInputs;
+}
+
+function assertVersionTwoUnavailable(result) {
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.counts.accepted, 0);
+  assert.equal(result.counts.rejected, result.counts.apiEntries);
+  assert.equal(result.formalActionStatus, "unavailable");
+  assert.deepEqual(result.formalActionSamples, []);
 }
 
 test("accepts the complete installed Brave 155 tuple as a separate diagnostic profile", () => {
@@ -3232,4 +3445,434 @@ test("reports no interval series for absent segments or lossy traces", () => {
   assert.ok(
     lossy.frameIntervals.reasonCodes.includes("TRACE_DATA_LOSS_OCCURRED"),
   );
+});
+
+test("associates version-two API entries through an exact DOM and retained-node mapping", () => {
+  for (const apiTarget of [
+    { targetToken: observedTargetToken },
+    { targetToken: null, targetLabel: null, targetResolution: "unknown" },
+  ]) {
+    const evidence = makeVersionTwoObserverEvidence({
+      records: [observedApiEntry(apiTarget), observedDomEntry()],
+    });
+    const result = analyzeVersionTwoTrace({ evidence });
+
+    assert.deepEqual(result, {
+      status: "diagnostic-only",
+      counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+      entries: [
+        {
+          dispatchPhase: "primary",
+          actionLabel: "open-primary",
+          eventType: "click",
+          durationUs: 8,
+          processingEndToPresentationUs: 3,
+          status: "diagnostic-only",
+        },
+      ],
+      rejectionCounts: [],
+      formalActionStatus: "unavailable",
+      formalActionSamples: [],
+    });
+    assert.equal(
+      evidence.sidecar.observation.records[0].targetToken,
+      apiTarget.targetToken,
+    );
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /d-aaaaaaaa|t-bbbbbbbb|frame-A|loader-A|context-A|nodeId|backendNodeId|processId|startTime|timeStamp/,
+    );
+  }
+});
+
+test("requires exact version-two DOM identity and exact retained backend-node equality", () => {
+  const scenarios = [
+    {
+      name: "DOM timestamp mismatch",
+      records: [observedApiEntry(), observedDomEntry({ timeStamp: 10.001 })],
+      code: "DOM_COUNTERPART_UNAVAILABLE",
+    },
+    {
+      name: "DOM type mismatch",
+      records: [observedApiEntry(), observedDomEntry({ type: "pointerdown" })],
+      code: "DOM_COUNTERPART_UNAVAILABLE",
+    },
+    {
+      name: "multiple exact DOM counterparts",
+      records: [
+        observedApiEntry(),
+        observedDomEntry(),
+        observedDomEntry({ targetToken: "t-cccccccccccccccccccccccc" }),
+      ],
+      code: "DOM_COUNTERPART_AMBIGUOUS",
+    },
+    {
+      name: "non-null API target differs from the actual DOM target",
+      records: [
+        observedApiEntry({ targetToken: "t-cccccccccccccccccccccccc" }),
+        observedDomEntry(),
+      ],
+      code: "TARGET_IDENTITY_MISMATCH",
+    },
+    {
+      name: "retained backend node differs from the legacy node",
+      records: [observedApiEntry(), observedDomEntry()],
+      retainedOverrides: {
+        mappings: [{ targetToken: observedTargetToken, backendNodeId: 312 }],
+      },
+      code: "RETAINED_NODE_MAPPING_MISMATCH",
+    },
+    {
+      name: "duplicate retained mappings are invalid",
+      records: [observedApiEntry(), observedDomEntry()],
+      retainedOverrides: {
+        mappings: [
+          { targetToken: observedTargetToken, backendNodeId: 311 },
+          { targetToken: observedTargetToken, backendNodeId: 312 },
+        ],
+      },
+      code: "OBSERVER_EVIDENCE_INVALID",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const evidence = makeVersionTwoObserverEvidence({
+      records: scenario.records,
+      retainedOverrides: scenario.retainedOverrides,
+    });
+    const result = analyzeVersionTwoTrace({ evidence });
+    assertVersionTwoUnavailable(result);
+    assert.deepEqual(
+      result.rejectionCounts,
+      [{ code: scenario.code, count: 1 }],
+      scenario.name,
+    );
+  }
+
+  const wrongDocument = makeVersionTwoObserverEvidence({
+    records: [
+      observedApiEntry(),
+      observedDomEntry({ documentId: "d-cccccccccccccccccccccccc" }),
+    ],
+  });
+  const wrongDocumentResult = analyzeVersionTwoTrace({
+    evidence: wrongDocument,
+  });
+  assertVersionTwoUnavailable(wrongDocumentResult);
+  assert.deepEqual(wrongDocumentResult.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+});
+
+test("counts version-two duplicate and malformed contenders before target or action filtering", () => {
+  const duplicateApi = makeVersionTwoObserverEvidence({
+    records: [
+      observedApiEntry(),
+      observedApiEntry({ targetToken: "t-cccccccccccccccccccccccc" }),
+      observedDomEntry(),
+    ],
+  });
+  const duplicateApiResult = analyzeVersionTwoTrace({ evidence: duplicateApi });
+  assertVersionTwoUnavailable(duplicateApiResult);
+  assert.deepEqual(duplicateApiResult.rejectionCounts, [
+    { code: "API_IDENTITY_AMBIGUOUS", count: 2 },
+  ]);
+
+  const duplicateLegacyTrace = makeVersionTwoTrace();
+  duplicateLegacyTrace.traceEvents.push({
+    ...structuredClone(duplicateLegacyTrace.traceEvents[1]),
+    pid: 999,
+    tid: 99,
+    id: "0xduplicate",
+  });
+  const duplicateLegacyResult = analyzeVersionTwoTrace({
+    trace: duplicateLegacyTrace,
+  });
+  assertVersionTwoUnavailable(duplicateLegacyResult);
+  assert.deepEqual(duplicateLegacyResult.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+
+  const malformedTrace = makeVersionTwoTrace();
+  malformedTrace.traceEvents.push({
+    name: "EventTiming",
+    cat: "devtools.timeline",
+    ph: "b",
+    pid: 999,
+    tid: 99,
+    ts: 10001n,
+    id: "0xmalformed",
+    args: { data: { type: "click" } },
+  });
+  const malformedResult = analyzeVersionTwoTrace({ trace: malformedTrace });
+  assertVersionTwoUnavailable(malformedResult);
+  assert.deepEqual(malformedResult.rejectionCounts, [
+    { code: "TRACE_CONTENDER_UNCLASSIFIABLE", count: 1 },
+  ]);
+});
+
+test("requires one initial root-frame renderer PID epoch without later target metadata", () => {
+  const duplicateInitialTrace = makeVersionTwoTrace();
+  duplicateInitialTrace.traceEvents.splice(
+    1,
+    0,
+    structuredClone(duplicateInitialTrace.traceEvents[0]),
+  );
+  const initialAfterCandidateTrace = makeVersionTwoTrace();
+  const initial = initialAfterCandidateTrace.traceEvents.shift();
+  initialAfterCandidateTrace.traceEvents.push(initial);
+  const scenarios = [
+    {
+      name: "missing initial association",
+      trace: makeBrave155Trace(),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "duplicate initial associations",
+      trace: duplicateInitialTrace,
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "selected frame is not the root-frame association",
+      trace: makeVersionTwoTrace({ frame: "other-frame" }),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "selected frame entry has a parent",
+      trace: makeVersionTwoTrace({
+        initialFrames: [
+          {
+            frame: observedFrameId,
+            parent: "parent-frame",
+            processId: 101,
+          },
+        ],
+      }),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "root-frame process ID is missing",
+      trace: makeVersionTwoTrace({
+        initialFrames: [{ frame: observedFrameId }],
+      }),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "initial metadata follows the candidate",
+      trace: initialAfterCandidateTrace,
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "subsequent root ProcessReady invalidates the epoch",
+      trace: makeVersionTwoTrace({
+        metadataEvents: [
+          {
+            name: "ProcessReadyInBrowser",
+            args: { data: { frame: observedFrameId, processId: 102 } },
+          },
+        ],
+      }),
+      code: "TRACE_FRAME_EPOCH_INVALIDATED",
+    },
+    {
+      name: "subsequent root FrameCommitted invalidates the epoch",
+      trace: makeVersionTwoTrace({
+        metadataEvents: [
+          {
+            name: "FrameCommittedInBrowser",
+            args: { data: { frame: observedFrameId, processId: 101 } },
+          },
+        ],
+      }),
+      code: "TRACE_FRAME_EPOCH_INVALIDATED",
+    },
+    {
+      name: "subsequent root FrameDeleted invalidates the epoch",
+      trace: makeVersionTwoTrace({
+        metadataEvents: [
+          {
+            name: "FrameDeletedInBrowser",
+            args: { data: { frame: observedFrameId } },
+          },
+        ],
+      }),
+      code: "TRACE_FRAME_EPOCH_INVALIDATED",
+    },
+    {
+      name: "ambiguous follow-up metadata fails closed",
+      trace: makeVersionTwoTrace({
+        metadataEvents: [{ name: "FrameDeletedInBrowser", args: { data: {} } }],
+      }),
+      code: "TRACE_METADATA_INVALID",
+    },
+    {
+      name: "legacy renderer PID differs from the initial epoch",
+      trace: makeVersionTwoTrace({ processId: 102 }),
+      code: "TRACE_PID_EPOCH_MISMATCH",
+    },
+    {
+      name: "duplicate root frame entries conflict",
+      trace: makeVersionTwoTrace({
+        initialFrames: [
+          { frame: observedFrameId, processId: 101 },
+          { frame: observedFrameId, processId: 102 },
+        ],
+      }),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      name: "parent-bearing selected-frame duplicate conflicts with root entry",
+      trace: makeVersionTwoTrace({
+        initialFrames: [
+          { frame: observedFrameId, processId: 101 },
+          {
+            frame: observedFrameId,
+            parent: "parent-frame",
+            processId: 102,
+          },
+        ],
+      }),
+      code: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const result = analyzeVersionTwoTrace({ trace: scenario.trace });
+    assertVersionTwoUnavailable(result);
+    assert.deepEqual(
+      result.rejectionCounts,
+      [{ code: scenario.code, count: 1 }],
+      scenario.name,
+    );
+  }
+
+  const contextMismatch = makeVersionTwoObserverEvidence({
+    retainedOverrides: {
+      executionContext: {
+        uniqueId: "context-B",
+        frameId: "other-frame",
+        isDefault: true,
+      },
+    },
+  });
+  const contextResult = analyzeVersionTwoTrace({ evidence: contextMismatch });
+  assertVersionTwoUnavailable(contextResult);
+  assert.deepEqual(contextResult.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+
+  const frameMismatchTrace = makeVersionTwoTrace();
+  frameMismatchTrace.traceEvents[1].args.data.frame = "other-frame";
+  const frameResult = analyzeVersionTwoTrace({ trace: frameMismatchTrace });
+  assertVersionTwoUnavailable(frameResult);
+  assert.deepEqual(frameResult.rejectionCounts, [
+    { code: "TRACE_FRAME_MISMATCH", count: 1 },
+  ]);
+});
+
+test("keeps unsupported modalities, trace loss, and incomplete retained cleanup unavailable", () => {
+  const unsupported = makeVersionTwoObserverEvidence({
+    records: [
+      observedApiEntry({ type: "keydown", interactionId: 17 }),
+      observedDomEntry({ type: "keydown", phase: "primary" }),
+    ],
+  });
+  const unsupportedResult = analyzeVersionTwoTrace({ evidence: unsupported });
+  assertVersionTwoUnavailable(unsupportedResult);
+
+  const traceLoss = makeVersionTwoObserverEvidence({
+    traceDataLossOccurred: true,
+  });
+  const traceLossResult = analyzeVersionTwoTrace({ evidence: traceLoss });
+  assertVersionTwoUnavailable(traceLossResult);
+  assert.deepEqual(traceLossResult.rejectionCounts, [
+    { code: "TRACE_DATA_LOSS_OR_LINK_MISMATCH", count: 1 },
+  ]);
+
+  const conflictingCleanup = makeVersionTwoObserverEvidence({
+    retainedOverrides: {
+      cleanup: {
+        windowListenersRemoved: true,
+        strongReferencesCleared: true,
+        objectGroupReleased: true,
+        cdpListenersRemoved: false,
+      },
+    },
+  });
+  const conflictingCleanupResult = analyzeVersionTwoTrace({
+    evidence: conflictingCleanup,
+  });
+  assertVersionTwoUnavailable(conflictingCleanupResult);
+  assert.deepEqual(conflictingCleanupResult.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+
+  const unavailableCleanup = makeVersionTwoObserverEvidence({
+    retainedOverrides: {
+      status: "unavailable",
+      reasonCode: "RETAINED_NODE_CLEANUP_FAILED",
+      mappings: [],
+      lifecycle: {
+        coverage: "incomplete",
+        lossReasonCode: null,
+        overflow: false,
+      },
+      cleanup: {
+        windowListenersRemoved: true,
+        strongReferencesCleared: false,
+        objectGroupReleased: true,
+        cdpListenersRemoved: true,
+      },
+    },
+  });
+  const unavailableCleanupResult = analyzeVersionTwoTrace({
+    evidence: unavailableCleanup,
+  });
+  assertVersionTwoUnavailable(unavailableCleanupResult);
+  assert.deepEqual(unavailableCleanupResult.rejectionCounts, [
+    { code: "RETAINED_NODE_CLEANUP_FAILED", count: 1 },
+  ]);
+});
+
+test("version-one observer association remains tied to its original schema and hash", () => {
+  const evidence = makeObserverEvidence();
+  const result = analyzeObservedTrace({ evidence });
+  assert.equal(result.status, "diagnostic-only");
+  assert.equal(result.counts.accepted, 1);
+
+  const currentVersionOne = makeObserverEvidence({
+    sourceHashSha256: currentRetainedCollectorSourceHash,
+  });
+  assert.equal(
+    analyzeObservedTrace({ evidence: currentVersionOne }).counts.accepted,
+    1,
+  );
+
+  const versionTwoLabelOnVersionOneSchema = makeObserverEvidence({
+    declarationOverrides: { schemaVersion: 2 },
+  });
+  const rejected = analyzeObservedTrace({
+    evidence: versionTwoLabelOnVersionOneSchema,
+  });
+  assertVersionTwoUnavailable(rejected);
+});
+
+test("keeps a secondary open dispatch explicitly separate from the primary action", () => {
+  const evidence = makeVersionTwoObserverEvidence({
+    records: [
+      observedApiEntry({
+        targetLabel: "open-secondary",
+        deliveryPhase: "secondary",
+      }),
+      observedDomEntry({ targetLabel: "open-secondary", phase: "secondary" }),
+    ],
+  });
+  const result = analyzeVersionTwoTrace({ evidence });
+
+  assert.equal(result.status, "diagnostic-only");
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].actionLabel, "open-secondary");
+  assert.equal(result.entries[0].dispatchPhase, "secondary");
+  assert.equal(result.formalActionStatus, "unavailable");
+  assert.deepEqual(result.formalActionSamples, []);
 });

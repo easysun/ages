@@ -1713,6 +1713,40 @@ test("installed Brave mode requires its exact explicit flag pair", () => {
     parseRunnerArgs(["--run", "--browser=installed-brave", "--observe-inputs"]),
     { mode: "run", browser: "installed-brave", observeInputs: true },
   );
+  assert.deepEqual(
+    parseRunnerArgs([
+      "--run",
+      "--browser=installed-brave",
+      "--observe-inputs",
+      "--retain-input-nodes",
+    ]),
+    {
+      mode: "run",
+      browser: "installed-brave",
+      observeInputs: true,
+      retainInputNodes: true,
+    },
+  );
+  for (const args of [
+    ["--retain-input-nodes"],
+    ["--run", "--retain-input-nodes"],
+    ["--run", "--browser=installed-brave", "--retain-input-nodes"],
+    [
+      "--run",
+      "--browser=installed-brave",
+      "--observe-inputs",
+      "--retain-input-nodes",
+      "--retain-input-nodes",
+    ],
+    [
+      "--run",
+      "--browser=installed-brave",
+      "--retain-input-nodes",
+      "--observe-inputs",
+    ],
+  ]) {
+    assert.throws(() => parseRunnerArgs(args), /unsupported capture option/);
+  }
 });
 
 function createObserverBrowserHarness({ supported = true } = {}) {
@@ -1720,8 +1754,23 @@ function createObserverBrowserHarness({ supported = true } = {}) {
   const windowListeners = new Map();
   const observers = [];
   const performanceNow = { value: 10 };
-  const target = { nodeType: 1, isConnected: true, parentNode: null };
+  let randomCallCount = 0;
+  class FakeNode {
+    constructor(ownerDocument, parentNode = null) {
+      this.nodeType = 1;
+      this.ownerDocument = ownerDocument;
+      this.parentNode = parentNode;
+      this.isConnected = true;
+      this.capturedPointerIds = new Set();
+    }
+
+    hasPointerCapture(pointerId) {
+      return this.capturedPointerIds.has(pointerId);
+    }
+  }
+  const target = new FakeNode(null);
   const document = {
+    nodeType: 9,
     addEventListener(type, listener) {
       listeners.set(type, listener);
     },
@@ -1729,6 +1778,7 @@ function createObserverBrowserHarness({ supported = true } = {}) {
       if (listeners.get(type) === listener) listeners.delete(type);
     },
   };
+  target.ownerDocument = document;
   class FakePerformanceObserver {
     static supportedEntryTypes = supported ? ["event"] : [];
 
@@ -1760,6 +1810,7 @@ function createObserverBrowserHarness({ supported = true } = {}) {
     TextEncoder,
     Uint8Array,
     WeakMap,
+    Node: FakeNode,
     Map,
     Array,
     Object,
@@ -1774,7 +1825,9 @@ function createObserverBrowserHarness({ supported = true } = {}) {
     clearTimeout: () => undefined,
     crypto: {
       getRandomValues(bytes) {
-        bytes.fill(7);
+        const value = randomCallCount < 2 ? 7 : randomCallCount + 6;
+        randomCallCount += 1;
+        bytes.fill(value);
         return bytes;
       },
     },
@@ -1794,8 +1847,10 @@ function createObserverBrowserHarness({ supported = true } = {}) {
     observers,
     target,
     performanceNow,
-    initialize(source) {
-      runInNewContext(`(${source.toString()})()`, sandbox);
+    initialize(source, options) {
+      sandbox.options = options;
+      runInNewContext(`(${source.toString()})(options)`, sandbox);
+      delete sandbox.options;
       return sandbox.__agesTrustedStimulusObserver;
     },
     dispatch({
@@ -1803,15 +1858,77 @@ function createObserverBrowserHarness({ supported = true } = {}) {
       timeStamp,
       isTrusted = true,
       eventTarget = target,
+      pointerId = 1,
+      composedPath = [eventTarget],
+      afterWindowCapture,
     } = {}) {
-      const eventListeners = type === "resize" ? windowListeners : listeners;
-      eventListeners.get(type)?.({
+      const event = {
         type,
         timeStamp,
         isTrusted,
+        pointerId,
         target: type === "resize" ? sandbox : eventTarget,
-      });
+        composedPath: () => composedPath,
+      };
+      windowListeners.get(type)?.(event);
+      afterWindowCapture?.();
+      listeners.get(type)?.(event);
     },
+    createNode(parentNode = null) {
+      return new FakeNode(document, parentNode);
+    },
+  };
+}
+
+const RETAINED_NODE_PROTOCOL_CATALOG_ID =
+  "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99";
+
+function validRetainedNodeEvidence(overrides = {}) {
+  const snapshot = {
+    documentId: "d-0123456789abcdef01234567",
+    frameId: "root-frame-1",
+    loaderId: "root-loader-1",
+  };
+  return {
+    status: "complete",
+    reasonCode: null,
+    mappings: [
+      {
+        targetToken: "t-0123456789abcdef01234567",
+        backendNodeId: 1,
+      },
+    ],
+    executionContext: {
+      uniqueId: "context-1",
+      frameId: "root-frame-1",
+      isDefault: true,
+    },
+    documentId: snapshot.documentId,
+    snapshots: {
+      beforeArm: snapshot,
+      afterArm: snapshot,
+      afterDrain: snapshot,
+      afterMapping: snapshot,
+      afterCleanup: snapshot,
+    },
+    protocolCatalogId: RETAINED_NODE_PROTOCOL_CATALOG_ID,
+    lifecycle: {
+      coverage: "complete",
+      lossReasonCode: null,
+      overflow: false,
+    },
+    scope: {
+      rootIsSelectedDocument: true,
+      pointerCaptureUncertain: false,
+      shadowTreeUncertain: false,
+    },
+    cleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+    ...overrides,
   };
 }
 
@@ -1976,6 +2093,531 @@ test("observer initialization is serializable and excludes pre-arm DOM input", a
   );
   assert.equal(harness.observers[0].disconnected, true);
   assert.equal(harness.listeners.size, 0);
+});
+
+test("retained-node mode captures actual connected and removed targets without borrowing API identity", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true },
+  );
+  assert.equal(typeof state.freeze, "function");
+  assert.equal(typeof state.clearRetainedNodes, "function");
+  const parent = harness.createNode();
+  const child = harness.createNode(parent);
+  state.registerTarget(parent, "fit-all");
+  state.arm();
+  harness.dispatch({
+    timeStamp: 11,
+    eventTarget: child,
+    afterWindowCapture: () => {
+      child.isConnected = false;
+    },
+  });
+  harness.observers[0].callback({
+    getEntries: () => [
+      {
+        name: "click",
+        startTime: 11,
+        processingStart: 12,
+        processingEnd: 13,
+        duration: 18,
+        interactionId: 1,
+        target: null,
+      },
+    ],
+  });
+
+  const payload = await state.freeze(state.documentId);
+  const domRecord = payload.records.find((record) => record.kind === "dom");
+  const apiRecord = payload.records.find(
+    (record) => record.kind === "event-timing",
+  );
+  assert.equal(payload.schemaVersion, 2);
+  assert.equal(domRecord.targetResolution, "registered-ancestor");
+  assert.equal(domRecord.targetLabel, "fit-all");
+  assert.equal(state.getRetainedInputNode(domRecord.targetToken), child);
+  assert.equal(child.isConnected, false);
+  assert.equal(apiRecord.targetToken, null);
+  assert.equal(apiRecord.targetLabel, null);
+  assert.equal(apiRecord.targetResolution, "unknown");
+  assert.equal(harness.listeners.size, 0);
+  assert.equal(harness.windowListeners.size, 0);
+  const cleanup = state.clearRetainedNodes();
+  assert.equal(cleanup.windowListenersRemoved, true);
+  assert.equal(cleanup.strongReferencesCleared, true);
+  assert.equal(state.getRetainedInputNode(domRecord.targetToken), null);
+});
+
+test("retained-node mode records shadow and pointer-capture uncertainty without using composed-path identity", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true },
+  );
+  assert.equal(typeof state.freeze, "function");
+  const host = harness.createNode();
+  const shadowTarget = harness.createNode(host);
+  host.capturedPointerIds.add(1);
+  state.arm();
+  harness.dispatch({
+    type: "pointerdown",
+    timeStamp: 11,
+    eventTarget: host,
+    composedPath: [shadowTarget, host],
+  });
+
+  const payload = await state.freeze(state.documentId);
+  const record = payload.records[0];
+  assert.equal(state.getRetainedInputNode(record.targetToken), host);
+  assert.equal(state.getRetainedInputNode("t-080808080808080808080808"), null);
+  assert.equal(payload.retainedNodeEvidence.status, "unavailable");
+  assert.equal(
+    payload.retainedNodeEvidence.reasonCode,
+    "RETAINED_NODE_SCOPE_UNSUPPORTED",
+  );
+  assert.equal(
+    payload.retainedNodeEvidence.scope.pointerCaptureUncertain,
+    true,
+  );
+  assert.equal(payload.retainedNodeEvidence.scope.shadowTreeUncertain, true);
+  assert.equal(payload.retainedNodeEvidence.mappings.length, 0);
+  state.clearRetainedNodes();
+});
+
+test("retained-node cleanup retries failed listener removal and reports the actual receipt", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true },
+  );
+  state.arm();
+  const removeListener = harness.sandbox.removeEventListener.bind(
+    harness.sandbox,
+  );
+  let clickRemovalFailures = 2;
+  harness.sandbox.removeEventListener = (type, listener) => {
+    if (type === "click" && clickRemovalFailures > 0) {
+      clickRemovalFailures -= 1;
+      throw new Error("simulated listener removal failure");
+    }
+    return removeListener(type, listener);
+  };
+
+  const frozen = await state.freeze(state.documentId);
+  assert.equal(
+    frozen.retainedNodeEvidence.cleanup.windowListenersRemoved,
+    false,
+  );
+  assert.equal(harness.windowListeners.has("click"), true);
+
+  const failedRetry = state.clearRetainedNodes();
+  assert.equal(failedRetry.windowListenersRemoved, false);
+  assert.equal(failedRetry.strongReferencesCleared, true);
+  assert.equal(harness.windowListeners.has("click"), true);
+
+  const successfulRetry = state.clearRetainedNodes();
+  assert.equal(successfulRetry.windowListenersRemoved, true);
+  assert.equal(successfulRetry.strongReferencesCleared, true);
+  assert.equal(harness.windowListeners.size, 0);
+});
+
+test("retained-node overflow is permanent and never evicts a contender", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true },
+  );
+  assert.equal(typeof state.freeze, "function");
+  state.arm();
+  const nodes = Array.from({ length: 33 }, () => harness.createNode());
+  for (const [index, node] of nodes.entries()) {
+    harness.dispatch({ timeStamp: 11 + index, eventTarget: node });
+  }
+  const payload = await state.freeze(state.documentId);
+  assert.equal(payload.retainedNodeEvidence.status, "unavailable");
+  assert.equal(
+    payload.retainedNodeEvidence.reasonCode,
+    "RETAINED_NODE_LIMIT_EXCEEDED",
+  );
+  assert.equal(state.retainedInputNodeCount, 32);
+  assert.equal(
+    state.getRetainedInputNode(payload.records[0].targetToken),
+    nodes[0],
+  );
+  assert.equal(
+    state.getRetainedInputNode(payload.records[31].targetToken),
+    nodes[31],
+  );
+  assert.match(payload.records[32].targetToken, /^t-[a-f0-9]{24}$/);
+  assert.equal(
+    state.getRetainedInputNode(payload.records[32].targetToken),
+    null,
+  );
+  state.clearRetainedNodes();
+});
+
+test("version-two retained-node evidence is closed, bounded, and gates complete status", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  assert.equal(typeof observerModule.validateRetainedNodeEvidence, "function");
+  assert.equal(typeof observerModule.RETAINED_NODE_EVIDENCE_POLICY, "object");
+  assert.deepEqual(observerModule.RETAINED_NODE_EVIDENCE_POLICY, {
+    enabled: true,
+    maxNodes: 32,
+    mappingByteLimit: 16384,
+    protocolCatalogId: RETAINED_NODE_PROTOCOL_CATALOG_ID,
+  });
+  assert.deepEqual(
+    observerModule.validateRetainedNodeEvidence(validRetainedNodeEvidence()),
+    validRetainedNodeEvidence(),
+  );
+  const valid32Mappings = Array.from({ length: 32 }, (_, index) => ({
+    targetToken: `t-${index.toString(16).padStart(24, "0")}`,
+    backendNodeId: index + 1,
+  }));
+  const atNodeLimit = observerModule.validateRetainedNodeEvidence(
+    validRetainedNodeEvidence({ mappings: valid32Mappings }),
+  );
+  assert.equal(atNodeLimit.mappings.length, 32);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(atNodeLimit.mappings)) <=
+      observerModule.RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+  );
+
+  for (const evidence of [
+    { ...validRetainedNodeEvidence(), extra: "private" },
+    {
+      ...validRetainedNodeEvidence(),
+      mappings: [
+        {
+          targetToken: "t-0123456789abcdef01234567",
+          backendNodeId: 1,
+          extra: 1,
+        },
+      ],
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      mappings: [
+        { targetToken: "t-0123456789abcdef01234567", backendNodeId: 0 },
+      ],
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      mappings: [
+        {
+          targetToken: "t-0123456789abcdef01234567",
+          backendNodeId: 2147483648,
+        },
+      ],
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      mappings: [
+        { targetToken: "t-0123456789abcdef01234567", backendNodeId: 1 },
+        { targetToken: "t-0123456789abcdef01234567", backendNodeId: 2 },
+      ],
+    },
+    { ...validRetainedNodeEvidence(), documentId: null },
+    {
+      ...validRetainedNodeEvidence(),
+      snapshots: {
+        ...validRetainedNodeEvidence().snapshots,
+        afterMapping: {
+          ...validRetainedNodeEvidence().snapshots.afterMapping,
+          privateValue: "not serialized",
+        },
+      },
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      lifecycle: {
+        coverage: "complete",
+        lossReasonCode: "PRIVATE",
+        overflow: false,
+      },
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      scope: {
+        rootIsSelectedDocument: true,
+        pointerCaptureUncertain: true,
+        shadowTreeUncertain: false,
+      },
+    },
+    {
+      ...validRetainedNodeEvidence(),
+      cleanup: {
+        windowListenersRemoved: true,
+        strongReferencesCleared: false,
+        objectGroupReleased: true,
+        cdpListenersRemoved: true,
+      },
+    },
+  ]) {
+    assert.throws(() => observerModule.validateRetainedNodeEvidence(evidence), {
+      message: "RETAINED_NODE_EVIDENCE_INVALID",
+    });
+  }
+  const tooManyMappings = Array.from({ length: 33 }, (_, index) => ({
+    targetToken: `t-${index.toString(16).padStart(24, "0")}`,
+    backendNodeId: index + 1,
+  }));
+  assert.throws(
+    () =>
+      observerModule.validateRetainedNodeEvidence(
+        validRetainedNodeEvidence({ mappings: tooManyMappings }),
+      ),
+    { message: "RETAINED_NODE_LIMIT_EXCEEDED" },
+  );
+  assert.throws(
+    () =>
+      observerModule.validateRetainedNodeEvidence({
+        ...validRetainedNodeEvidence(),
+        status: "unavailable",
+        reasonCode: null,
+      }),
+    { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+  );
+  const observationDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
+  const otherDocumentId = "d-bbbbbbbbbbbbbbbbbbbbbbbb";
+  const otherDocumentSnapshot = {
+    documentId: otherDocumentId,
+    frameId: "root-frame-1",
+    loaderId: "root-loader-1",
+  };
+  const mismatchedCompleteEvidence = validRetainedNodeEvidence({
+    documentId: otherDocumentId,
+    snapshots: {
+      beforeArm: otherDocumentSnapshot,
+      afterArm: otherDocumentSnapshot,
+      afterDrain: otherDocumentSnapshot,
+      afterMapping: otherDocumentSnapshot,
+      afterCleanup: otherDocumentSnapshot,
+    },
+  });
+  const mismatchedCompletePayload = {
+    ...validTrustedStimulusPayload({ documentId: observationDocumentId }),
+    schemaVersion: 2,
+    retainedNodeEvidence: mismatchedCompleteEvidence,
+  };
+  assert.throws(
+    () =>
+      observerModule.validateTrustedStimulusObservation(
+        mismatchedCompletePayload,
+        observationDocumentId,
+      ),
+    { message: "OBSERVATION_PAYLOAD_INVALID" },
+  );
+  const mismatchedUnavailableEvidence = validRetainedNodeEvidence({
+    status: "unavailable",
+    reasonCode: "RETAINED_NODE_MAPPING_FAILED",
+    documentId: observationDocumentId,
+    snapshots: {
+      beforeArm: null,
+      afterArm: null,
+      afterDrain: null,
+      afterMapping: otherDocumentSnapshot,
+      afterCleanup: null,
+    },
+  });
+  const mismatchedUnavailablePayload = {
+    ...validTrustedStimulusPayload({ documentId: observationDocumentId }),
+    schemaVersion: 2,
+    retainedNodeEvidence: mismatchedUnavailableEvidence,
+  };
+  assert.throws(
+    () =>
+      observerModule.validateTrustedStimulusObservation(
+        mismatchedUnavailablePayload,
+        observationDocumentId,
+      ),
+    { message: "OBSERVATION_PAYLOAD_INVALID" },
+  );
+  assert.equal(observerModule.OBSERVATION_LIMITS.records, 512);
+  assert.equal(observerModule.OBSERVATION_LIMITS.recordBytes, 240 * 1024);
+  assert.equal(observerModule.OBSERVATION_LIMITS.sidecarBytes, 256 * 1024);
+  assert.equal(observerModule.RETAINED_NODE_ENVELOPE_RESERVE_BYTES, 36 * 1024);
+  assert.equal(
+    observerModule.RETAINED_NODE_RECORD_BYTE_LIMIT +
+      observerModule.RETAINED_NODE_ENVELOPE_RESERVE_BYTES,
+    observerModule.OBSERVATION_LIMITS.sidecarBytes,
+  );
+});
+
+test("version-two observation sidecars retain their closed extension and exact bytes", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-retained-node-sidecar-"));
+  const payload = {
+    ...validTrustedStimulusPayload(),
+    schemaVersion: 2,
+    retainedNodeEvidence: validRetainedNodeEvidence(),
+  };
+  try {
+    assert.equal(
+      typeof observerModule.validateRetainedNodeEvidence,
+      "function",
+    );
+    let written;
+    assert.doesNotThrow(() => {
+      written = observerModule.writeTrustedStimulusSidecar({
+        directory,
+        fixture: "100-interactive-pan",
+        payload,
+        frameProvenance: validInputFrameProvenance(),
+      });
+    });
+    const bytes = readFileSync(join(directory, written.fileName));
+    const sidecar = JSON.parse(bytes.toString("utf8"));
+    assert.equal(sidecar.schemaVersion, 2);
+    assert.equal(sidecar.observation.schemaVersion, 2);
+    assert.deepEqual(
+      Object.keys(sidecar.observation.retainedNodeEvidence).sort(),
+      [
+        "cleanup",
+        "documentId",
+        "executionContext",
+        "lifecycle",
+        "mappings",
+        "protocolCatalogId",
+        "reasonCode",
+        "scope",
+        "snapshots",
+        "status",
+      ].sort(),
+    );
+    assert.ok(
+      Buffer.byteLength(
+        JSON.stringify(sidecar.observation.retainedNodeEvidence.mappings),
+      ) <= observerModule.RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+    );
+    assert.equal(written.byteCount, bytes.byteLength);
+    assert.equal(
+      written.sha256,
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    assert.ok(
+      bytes.byteLength <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
+    );
+    assert.ok(
+      payload.recordBytes <= observerModule.OBSERVATION_LIMITS.recordBytes,
+    );
+    assert.equal(
+      observerModule.validateTrustedStimulusObservation(
+        payload,
+        payload.documentId,
+      ).schemaVersion,
+      2,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("version-two near-limit records fit a maximal valid extension without truncation", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-retained-node-budget-"));
+  const documentId = "d-0123456789abcdef01234567";
+  const records = maximumEventTimingRecords(documentId, 512);
+  const longSnapshot = {
+    documentId,
+    frameId: "f".repeat(128),
+    loaderId: "l".repeat(128),
+  };
+  const mappings = Array.from({ length: 32 }, (_, index) => ({
+    targetToken: `t-${index.toString(16).padStart(24, "0")}`,
+    backendNodeId: 2147483647,
+  }));
+  const payload = {
+    ...validTrustedStimulusPayload({ documentId, records }),
+    schemaVersion: 2,
+    retainedNodeEvidence: validRetainedNodeEvidence({
+      mappings,
+      executionContext: {
+        uniqueId: "c".repeat(128),
+        frameId: longSnapshot.frameId,
+        isDefault: true,
+      },
+      documentId,
+      snapshots: {
+        beforeArm: longSnapshot,
+        afterArm: longSnapshot,
+        afterDrain: longSnapshot,
+        afterMapping: longSnapshot,
+        afterCleanup: longSnapshot,
+      },
+    }),
+  };
+  const longRoot = {
+    frameId: longSnapshot.frameId,
+    loaderId: longSnapshot.loaderId,
+  };
+  const frameProvenance = {
+    ...validInputFrameProvenance(documentId),
+    beforeArm: longRoot,
+    afterArm: longRoot,
+    afterDrain: longRoot,
+  };
+  try {
+    assert.equal(payload.recordCount, 512);
+    assert.ok(payload.recordBytes > 200 * 1024);
+    assert.ok(
+      payload.recordBytes <= observerModule.RETAINED_NODE_RECORD_BYTE_LIMIT,
+    );
+    const written = observerModule.writeTrustedStimulusSidecar({
+      directory,
+      fixture: "x".repeat(101),
+      payload,
+      frameProvenance,
+    });
+    const bytes = readFileSync(join(directory, written.fileName));
+    const sidecar = JSON.parse(bytes.toString("utf8"));
+    assert.equal(written.recordCount, 512);
+    assert.equal(sidecar.observation.recordCount, 512);
+    assert.deepEqual(sidecar.observation.records, records);
+    assert.equal(written.byteCount, bytes.byteLength);
+    assert.ok(
+      bytes.byteLength <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
+    );
+
+    const beyondReservedBudget = {
+      ...payload,
+      recordBytes: observerModule.RETAINED_NODE_RECORD_BYTE_LIMIT + 1,
+    };
+    assert.throws(
+      () =>
+        observerModule.writeTrustedStimulusSidecar({
+          directory,
+          fixture: "beyond-reserved-budget",
+          payload: beyondReservedBudget,
+          frameProvenance,
+        }),
+      { message: "OBSERVATION_RECORD_BYTES_EXCEEDED" },
+    );
+    assert.equal(payload.records.length, 512);
+    assert.equal(beyondReservedBudget.records.length, 512);
+    assert.deepEqual(beyondReservedBudget.records, records);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("late pre-arm event timing is ignored without failing later entries", async () => {
@@ -2356,6 +2998,13 @@ test("observer sidecars use exclusive writes and return verified hashes", async 
       frameProvenance,
     });
     const bytes = readFileSync(join(directory, written.fileName));
+    const sidecar = JSON.parse(bytes.toString("utf8"));
+    assert.equal(sidecar.schemaVersion, 1);
+    assert.equal(sidecar.observation.schemaVersion, 1);
+    assert.equal(
+      Object.hasOwn(sidecar.observation, "retainedNodeEvidence"),
+      false,
+    );
     assert.equal(written.byteCount, bytes.byteLength);
     assert.ok(
       bytes.byteLength <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
@@ -2793,6 +3442,50 @@ test("opt-in observation keeps default modes and case matrix unchanged", () => {
     artifactRootsForBrowser("installed-brave"),
   );
   assert.equal(buildCaptureCases().length, 14);
+});
+
+test("version-two manifest declaration pins one closed retained-node policy", () => {
+  const cases = [{ trustedStimulusObservation: { apiStatus: "thresholded" } }];
+  assert.equal(typeof runner.buildObservationEvidenceDeclaration, "function");
+  const versionOne = runner.buildObservationEvidenceDeclaration(cases);
+  assert.equal(Object.hasOwn(versionOne, "schemaVersion"), false);
+  assert.equal(Object.hasOwn(versionOne, "retainedNodeEvidence"), false);
+  const versionTwo = runner.buildObservationEvidenceDeclaration(cases, true);
+  assert.equal(versionTwo.schemaVersion, 2);
+  assert.deepEqual(versionTwo.retainedNodeEvidence, {
+    enabled: true,
+    maxNodes: 32,
+    mappingByteLimit: 16384,
+    protocolCatalogId: RETAINED_NODE_PROTOCOL_CATALOG_ID,
+  });
+  assert.equal(versionTwo.recordByteLimit, 220 * 1024);
+  assert.deepEqual(Object.keys(versionTwo.retainedNodeEvidence).sort(), [
+    "enabled",
+    "mappingByteLimit",
+    "maxNodes",
+    "protocolCatalogId",
+  ]);
+  assert.deepEqual(versionOne, {
+    evidenceClass: "synthetic-Playwright-stimulus-discovery",
+    instrumented: true,
+    qualification: "diagnostic-only",
+    inputMethod:
+      "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
+    performanceEventTiming: {
+      status: "thresholded",
+      durationThresholdMs: 16,
+      buffered: false,
+      quantized: true,
+      continuousInputExcluded: true,
+    },
+    recordLimit: 512,
+    recordByteLimit: 240 * 1024,
+    sidecarByteLimit: 256 * 1024,
+    nextPaint: {
+      status: "unproven",
+      reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+    },
+  });
 });
 
 test("observation manifest status aggregates actual per-case API outcomes", () => {
