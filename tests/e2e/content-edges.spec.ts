@@ -7,6 +7,7 @@ import {
   type Page,
   test,
 } from "@playwright/test";
+import { contentEdgePageFixture } from "../helpers/content-edge-pages";
 import { e2eOrigin, executeFixtureSql, seedLibrary } from "./fixtures";
 
 type Visibility = "private" | "unlisted" | "public";
@@ -942,34 +943,17 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
   context,
   page,
 }) => {
-  await seedLibrary(context);
-  const targets: { id: string }[] = [];
-  for (let index = 0; index < 31; index++) {
-    const target = await createExternal(
-      context,
-      `Outgoing page target ${String(index).padStart(2, "0")}`,
-      "public",
-    );
-    targets.push(target);
-  }
-  const node = await createExternal(
-    context,
-    "Paged relationship owner",
-    "public",
-  );
-  for (const target of targets) await createEdge(context, node.id, target.id);
-
-  const { context: sourceContext } = await makeOwner(browser);
-  for (let index = 0; index < 31; index++) {
-    const source = await createExternal(
-      sourceContext,
-      `Incoming page source ${String(index).padStart(2, "0")}`,
-      "public",
-    );
-    await createEdge(sourceContext, source.id, node.id);
-  }
+  const { owner } = await seedLibrary(context);
+  const { context: sourceContext, owner: sourceOwner } =
+    await makeOwner(browser);
+  // Pagination setup must not depend on 125 non-idempotent dev-proxy POSTs.
+  // Creation is covered separately; reads and UI mutations below remain real.
+  const fixture = contentEdgePageFixture(owner, sourceOwner);
+  executeFixtureSql(fixture.sql);
+  const { node } = fixture;
 
   const outgoingFirst = await readOwnerEdgePage(context, node.id, "outgoing");
+  expect(outgoingFirst.edges).toHaveLength(30);
   expect(outgoingFirst.next_cursor).not.toBeNull();
   const outgoingLater = await readOwnerEdgePage(
     context,
@@ -977,10 +961,20 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
     "outgoing",
     outgoingFirst.next_cursor ?? undefined,
   );
+  expect(outgoingLater.edges).toHaveLength(1);
+  expect(outgoingLater.next_cursor).toBeNull();
+  expect(
+    new Set(
+      [...outgoingFirst.edges, ...outgoingLater.edges].map(
+        (edge) => edge.target.id,
+      ),
+    ),
+  ).toEqual(new Set(fixture.targets.map((target) => target.id)));
   const laterOutgoingTitle = outgoingLater.edges[0]?.target.title;
   expect(laterOutgoingTitle).toBeTruthy();
 
   const incomingFirst = await readOwnerEdgePage(context, node.id, "incoming");
+  expect(incomingFirst.edges).toHaveLength(30);
   expect(incomingFirst.next_cursor).not.toBeNull();
   const incomingLater = await readOwnerEdgePage(
     context,
@@ -988,6 +982,15 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
     "incoming",
     incomingFirst.next_cursor ?? undefined,
   );
+  expect(incomingLater.edges).toHaveLength(1);
+  expect(incomingLater.next_cursor).toBeNull();
+  expect(
+    new Set(
+      [...incomingFirst.edges, ...incomingLater.edges].map(
+        (edge) => edge.source.id,
+      ),
+    ),
+  ).toEqual(new Set(fixture.sources.map((source) => source.id)));
   const laterIncomingTitle = incomingLater.edges[0]?.source.title;
   expect(laterIncomingTitle).toBeTruthy();
 
@@ -996,6 +999,7 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
     node.id,
     "incoming-review",
   );
+  expect(reviewFirst.edges).toHaveLength(30);
   expect(reviewFirst.next_cursor).not.toBeNull();
   const reviewLater = await readOwnerEdgePage(
     context,
@@ -1003,6 +1007,8 @@ test("owners_can_page_and_manage_relations_beyond_the_first_thirty", async ({
     "incoming-review",
     reviewFirst.next_cursor ?? undefined,
   );
+  expect(reviewLater.edges).toHaveLength(1);
+  expect(reviewLater.next_cursor).toBeNull();
   const laterReviewEdge = reviewLater.edges[0];
   const laterReviewTitle = laterReviewEdge?.source.title;
   expect(laterReviewTitle).toBeTruthy();
