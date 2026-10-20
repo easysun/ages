@@ -300,6 +300,116 @@ test("owned group snapshots are capped by the remaining cleanup grace", async ()
   }
 });
 
+test("owned cleanup rejects when the group probe still succeeds after SIGKILL, even after leader exit", async () => {
+  const groupId = 43210;
+  const child = { pid: groupId, exitCode: 0, signalCode: null };
+  const uid = process.getuid?.() ?? 501;
+  const memberRow = `${groupId + 1} ${groupId} ${groupId} ${uid} S`;
+  const originalKill = process.kill;
+  const attemptedSignals = [];
+  let killed = false;
+  process.kill = (pid, signal) => {
+    assert.equal(pid, -groupId);
+    attemptedSignals.push(signal);
+    if (signal === "SIGKILL") killed = true;
+    return true;
+  };
+
+  try {
+    await assert.rejects(
+      stopOwnedProcess(child, 25, () => (killed ? "" : memberRow)),
+      (error) => {
+        const summary = summarizeSafeFailure(error, "owned-process-cleanup");
+        assert.equal(summary.stage, "owned-process-cleanup");
+        assert.equal(summary.processErrorCode, "EBUSY");
+        assert.equal(summary.cleanupStep, "verify-process-group-after-kill");
+        assert.doesNotMatch(JSON.stringify(summary), /43210/);
+        return true;
+      },
+    );
+    assert.deepEqual(attemptedSignals, ["SIGTERM", 0, "SIGKILL", 0]);
+  } finally {
+    process.kill = originalKill;
+  }
+});
+
+test("owned cleanup resolves when the group disappears after SIGKILL", async () => {
+  const groupId = 43210;
+  const child = { pid: groupId, exitCode: 0, signalCode: null };
+  const uid = process.getuid?.() ?? 501;
+  const memberRow = `${groupId + 1} ${groupId} ${groupId} ${uid} S`;
+  const originalKill = process.kill;
+  const attemptedSignals = [];
+  let killed = false;
+  process.kill = (pid, signal) => {
+    assert.equal(pid, -groupId);
+    attemptedSignals.push(signal);
+    if (signal === "SIGKILL") {
+      killed = true;
+      return true;
+    }
+    if (signal === 0 && killed) {
+      throw Object.assign(new Error("private process detail"), {
+        code: "ESRCH",
+      });
+    }
+    return true;
+  };
+
+  try {
+    await stopOwnedProcess(child, 25, () => (killed ? "" : memberRow));
+    assert.deepEqual(attemptedSignals, ["SIGTERM", 0, "SIGKILL", 0]);
+  } finally {
+    process.kill = originalKill;
+  }
+});
+
+test("post-kill EPERM remains a sanitized syscall-specific cleanup failure", async () => {
+  const groupId = 43210;
+  const child = { pid: groupId, exitCode: 0, signalCode: null };
+  const uid = process.getuid?.() ?? 501;
+  const memberRow = `${groupId + 1} ${groupId} ${groupId} ${uid} S`;
+  const originalKill = process.kill;
+  const attemptedSignals = [];
+  let killed = false;
+  process.kill = (pid, signal) => {
+    assert.equal(pid, -groupId);
+    attemptedSignals.push(signal);
+    if (signal === "SIGKILL") {
+      killed = true;
+      return true;
+    }
+    if (signal === 0 && killed) {
+      throw Object.assign(new Error("private process detail"), {
+        code: "EPERM",
+      });
+    }
+    return true;
+  };
+
+  try {
+    await assert.rejects(
+      stopOwnedProcess(child, 25, () => (killed ? "" : memberRow)),
+      (error) => {
+        const summary = summarizeSafeFailure(error, "owned-process-cleanup");
+        assert.equal(summary.stage, "owned-process-cleanup");
+        assert.equal(summary.processErrorCode, "EPERM");
+        assert.equal(summary.cleanupStep, "verify-process-group-after-kill");
+        assert.equal(summary.processGroupSnapshot?.snapshotAvailable, true);
+        assert.equal(summary.processGroupSnapshot?.childExitKnown, true);
+        assert.doesNotMatch(
+          JSON.stringify(summary),
+          /private process detail|43210/,
+        );
+        return true;
+      },
+    );
+    assert.deepEqual(attemptedSignals, ["SIGTERM", 0, "SIGKILL", 0]);
+  } finally {
+    process.kill = originalKill;
+  }
+});
+
 test("persistent or unknown group snapshots never suppress the original probe", async () => {
   const groupId = 43210;
   const uid = process.getuid?.() ?? 501;
@@ -309,15 +419,22 @@ test("persistent or unknown group snapshots never suppress the original probe", 
   const attemptedSignals = [];
   let persistentSnapshots = 0;
   let failProbe = true;
+  let killed = false;
   process.kill = (_pid, signal) => {
     attemptedSignals.push(signal);
     if (signal === 0) {
+      if (killed) {
+        throw Object.assign(new Error("private process detail"), {
+          code: "ESRCH",
+        });
+      }
       if (!failProbe) return true;
       assert.ok(persistentSnapshots >= 2);
       throw Object.assign(new Error("private process detail"), {
         code: "EPERM",
       });
     }
+    if (signal === "SIGKILL") killed = true;
     return true;
   };
 
@@ -345,7 +462,7 @@ test("persistent or unknown group snapshots never suppress the original probe", 
       throw new Error("private ps output");
     });
     assert.ok(unknownSnapshots >= 2);
-    assert.deepEqual(attemptedSignals, ["SIGTERM", 0, "SIGKILL"]);
+    assert.deepEqual(attemptedSignals, ["SIGTERM", 0, "SIGKILL", 0]);
   } finally {
     process.kill = originalKill;
   }
@@ -409,7 +526,11 @@ test("probe EPERM remains a cleanup failure with bounded owned-group state", asy
 
 test("successful cleanup preserves the primary failure stage and error", async () => {
   const originalKill = process.kill;
-  process.kill = () => true;
+  process.kill = () => {
+    throw Object.assign(new Error("private process detail"), {
+      code: "ESRCH",
+    });
+  };
   const failureState = { stage: "capture:100-interactive:append" };
   const primaryError = new Error("primary capture failure");
   const child = { pid: 98765, exitCode: 0, signalCode: null };

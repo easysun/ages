@@ -1191,6 +1191,7 @@ const SAFE_CLEANUP_STEPS = new Set([
   "terminate-process-group",
   "probe-process-group",
   "kill-process-group",
+  "verify-process-group-after-kill",
 ]);
 const MAX_OWNED_PROCESS_GROUP_MEMBERS = 256;
 const SAFE_PROCESS_GROUP_STATES = [
@@ -1734,6 +1735,25 @@ export async function stopOwnedProcess(
     )
   )
     return;
+  await waitForOwnedGroupDisappearance(
+    child,
+    Math.min(graceMs, 1000),
+    readProcessTable,
+  );
+  if (
+    signalOwnedGroup(
+      group,
+      0,
+      "verify-process-group-after-kill",
+      child,
+      readProcessTable,
+    )
+  ) {
+    const error = new Error("OWNED_PROCESS_CLEANUP_FAILED");
+    error.code = "EBUSY";
+    error.cleanupStep = "verify-process-group-after-kill";
+    throw error;
+  }
   await waitForChildClose(child, 1000);
 }
 
@@ -1862,7 +1882,12 @@ function signalOwnedGroup(group, signal, cleanupStep, child, readProcessTable) {
     const error = new Error("OWNED_PROCESS_CLEANUP_FAILED");
     if (SAFE_CHILD_ERROR_CODES.has(cause?.code)) error.code = cause.code;
     error.cleanupStep = cleanupStep;
-    if (cleanupStep === "probe-process-group" && cause?.code === "EPERM") {
+    if (
+      ["probe-process-group", "verify-process-group-after-kill"].includes(
+        cleanupStep,
+      ) &&
+      cause?.code === "EPERM"
+    ) {
       error.processGroupSnapshot = snapshotOwnedProcessGroup(
         child,
         readProcessTable,
