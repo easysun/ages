@@ -589,82 +589,111 @@ test("known_pair_selection_is_disabled_during_relationship_refresh", async ({
   await seedLibrary(context);
   const target = await createExternal(context, "Refresh lock target", "public");
   const { context: sourceContext } = await makeOwner(browser);
-  const source = await createExternal(
-    sourceContext,
-    "Refresh lock unlisted source",
-    "unlisted",
-  );
-  const edge = await createEdge(sourceContext, source.id, target.id);
-  await edgeAction(context, edge.id, "accept");
-  await edgeAction(context, edge.id, "suppress");
-
-  await page.goto(`${e2eOrigin}/content`);
-  await page.getByRole("button", { name: `Edit ${target.title}` }).click();
-  const incoming = page.getByRole("region", {
-    name: "Incoming relationships",
-  });
-  const reviewList = incoming.getByRole("list").last();
-  const suppressedReview = reviewList
-    .getByRole("listitem")
-    .filter({ hasText: "Suppressed" });
-  await expect(suppressedReview).toHaveCount(1);
-
   const outgoing = deferredSignal();
   const visibleIncoming = deferredSignal();
-  const reviewRead = deferredSignal();
-  await page.route(
-    `**/api/content-nodes/${target.id}/edges?direction=outgoing*`,
-    async (route) => {
-      const response = await route.fetch();
-      outgoing.signal();
-      await outgoing.promise;
-      await route.fulfill({ response }).catch(() => undefined);
-    },
-  );
-  await page.route(
-    `**/api/content-nodes/${target.id}/edges?direction=incoming*`,
-    async (route) => {
-      const response = await route.fetch();
-      visibleIncoming.signal();
-      await visibleIncoming.promise;
-      await route.fulfill({ response }).catch(() => undefined);
-    },
-  );
-  await page.route(
-    `**/api/content-nodes/${target.id}/incoming-review*`,
-    async (route) => {
-      const response = await route.fetch();
-      await route.fulfill({ response });
-      reviewRead.signal();
-    },
-  );
-
-  await page.getByRole("button", { name: "Refresh relationships" }).click();
+  const knownPairRead = deferredSignal();
+  let knownPairCallbackStarted = false;
+  let knownPairCallbackCompleted = false;
   try {
-    await Promise.all([
-      outgoing.started,
-      visibleIncoming.started,
-      reviewRead.started,
-    ]);
-    await expect(suppressedReview).toBeVisible();
+    const source = await createExternal(
+      sourceContext,
+      "Refresh lock unlisted source",
+      "unlisted",
+    );
+    const edge = await createEdge(sourceContext, source.id, target.id);
+    await edgeAction(context, edge.id, "accept");
+    await edgeAction(context, edge.id, "suppress");
+
+    await page.goto(`${e2eOrigin}/content`);
+    await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+    const incoming = page.getByRole("region", {
+      name: "Incoming relationships",
+    });
+    const reviewList = incoming.getByRole("list").last();
+    const suppressedReview = reviewList
+      .getByRole("listitem")
+      .filter({ hasText: "Suppressed" });
+    await expect(suppressedReview).toHaveCount(1);
+    const reviewRead = deferredSignal();
+
+    await page.route(
+      `**/api/content-nodes/${target.id}/edges?direction=outgoing*`,
+      async (route) => {
+        const response = await route.fetch();
+        outgoing.signal();
+        await outgoing.promise;
+        await route.fulfill({ response });
+      },
+    );
+    await page.route(
+      `**/api/content-nodes/${target.id}/edges?direction=incoming*`,
+      async (route) => {
+        const knownNode = new URL(route.request().url()).searchParams.get(
+          "known_node",
+        );
+        if (knownNode === source.id) {
+          knownPairCallbackStarted = true;
+          knownPairRead.signal();
+          await knownPairRead.promise;
+        } else {
+          const response = await route.fetch();
+          visibleIncoming.signal();
+          await visibleIncoming.promise;
+          await route.fulfill({ response });
+          return;
+        }
+        const response = await route.fetch();
+        await route.fulfill({ response });
+        if (knownNode === source.id) knownPairCallbackCompleted = true;
+      },
+    );
+    await page.route(
+      `**/api/content-nodes/${target.id}/incoming-review*`,
+      async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response });
+        reviewRead.signal();
+      },
+    );
+
+    await page.getByRole("button", { name: "Refresh relationships" }).click();
+    try {
+      await Promise.all([
+        outgoing.started,
+        visibleIncoming.started,
+        reviewRead.started,
+      ]);
+      await expect(suppressedReview).toBeVisible();
+      await expect(
+        suppressedReview.getByRole("button", { name: "Open known pair" }),
+      ).toBeDisabled();
+    } finally {
+      outgoing.release();
+      visibleIncoming.release();
+    }
+
     await expect(
-      suppressedReview.getByRole("button", { name: "Open known pair" }),
-    ).toBeDisabled();
+      page.getByRole("button", { name: "Refresh relationships" }),
+    ).toBeEnabled();
+    await suppressedReview
+      .getByRole("button", { name: "Open known pair" })
+      .click();
+    await knownPairRead.started;
+    await expect(
+      page.getByRole("region", { name: "Known pair relationship" }),
+    ).toContainText(source.id);
   } finally {
     outgoing.release();
     visibleIncoming.release();
+    knownPairRead.release();
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+      if (knownPairCallbackStarted)
+        expect(knownPairCallbackCompleted).toBe(true);
+    } finally {
+      await sourceContext.close();
+    }
   }
-
-  await expect(
-    page.getByRole("button", { name: "Refresh relationships" }),
-  ).toBeEnabled();
-  await suppressedReview
-    .getByRole("button", { name: "Open known pair" })
-    .click();
-  await expect(
-    page.getByRole("region", { name: "Known pair relationship" }),
-  ).toContainText(source.id);
-  await sourceContext.close();
 });
 
 test("late_relation_response_after_logout_or_auth_generation_change_is_discarded", async ({
