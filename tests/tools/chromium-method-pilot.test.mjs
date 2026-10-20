@@ -587,6 +587,306 @@ test("failed cleanup replaces the run stage with its syscall-specific stage", as
   }
 });
 
+function runCleanupReceiptFixture(t) {
+  const runDirectory = mkdtempSync(join(tmpdir(), "ages-cleanup-receipt-"));
+  t.after(() => rmSync(runDirectory, { recursive: true, force: true }));
+  return {
+    runDirectory,
+    receiptPath: join(runDirectory, "owned-cleanup-receipt.json"),
+  };
+}
+
+function finalizeRunCleanup(options) {
+  assert.equal(
+    typeof runner.finalizeRunCleanup,
+    "function",
+    "the runner must expose its real run finalizer for lifecycle testing",
+  );
+  return runner.finalizeRunCleanup(options);
+}
+
+test("run cleanup independently attempts APIs and server after close rejection and timeout", async (t) => {
+  const { runDirectory, receiptPath } = runCleanupReceiptFixture(t);
+  const events = [];
+  const server = { pid: 43210, exitCode: null, signalCode: null };
+
+  await assert.rejects(
+    finalizeRunCleanup({
+      runDirectory,
+      manifestSha256: "a".repeat(64),
+      context: {
+        close: async () => {
+          events.push("context");
+          throw new Error("private context close detail");
+        },
+      },
+      browser: {
+        close: () => {
+          events.push("browser");
+          return new Promise(() => {});
+        },
+      },
+      server,
+      cleanupTimeoutMs: 5,
+      stopServer: async (child) => {
+        assert.equal(child, server);
+        events.push("server");
+      },
+      readProcessTable: (timeoutMs) => {
+        assert.ok(timeoutMs > 0 && timeoutMs <= 1500);
+        events.push("snapshot");
+        return "";
+      },
+      writeReceipt: (path, receipt) => {
+        events.push("receipt");
+        writeFileSync(path, `${JSON.stringify(receipt)}\n`, { flag: "wx" });
+      },
+      writeSuccess: () => events.push("success"),
+    }),
+    (error) => error.message === "METHOD_PILOT_CLEANUP_FAILED",
+  );
+
+  assert.deepEqual(events, [
+    "context",
+    "browser",
+    "server",
+    "snapshot",
+    "receipt",
+  ]);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  assert.equal(receipt.context.outcome, "failed");
+  assert.equal(receipt.context.errorCode, "CONTEXT_CLOSE_REJECTED");
+  assert.equal(receipt.browser.outcome, "failed");
+  assert.equal(receipt.browser.errorCode, "BROWSER_CLOSE_TIMEOUT");
+  assert.equal(receipt.browser.descendants, "not_independently_verified");
+  assert.equal(receipt.ownedServer.stopHelper, "returned");
+  assert.deepEqual(receipt.ownedServer.processGroupSnapshot, {
+    outcome: "empty",
+    memberCount: 0,
+  });
+  assert.deepEqual(receipt.cleanupFailures, [
+    { resource: "context", code: "CONTEXT_CLOSE_REJECTED" },
+    { resource: "browser", code: "BROWSER_CLOSE_TIMEOUT" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(receipt), /private context close detail/);
+});
+
+test("run success output waits until the receipt has been written", async (t) => {
+  const { runDirectory, receiptPath } = runCleanupReceiptFixture(t);
+  const events = [];
+  const server = { pid: 43211, exitCode: 0, signalCode: null };
+
+  await finalizeRunCleanup({
+    runDirectory,
+    manifestSha256: "b".repeat(64),
+    context: { close: async () => events.push("context") },
+    browser: { close: async () => events.push("browser") },
+    server,
+    stopServer: async () => events.push("server"),
+    readProcessTable: () => {
+      events.push("snapshot");
+      return "";
+    },
+    writeReceipt: (path, receipt) => {
+      writeFileSync(path, `${JSON.stringify(receipt)}\n`, { flag: "wx" });
+      events.push("receipt");
+    },
+    writeSuccess: () => {
+      JSON.parse(readFileSync(receiptPath, "utf8"));
+      events.push("success");
+    },
+  });
+
+  assert.deepEqual(events, [
+    "context",
+    "browser",
+    "server",
+    "snapshot",
+    "receipt",
+    "success",
+  ]);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  assert.equal(receipt.ownedServer.childExitKnown, true);
+  assert.equal(receipt.ownedServer.exitCode, 0);
+  assert.equal(receipt.ownedServer.signalCode, null);
+});
+
+test("receipt write failure fails the run without printing success", async (t) => {
+  const { runDirectory } = runCleanupReceiptFixture(t);
+  const events = [];
+  const server = { pid: 43212, exitCode: null, signalCode: null };
+
+  await assert.rejects(
+    finalizeRunCleanup({
+      runDirectory,
+      manifestSha256: "c".repeat(64),
+      context: { close: async () => events.push("context") },
+      browser: { close: async () => events.push("browser") },
+      server,
+      stopServer: async () => events.push("server"),
+      readProcessTable: () => "",
+      writeReceipt: () => {
+        events.push("receipt");
+        throw new Error("private receipt filesystem detail");
+      },
+      writeSuccess: () => events.push("success"),
+    }),
+    (error) => error.message === "METHOD_PILOT_RECEIPT_WRITE_FAILED",
+  );
+
+  assert.deepEqual(events, ["context", "browser", "server", "receipt"]);
+});
+
+test("the receipt preserves a primary run failure alongside cleanup failures", async (t) => {
+  const { runDirectory, receiptPath } = runCleanupReceiptFixture(t);
+  const primaryError = new Error("primary private failure detail");
+  const server = { pid: 43213, exitCode: 0, signalCode: null };
+  let observedError;
+
+  try {
+    await finalizeRunCleanup({
+      runDirectory,
+      manifestSha256: "d".repeat(64),
+      primaryError,
+      failureStage: "capture:100-interactive:append",
+      context: {
+        close: async () => {
+          throw new Error("private close error");
+        },
+      },
+      browser: { close: async () => undefined },
+      server,
+      stopServer: async () => undefined,
+      readProcessTable: () => "",
+      writeSuccess: () =>
+        assert.fail("a primary failure must not print success"),
+    });
+  } catch (error) {
+    observedError = error;
+  }
+
+  assert.equal(observedError, primaryError);
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  assert.deepEqual(receipt.primaryRunFailure, {
+    stage: "capture:100-interactive:append",
+    code: "METHOD_PILOT_FAILED",
+  });
+  assert.deepEqual(receipt.cleanupFailures, [
+    { resource: "context", code: "CONTEXT_CLOSE_REJECTED" },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(receipt),
+    /primary private failure detail|private close error/,
+  );
+});
+
+test("owned server stop rejection persists only its safe code and still snapshots", async (t) => {
+  const { runDirectory, receiptPath } = runCleanupReceiptFixture(t);
+  const server = { pid: 43215, exitCode: null, signalCode: "SIGTERM" };
+
+  await assert.rejects(
+    finalizeRunCleanup({
+      runDirectory,
+      manifestSha256: "f".repeat(64),
+      context: { close: async () => undefined },
+      browser: { close: async () => undefined },
+      server,
+      stopServer: async () => {
+        throw new Error("private server cleanup details");
+      },
+      readProcessTable: () => {
+        return "";
+      },
+      writeSuccess: () =>
+        assert.fail("a rejected stop helper must fail the run"),
+    }),
+    (error) => error.message === "METHOD_PILOT_CLEANUP_FAILED",
+  );
+
+  const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+  assert.equal(receipt.ownedServer.stopHelper, "rejected");
+  assert.equal(receipt.ownedServer.errorCode, "OWNED_SERVER_STOP_FAILED");
+  assert.deepEqual(receipt.ownedServer.processGroupSnapshot, {
+    outcome: "empty",
+    memberCount: 0,
+  });
+  assert.equal(receipt.ownedServer.childExitKnown, true);
+  assert.equal(receipt.ownedServer.exitCode, null);
+  assert.equal(receipt.ownedServer.signalCode, "SIGTERM");
+  assert.deepEqual(receipt.cleanupFailures, [
+    { resource: "ownedServer", code: "OWNED_SERVER_STOP_FAILED" },
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(receipt),
+    /private server cleanup details/,
+  );
+});
+
+test("post-stop server snapshots keep unknown and nonempty groups distinct", async (t) => {
+  for (const scenario of [
+    {
+      name: "unavailable",
+      readProcessTable: () => {
+        throw new Error("private process table detail");
+      },
+      expected: { outcome: "unavailable", memberCount: null },
+      shouldReject: false,
+    },
+    {
+      name: "nonempty",
+      readProcessTable: (server) =>
+        `${server.pid} 1 ${server.pid} ${process.getuid?.() ?? 501} S`,
+      expected: { outcome: "nonempty", memberCount: 1 },
+      shouldReject: true,
+    },
+  ]) {
+    await t.test(scenario.name, async (subtest) => {
+      const { runDirectory, receiptPath } = runCleanupReceiptFixture(subtest);
+      const server = { pid: 43214, exitCode: null, signalCode: null };
+      let stopFinished = false;
+      const operation = finalizeRunCleanup({
+        runDirectory,
+        manifestSha256: "e".repeat(64),
+        context: { close: async () => undefined },
+        browser: { close: async () => undefined },
+        server,
+        stopServer: async () => {
+          stopFinished = true;
+        },
+        readProcessTable: () => {
+          assert.equal(
+            stopFinished,
+            true,
+            "snapshot must follow the stop attempt",
+          );
+          return scenario.readProcessTable(server);
+        },
+        writeReceipt: (path, receipt) =>
+          writeFileSync(path, `${JSON.stringify(receipt)}\n`, { flag: "wx" }),
+      });
+
+      if (scenario.shouldReject) {
+        await assert.rejects(
+          operation,
+          (error) => error.message === "METHOD_PILOT_CLEANUP_FAILED",
+        );
+      } else {
+        await operation;
+      }
+      const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+      assert.deepEqual(
+        receipt.ownedServer.processGroupSnapshot,
+        scenario.expected,
+      );
+      assert.equal(receipt.ownedServer.childExitKnown, false);
+      assert.notEqual(
+        receipt.ownedServer.processGroupSnapshot.outcome,
+        "empty",
+      );
+    });
+  }
+});
+
 test("append accepts a successful bodyless response without waiting for response.finished", async () => {
   const diagnostics = {};
   let finishedCalls = 0;

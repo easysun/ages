@@ -254,6 +254,34 @@ const currentRetainedCollectorSourceHash =
 const cleanupVerifiedCollectorSourceHash =
   "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab";
 
+function currentCollectorSourceHash() {
+  const collectorSource = readFileSync(
+    resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
+    "utf8",
+  );
+  const extrasDeclaration = collectorSource.match(
+    /const extras = \[([\s\S]*?)\];/,
+  );
+  assert.ok(extrasDeclaration, "collector must declare explicit hash inputs");
+  const extras = Array.from(
+    extrasDeclaration[1].matchAll(/"([^"]+)"/g),
+    ([, path]) => path,
+  );
+  const tracked = execFileSync("git", ["ls-files", "-z", "src", "migrations"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
+  const sourceHash = createHash("sha256");
+  for (const path of [...new Set([...tracked, ...extras])].sort()) {
+    sourceHash.update(path);
+    sourceHash.update("\0");
+    sourceHash.update(readFileSync(resolve(repoRoot, path)));
+  }
+  return sourceHash.digest("hex");
+}
+
 test("pins current collector lifecycle hashes to explicit producer inputs", () => {
   const collectorSource = readFileSync(
     resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
@@ -268,6 +296,7 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     ([, path]) => path,
   );
   assert.ok(extras.includes("scripts/retained-input-node-evidence.mjs"));
+  assert.ok(extras.includes("scripts/lib/owned-cleanup-receipt.mjs"));
   assert.ok(!extras.includes("scripts/chromium-trace-metrics.mjs"));
   assert.ok(!extras.includes("scripts/analyze-chromium-traces.mjs"));
 
@@ -284,14 +313,8 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
   assert.ok(!producerInputs.includes("scripts/chromium-trace-metrics.mjs"));
   assert.ok(!producerInputs.includes("scripts/analyze-chromium-traces.mjs"));
 
-  const sourceHash = createHash("sha256");
-  for (const path of producerInputs) {
-    sourceHash.update(path);
-    sourceHash.update("\0");
-    sourceHash.update(readFileSync(resolve(repoRoot, path)));
-  }
-  const actualHash = sourceHash.digest("hex");
-  assert.equal(actualHash, cleanupVerifiedCollectorSourceHash);
+  const actualHash = currentCollectorSourceHash();
+  assert.notEqual(actualHash, cleanupVerifiedCollectorSourceHash);
   const metricsSource = readFileSync(
     resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
     "utf8",
@@ -317,11 +340,17 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
   );
   assert.equal(
     lifecycleHash("cleanupVerifiedVersionOneRetentionDisabled"),
-    actualHash,
+    cleanupVerifiedCollectorSourceHash,
   );
   assert.equal(
     lifecycleHash("cleanupVerifiedVersionTwoRetentionEnabled"),
-    actualHash,
+    cleanupVerifiedCollectorSourceHash,
+  );
+  assert.equal(lifecycleHash("runLevelCleanupReceiptVersionOne"), actualHash);
+  assert.equal(lifecycleHash("runLevelCleanupReceiptVersionTwo"), actualHash);
+  assert.notEqual(
+    lifecycleHash("runLevelCleanupReceiptVersionOne"),
+    lifecycleHash("originalVersionOne"),
   );
 });
 
@@ -3914,6 +3943,33 @@ test("version-two observer accepts only registered retention-enabled collector h
   assert.deepEqual(unknownResult.rejectionCounts, [
     { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
   ]);
+});
+
+test("run-level cleanup receipt producer hash is accepted only with matching observer schema", () => {
+  const sourceHashSha256 = currentCollectorSourceHash();
+  const versionOne = makeObserverEvidence({ sourceHashSha256 });
+  const versionOneResult = analyzeObservedTrace({ evidence: versionOne });
+  assert.equal(versionOneResult.counts.accepted, 1);
+
+  const versionTwo = makeVersionTwoObserverEvidence({ sourceHashSha256 });
+  const versionTwoResult = analyzeVersionTwoTrace({ evidence: versionTwo });
+  assert.equal(versionTwoResult.counts.accepted, 1);
+
+  const crossedVersionOne = makeObserverEvidence({
+    sourceHashSha256,
+    declarationOverrides: { schemaVersion: 2 },
+  });
+  assertVersionTwoUnavailable(
+    analyzeObservedTrace({ evidence: crossedVersionOne }),
+  );
+
+  const crossedVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256,
+    declarationOverrides: { schemaVersion: 1 },
+  });
+  assertVersionTwoUnavailable(
+    analyzeVersionTwoTrace({ evidence: crossedVersionTwo }),
+  );
 });
 
 test("keeps a secondary open dispatch explicitly separate from the primary action", () => {
