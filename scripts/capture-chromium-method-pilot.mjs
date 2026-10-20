@@ -21,15 +21,21 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "@playwright/test";
 import {
   armTrustedStimulusObserver,
+  clearRetainedInputNodes,
   closeTrustedStimulusObserver,
+  createUnavailableRetainedNodeObservation,
   createUnavailableTrustedStimulusObservation,
   finishTrustedStimulusObserver,
+  freezeTrustedStimulusObserver,
   installTrustedStimulusObserver,
+  RETAINED_NODE_EVIDENCE_POLICY,
+  RETAINED_NODE_RECORD_BYTE_LIMIT,
   registerTrustedStimulusTarget,
   setTrustedStimulusPhase,
   TRUSTED_STIMULUS_EVIDENCE_CLASS,
   writeTrustedStimulusSidecar,
 } from "./browser-stimulus-observer.mjs";
+import { createRetainedInputNodeEvidenceTracker } from "./retained-input-node-evidence.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ARTIFACTS = resolve(ROOT, ".superpowers/sdd/chromium-method-runner");
@@ -431,6 +437,9 @@ export function createInputFrameProvenanceTracker(
       removeListeners();
       return finalResult;
     },
+    dispose() {
+      removeListeners();
+    },
   };
 }
 
@@ -559,6 +568,20 @@ export function parseRunnerArgs(args) {
     args[2] === "--observe-inputs"
   ) {
     return { mode: "run", browser: "installed-brave", observeInputs: true };
+  }
+  if (
+    args.length === 4 &&
+    args[0] === "--run" &&
+    args[1] === "--browser=installed-brave" &&
+    args[2] === "--observe-inputs" &&
+    args[3] === "--retain-input-nodes"
+  ) {
+    return {
+      mode: "run",
+      browser: "installed-brave",
+      observeInputs: true,
+      retainInputNodes: true,
+    };
   }
   throw new Error("unsupported capture option");
 }
@@ -780,6 +803,46 @@ export function aggregateTrustedStimulusApiStatus(cases) {
   if (statuses.length === 0) return "unknown";
   const distinctStatuses = new Set(statuses);
   return distinctStatuses.size === 1 ? statuses[0] : "mixed";
+}
+
+export function buildObservationEvidenceDeclaration(
+  cases,
+  retainInputNodes = false,
+) {
+  return {
+    ...(retainInputNodes ? { schemaVersion: 2 } : {}),
+    evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,
+    instrumented: true,
+    qualification: "diagnostic-only",
+    inputMethod:
+      "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
+    performanceEventTiming: {
+      status: aggregateTrustedStimulusApiStatus(cases),
+      durationThresholdMs: 16,
+      buffered: false,
+      quantized: true,
+      continuousInputExcluded: true,
+    },
+    recordLimit: 512,
+    recordByteLimit: retainInputNodes
+      ? RETAINED_NODE_RECORD_BYTE_LIMIT
+      : 240 * 1024,
+    sidecarByteLimit: 256 * 1024,
+    ...(retainInputNodes
+      ? {
+          retainedNodeEvidence: {
+            enabled: RETAINED_NODE_EVIDENCE_POLICY.enabled,
+            maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+            mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+            protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+          },
+        }
+      : {}),
+    nextPaint: {
+      status: "unproven",
+      reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
+    },
+  };
 }
 
 export function validateCaptureTimeMetadata(metadata) {
@@ -2764,7 +2827,7 @@ function outcomeReason(error, actionName) {
     : `${actionName.toUpperCase().replaceAll("-", "_")}_GROUND_TRUTH_FAILED`;
 }
 
-async function captureCase(
+export async function captureCase(
   context,
   item,
   timelineId,
@@ -2773,6 +2836,7 @@ async function captureCase(
   categories,
   workloadCount,
   observeInputs = false,
+  retainInputNodes = false,
 ) {
   const page = await context.newPage();
   let session;
@@ -2792,9 +2856,20 @@ async function captureCase(
   let observationArtifact = null;
   let frameProvenanceTracker = null;
   let frameProvenance = null;
+  let retainedNodeTracker = null;
+  let retainedNodeEvidenceFinalized = false;
 
   const finishFrameProvenance = async () => {
     if (!observeInputs || frameProvenance) return frameProvenance;
+    if (
+      retainInputNodes &&
+      retainedNodeTracker &&
+      !retainedNodeTracker.isAvailable()
+    ) {
+      actionReason ??= "INPUT_FRAME_PROVENANCE_UNAVAILABLE";
+      frameProvenanceTracker?.dispose();
+      return null;
+    }
     if (!frameProvenanceTracker) {
       actionReason ??= "INPUT_FRAME_PROVENANCE_UNAVAILABLE";
       return null;
@@ -2811,7 +2886,9 @@ async function captureCase(
     if (observationArtifact) return observationArtifact;
     const payload =
       stimulusObservation ??
-      createUnavailableTrustedStimulusObservation("OBSERVATION_NOT_ARMED");
+      (retainInputNodes
+        ? createUnavailableRetainedNodeObservation("OBSERVATION_NOT_ARMED")
+        : createUnavailableTrustedStimulusObservation("OBSERVATION_NOT_ARMED"));
     try {
       observationArtifact = writeTrustedStimulusSidecar({
         directory: runDirectory,
@@ -2831,8 +2908,100 @@ async function captureCase(
     return observationArtifact;
   };
 
+  const retainedObserverFailureReasonCode = () => {
+    const evidence = stimulusObservation?.retainedNodeEvidence;
+    if (
+      evidence?.status !== "unavailable" ||
+      evidence.reasonCode === "RETAINED_NODE_MAPPING_FAILED"
+    ) {
+      return null;
+    }
+    return evidence.reasonCode;
+  };
+
+  const finalizeRetainedNodeEvidence = async (observerCleanup) => {
+    if (
+      !retainInputNodes ||
+      !retainedNodeTracker ||
+      retainedNodeEvidenceFinalized
+    ) {
+      return stimulusObservation?.retainedNodeEvidence ?? null;
+    }
+    const cleanup = observerCleanup ?? (await clearRetainedInputNodes(page));
+    let evidence;
+    try {
+      evidence = await retainedNodeTracker.finalize({
+        documentId: observationDocumentId,
+        scope: stimulusObservation?.retainedNodeEvidence?.scope ?? null,
+        observerCleanup: cleanup,
+        observerFailureReasonCode: retainedObserverFailureReasonCode(),
+      });
+    } catch {
+      evidence = createUnavailableRetainedNodeObservation(
+        "OBSERVATION_DRAIN_FAILED",
+        observationDocumentId,
+        "RETAINED_NODE_CLEANUP_FAILED",
+      ).retainedNodeEvidence;
+    }
+    stimulusObservation ??= createUnavailableRetainedNodeObservation(
+      "OBSERVATION_NOT_ARMED",
+      observationDocumentId,
+      evidence.reasonCode ?? "RETAINED_NODE_CLEANUP_FAILED",
+    );
+    stimulusObservation.retainedNodeEvidence = evidence;
+    retainedNodeEvidenceFinalized = true;
+    return evidence;
+  };
+
+  const finishRetainedNodeObservation = async () => {
+    if (!retainInputNodes) return;
+    if (observationDocumentId) {
+      try {
+        stimulusObservation = await freezeTrustedStimulusObserver(
+          page,
+          observationDocumentId,
+        );
+        await finishFrameProvenance();
+        await retainedNodeTracker?.snapshot(
+          "afterDrain",
+          observationDocumentId,
+        );
+        if (retainedObserverFailureReasonCode() === null) {
+          const targetTokens = Array.isArray(stimulusObservation.records)
+            ? [
+                ...new Set(
+                  stimulusObservation.records
+                    .filter((record) => record?.kind === "dom")
+                    .map((record) => record.targetToken),
+                ),
+              ]
+            : [];
+          await retainedNodeTracker?.mapTargets(
+            observationDocumentId,
+            targetTokens,
+          );
+        }
+        await retainedNodeTracker?.snapshot(
+          "afterMapping",
+          observationDocumentId,
+        );
+      } catch {
+        // The tracker permanently records failures and prevents later CDP work.
+      }
+    } else {
+      stimulusObservation ??= createUnavailableRetainedNodeObservation(
+        "OBSERVATION_NOT_ARMED",
+      );
+      await finishFrameProvenance();
+    }
+    const cleanup = await clearRetainedInputNodes(page);
+    await finalizeRetainedNodeEvidence(cleanup);
+  };
+
   try {
-    if (observeInputs) await installTrustedStimulusObserver(page);
+    if (observeInputs) {
+      await installTrustedStimulusObserver(page, { retainInputNodes });
+    }
     if (item.action === "open") {
       setup = await setupOpenCase(
         page,
@@ -2906,6 +3075,21 @@ async function captureCase(
       }
     }
     session = await context.newCDPSession(page);
+    if (observeInputs && retainInputNodes) {
+      const browser = context.browser();
+      const browserSession = await browser.newBrowserCDPSession();
+      retainedNodeTracker = createRetainedInputNodeEvidenceTracker({
+        page,
+        pageSession: session,
+        browserSession,
+      });
+      await retainedNodeTracker.start();
+      try {
+        await retainedNodeTracker.snapshot("beforeArm", null);
+      } catch {
+        // Continue the measured action with retained evidence marked unavailable.
+      }
+    }
     frameProvenanceTracker = createInputFrameProvenanceTracker(session, {
       enabled: observeInputs,
     });
@@ -2923,19 +3107,37 @@ async function captureCase(
             const armed = await armTrustedStimulusObserver(page);
             if (armed.status === "armed") {
               observationDocumentId = armed.documentId;
+              if (retainInputNodes) {
+                try {
+                  await retainedNodeTracker?.snapshot(
+                    "afterArm",
+                    observationDocumentId,
+                  );
+                } catch {
+                  // Retention failure does not alter the existing action path.
+                }
+              }
               await frameProvenanceTracker?.captureAfterArm(
                 observationDocumentId,
               );
             } else {
-              stimulusObservation = createUnavailableTrustedStimulusObservation(
-                "OBSERVATION_DRAIN_FAILED",
-              );
+              stimulusObservation = retainInputNodes
+                ? createUnavailableRetainedNodeObservation(
+                    "OBSERVATION_DRAIN_FAILED",
+                  )
+                : createUnavailableTrustedStimulusObservation(
+                    "OBSERVATION_DRAIN_FAILED",
+                  );
               await frameProvenanceTracker?.captureAfterArm(null);
             }
           } catch {
-            stimulusObservation = createUnavailableTrustedStimulusObservation(
-              "OBSERVATION_DRAIN_FAILED",
-            );
+            stimulusObservation = retainInputNodes
+              ? createUnavailableRetainedNodeObservation(
+                  "OBSERVATION_DRAIN_FAILED",
+                )
+              : createUnavailableTrustedStimulusObservation(
+                  "OBSERVATION_DRAIN_FAILED",
+                );
             await frameProvenanceTracker?.captureAfterArm(null);
           }
         }
@@ -2990,20 +3192,27 @@ async function captureCase(
         } finally {
           if (observeInputs) {
             if (observationDocumentId) {
-              stimulusObservation = await finishTrustedStimulusObserver(
-                page,
-                observationDocumentId,
-              );
+              if (retainInputNodes) {
+                await finishRetainedNodeObservation();
+              } else {
+                stimulusObservation = await finishTrustedStimulusObserver(
+                  page,
+                  observationDocumentId,
+                );
+              }
               if (
                 stimulusObservation.reasonCode === "NAVIGATION_OBSERVATION_LOST"
               ) {
                 actionReason = "NAVIGATION_OBSERVATION_LOST";
               }
             } else {
-              stimulusObservation ??=
-                createUnavailableTrustedStimulusObservation(
-                  "OBSERVATION_NOT_ARMED",
-                );
+              stimulusObservation ??= retainInputNodes
+                ? createUnavailableRetainedNodeObservation(
+                    "OBSERVATION_NOT_ARMED",
+                  )
+                : createUnavailableTrustedStimulusObservation(
+                    "OBSERVATION_NOT_ARMED",
+                  );
             }
             await finishFrameProvenance();
           }
@@ -3013,6 +3222,7 @@ async function captureCase(
       actionDiagnostic,
     );
 
+    await finalizeRetainedNodeEvidence();
     await finishFrameProvenance();
     const safeStimulusObservation = saveStimulusObservation();
     const safeActionDiagnostic = serializeActionDiagnostic(actionDiagnostic);
@@ -3147,6 +3357,7 @@ async function captureCase(
       segment: null,
     };
   } catch {
+    await finalizeRetainedNodeEvidence();
     await finishFrameProvenance();
     const code = actionReason ?? "CASE_SETUP_FAILED";
     const safeStimulusObservation = saveStimulusObservation();
@@ -3179,23 +3390,43 @@ async function captureCase(
       segment: null,
     };
   } finally {
-    await finishFrameProvenance();
-    if (observeInputs) await closeTrustedStimulusObserver(page);
+    try {
+      await finalizeRetainedNodeEvidence();
+    } catch {}
+    try {
+      await finishFrameProvenance();
+    } catch {}
+    frameProvenanceTracker?.dispose();
+    if (observeInputs) {
+      try {
+        await closeTrustedStimulusObserver(page);
+      } catch {}
+    }
     try {
       if (setup?.cleanup)
         await withTimeout(setup.cleanup(), 3000, "ROUTE_CLEANUP_TIMEOUT");
+    } catch {}
+    try {
       if (setup?.remove)
         await withTimeout(setup.remove(), 3000, "ROUTE_CLEANUP_TIMEOUT");
-      if (session)
+    } catch {}
+    try {
+      if (retainedNodeTracker) {
+        await withTimeout(
+          retainedNodeTracker.close(),
+          3000,
+          "TRACE_SESSION_CLEANUP_TIMEOUT",
+        );
+      } else if (session)
         await withTimeout(
           session.detach(),
           3000,
           "TRACE_SESSION_CLEANUP_TIMEOUT",
         );
     } catch {}
-    await withTimeout(page.close(), 5000, "PAGE_CLEANUP_TIMEOUT").catch(
-      () => {},
-    );
+    try {
+      await withTimeout(page.close(), 5000, "PAGE_CLEANUP_TIMEOUT");
+    } catch {}
   }
 }
 
@@ -3246,6 +3477,7 @@ function sourceHash() {
     "tests/e2e/start-server.mjs",
     "scripts/capture-chromium-method-pilot.mjs",
     "scripts/browser-stimulus-observer.mjs",
+    "scripts/retained-input-node-evidence.mjs",
     "wrangler.jsonc",
     "wrangler.tracking.jsonc",
   ];
@@ -3278,6 +3510,7 @@ async function runPilot(
   failureState = { stage: "preflight" },
   browserMode = "playwright-chromium",
   observeInputs = false,
+  retainInputNodes = false,
 ) {
   const setStage = (stage) => {
     failureState.stage = stage;
@@ -3398,6 +3631,7 @@ async function runPilot(
         sessionCategories,
         item.rowCount,
         observeInputs,
+        retainInputNodes,
       );
       cases.push(captured.caseRecord);
       if (captured.traceRecord) traces.push(captured.traceRecord);
@@ -3452,27 +3686,10 @@ async function runPilot(
         : {}),
       ...(observeInputs
         ? {
-            observationEvidence: {
-              evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,
-              instrumented: true,
-              qualification: "diagnostic-only",
-              inputMethod:
-                "Synthetic Playwright stimuli against local fixtures; not human input or physical equivalence.",
-              performanceEventTiming: {
-                status: aggregateTrustedStimulusApiStatus(cases),
-                durationThresholdMs: 16,
-                buffered: false,
-                quantized: true,
-                continuousInputExcluded: true,
-              },
-              recordLimit: 512,
-              recordByteLimit: 240 * 1024,
-              sidecarByteLimit: 256 * 1024,
-              nextPaint: {
-                status: "unproven",
-                reasonCode: "NEXT_PAINT_METHOD_UNPROVEN",
-              },
-            },
+            observationEvidence: buildObservationEvidenceDeclaration(
+              cases,
+              retainInputNodes,
+            ),
           }
         : {}),
       inputMethod:
@@ -3598,6 +3815,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
       failureState,
       options.browser ?? "playwright-chromium",
       options.observeInputs ?? false,
+      options.retainInputNodes ?? false,
     ).catch((error) => {
       const allowed = new Set([
         "UNSUPPORTED_HOST",
