@@ -23,3 +23,11 @@ jobs:
       - run: npm run db:migrate:local
       - run: npx playwright install --with-deps chromium
       - run: npm run check
+      - name: Upload mobile media fallback diagnostic
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media-fallback-diagnostic
+          path: test-results/**/media-fallback-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 3
