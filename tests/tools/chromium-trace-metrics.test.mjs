@@ -177,6 +177,33 @@ const knownBrave15580Observations = {
   status: "installed-brave-schema-probe",
 };
 
+const knownBrave15585Observations = {
+  browser: {
+    product: "Runtime browser observation",
+    version: "155.0.8059.85",
+  },
+  browserIdentity: {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.59",
+      bundleVersion: "197.59",
+      scmRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    },
+    executableSha256:
+      "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7",
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-brave-schema-probe",
+  status: "installed-brave-schema-probe",
+};
+
 function withBrave155InteractionValues(trace) {
   const legacy = trace.traceEvents[0].args.data;
   const modern = trace.traceEvents[1].args.event_timing;
@@ -223,6 +250,18 @@ function brave15580Crosswalk(
   ).discreteEventTimingCrosswalk;
 }
 
+function brave15585Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownBrave15585Observations,
+) {
+  return analyzeTrace(
+    trace,
+    { trace: "brave15585-synthetic.trace.json", dataLossOccurred: false },
+    [],
+    observations,
+  ).discreteEventTimingCrosswalk;
+}
+
 function assertUnsupportedBrave155(crosswalk) {
   assert.equal(crosswalk.status, "unavailable");
   assert.deepEqual(crosswalk.candidates, []);
@@ -236,6 +275,18 @@ function assertUnsupportedBrave155(crosswalk) {
 }
 
 function assertUnsupportedBrave15580(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+function assertUnsupportedBrave15585(crosswalk) {
   assert.equal(crosswalk.status, "unavailable");
   assert.deepEqual(crosswalk.candidates, []);
   assert.equal(crosswalk.methodScope, null);
@@ -653,18 +704,13 @@ function makeVersionTwoTrace({
 function analyzeVersionTwoTrace({
   evidence = makeVersionTwoObserverEvidence(),
   trace = makeVersionTwoTrace(),
+  sourceObservations = knownBrave15580Observations,
 } = {}) {
-  return analyzeTrace(
-    trace,
-    evidence.traceRecord,
-    [],
-    knownBrave15580Observations,
-    {
-      declaration: evidence.declaration,
-      sidecar: evidence.sidecar,
-      capture: evidence.capture,
-    },
-  ).observedDiscreteInputs;
+  return analyzeTrace(trace, evidence.traceRecord, [], sourceObservations, {
+    declaration: evidence.declaration,
+    sidecar: evidence.sidecar,
+    capture: evidence.capture,
+  }).observedDiscreteInputs;
 }
 
 function assertVersionTwoUnavailable(result) {
@@ -790,6 +836,205 @@ test("accepts only the exact Brave 155.0.8059.80 published-source projection", (
     mutate(observations);
     assertUnsupportedBrave15580(brave15580Crosswalk(undefined, observations));
   }
+});
+
+test("accepts only the exact Brave 155.0.8059.85 tuple with diagnostic source compatibility provenance", () => {
+  const crosswalk = brave15585Crosswalk();
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    pinnedSourceRevision: "0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+    observedBundleRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes("INSTALLED_BRAVE_SCHEMA_PROBE_ONLY"),
+  );
+  for (const reason of [
+    "ACTION_ATTRIBUTION_UNPROVEN",
+    "INTERACTION_AGGREGATION_UNPROVEN",
+    "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+    "MODALITY_EQUIVALENCE_UNPROVEN",
+    "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+  ]) {
+    assert.ok(crosswalk.gateReasonCodes.includes(reason), reason);
+  }
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+
+  const requiredPaths = [
+    ["browser"],
+    ["browser", "product"],
+    ["browser", "version"],
+    ["qualification"],
+    ["status"],
+    ["browserIdentity"],
+    ["browserIdentity", "bundle"],
+    ["browserIdentity", "bundle", "identifier"],
+    ["browserIdentity", "bundle", "shortVersion"],
+    ["browserIdentity", "bundle", "bundleVersion"],
+    ["browserIdentity", "bundle", "scmRevision"],
+    ["browserIdentity", "executableSha256"],
+    ["browserIdentity", "runtime"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+  ];
+  for (const path of requiredPaths) {
+    const missing = structuredClone(knownBrave15585Observations);
+    let parent = missing;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    delete parent[path.at(-1)];
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, missing));
+
+    const changed = structuredClone(knownBrave15585Observations);
+    parent = changed;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    parent[path.at(-1)] = `TRACE_PRIVATE_${path.join("_")}`;
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, changed));
+  }
+
+  const extraFieldMutations = [
+    (observations) => {
+      observations.extra = "TRACE_PRIVATE_ROOT";
+    },
+    (observations) => {
+      observations.browser.extra = "TRACE_PRIVATE_BROWSER";
+    },
+    (observations) => {
+      observations.browserIdentity.extra = "TRACE_PRIVATE_IDENTITY";
+    },
+    (observations) => {
+      observations.browserIdentity.bundle.extra = "TRACE_PRIVATE_BUNDLE";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.extra = "TRACE_PRIVATE_RUNTIME";
+    },
+  ];
+  for (const mutate of extraFieldMutations) {
+    const observations = structuredClone(knownBrave15585Observations);
+    mutate(observations);
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, observations));
+  }
+});
+
+test("accepts the preserved .80 retained-node protocol catalog for exact Brave .85 as a diagnostic compatibility input", () => {
+  const evidence = makeVersionTwoObserverEvidence();
+  const analysis = analyzeTrace(
+    makeVersionTwoTrace(),
+    evidence.traceRecord,
+    [],
+    knownBrave15585Observations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  );
+  assert.equal(analysis.observedDiscreteInputs.status, "diagnostic-only");
+  assert.equal(analysis.observedDiscreteInputs.counts.accepted, 1);
+  assert.equal(
+    analysis.observedDiscreteInputs.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(analysis.observedDiscreteInputs.formalActionSamples, []);
+  assert.deepEqual(
+    analysis.discreteEventTimingCrosswalk.methodScope
+      .protocolCatalogCompatibility,
+    {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+  );
+
+  const mismatchedCatalog = makeVersionTwoObserverEvidence();
+  const unsupported85Catalog =
+    "chromium-0e66b94549a8bd85f03fbdf189b752d6e7b63c32+v8-712e1808de2d7416f1276d0deb1ee4ac978132b8";
+  mismatchedCatalog.declaration.retainedNodeEvidence.protocolCatalogId =
+    unsupported85Catalog;
+  mismatchedCatalog.sidecar.observation.retainedNodeEvidence.protocolCatalogId =
+    unsupported85Catalog;
+  const rejected = analyzeVersionTwoTrace({
+    evidence: mismatchedCatalog,
+    sourceObservations: knownBrave15585Observations,
+  });
+  assertVersionTwoUnavailable(rejected);
+  assert.deepEqual(rejected.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+});
+
+test("keeps version-one observed association limited to Brave 155.0.8059.80", () => {
+  const versionOneEvidence = makeObserverEvidence();
+  const versionOneObserver = {
+    declaration: versionOneEvidence.declaration,
+    sidecar: versionOneEvidence.sidecar,
+    capture: versionOneEvidence.capture,
+  };
+  const versionOne80 = analyzeTrace(
+    makeBrave155Trace(),
+    versionOneEvidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    versionOneObserver,
+  ).observedDiscreteInputs;
+  assert.equal(versionOne80.status, "diagnostic-only");
+  assert.equal(versionOne80.counts.accepted, 1);
+  assert.equal(versionOne80.formalActionStatus, "unavailable");
+  assert.deepEqual(versionOne80.formalActionSamples, []);
+
+  const versionOne85 = analyzeTrace(
+    makeBrave155Trace(),
+    versionOneEvidence.traceRecord,
+    [],
+    knownBrave15585Observations,
+    versionOneObserver,
+  ).observedDiscreteInputs;
+  assert.equal(versionOne85.status, "unavailable");
+  assert.deepEqual(versionOne85.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(versionOne85.rejectionCounts, [
+    { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+  ]);
+  assert.equal(versionOne85.formalActionStatus, "unavailable");
+  assert.deepEqual(versionOne85.formalActionSamples, []);
+
+  const versionTwo85 = analyzeVersionTwoTrace({
+    evidence: makeVersionTwoObserverEvidence(),
+    sourceObservations: knownBrave15585Observations,
+  });
+  assert.equal(versionTwo85.status, "diagnostic-only");
+  assert.equal(versionTwo85.counts.accepted, 1);
+  assert.equal(versionTwo85.formalActionStatus, "unavailable");
+  assert.deepEqual(versionTwo85.formalActionSamples, []);
 });
 
 test("requires every asserted Brave 155 observation and rejects independent tuple mutations", () => {
