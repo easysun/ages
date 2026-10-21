@@ -251,6 +251,8 @@ const observedSourceHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
 const currentRetainedCollectorSourceHash =
   "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
+const cleanupVerifiedCollectorSourceHash =
+  "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab";
 
 test("pins current collector lifecycle hashes to explicit producer inputs", () => {
   const collectorSource = readFileSync(
@@ -289,6 +291,7 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     sourceHash.update(readFileSync(resolve(repoRoot, path)));
   }
   const actualHash = sourceHash.digest("hex");
+  assert.equal(actualHash, cleanupVerifiedCollectorSourceHash);
   const metricsSource = readFileSync(
     resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
     "utf8",
@@ -303,8 +306,23 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     return hash[1];
   };
 
-  assert.equal(lifecycleHash("currentVersionOneRetentionDisabled"), actualHash);
-  assert.equal(lifecycleHash("currentVersionTwoRetentionEnabled"), actualHash);
+  assert.equal(lifecycleHash("originalVersionOne"), observedSourceHash);
+  assert.equal(
+    lifecycleHash("currentVersionOneRetentionDisabled"),
+    currentRetainedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("currentVersionTwoRetentionEnabled"),
+    currentRetainedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("cleanupVerifiedVersionOneRetentionDisabled"),
+    actualHash,
+  );
+  assert.equal(
+    lifecycleHash("cleanupVerifiedVersionTwoRetentionEnabled"),
+    actualHash,
+  );
 });
 
 const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -3848,6 +3866,17 @@ test("version-one observer association remains tied to its original schema and h
     1,
   );
 
+  const cleanupVerifiedVersionOne = makeObserverEvidence({
+    sourceHashSha256: cleanupVerifiedCollectorSourceHash,
+  });
+  const cleanupVerifiedResult = analyzeObservedTrace({
+    evidence: cleanupVerifiedVersionOne,
+  });
+  assert.equal(cleanupVerifiedResult.status, "diagnostic-only");
+  assert.equal(cleanupVerifiedResult.counts.accepted, 1);
+  assert.equal(cleanupVerifiedResult.formalActionStatus, "unavailable");
+  assert.deepEqual(cleanupVerifiedResult.formalActionSamples, []);
+
   const versionTwoLabelOnVersionOneSchema = makeObserverEvidence({
     declarationOverrides: { schemaVersion: 2 },
   });
@@ -3855,6 +3884,36 @@ test("version-one observer association remains tied to its original schema and h
     evidence: versionTwoLabelOnVersionOneSchema,
   });
   assertVersionTwoUnavailable(rejected);
+});
+
+test("version-two observer accepts only registered retention-enabled collector hashes", () => {
+  const cleanupVerifiedVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: cleanupVerifiedCollectorSourceHash,
+  });
+  const cleanupVerifiedResult = analyzeVersionTwoTrace({
+    evidence: cleanupVerifiedVersionTwo,
+  });
+  assert.equal(cleanupVerifiedResult.status, "diagnostic-only");
+  assert.equal(cleanupVerifiedResult.counts.accepted, 1);
+  assert.equal(cleanupVerifiedResult.formalActionStatus, "unavailable");
+  assert.deepEqual(cleanupVerifiedResult.formalActionSamples, []);
+
+  const beebe32VersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: currentRetainedCollectorSourceHash,
+  });
+  assert.equal(
+    analyzeVersionTwoTrace({ evidence: beebe32VersionTwo }).counts.accepted,
+    1,
+  );
+
+  const unknownVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: "0".repeat(64),
+  });
+  const unknownResult = analyzeVersionTwoTrace({ evidence: unknownVersionTwo });
+  assertVersionTwoUnavailable(unknownResult);
+  assert.deepEqual(unknownResult.rejectionCounts, [
+    { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+  ]);
 });
 
 test("keeps a secondary open dispatch explicitly separate from the primary action", () => {

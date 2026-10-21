@@ -120,10 +120,27 @@ const OBSERVER_SOURCE_HASH_LIFECYCLE = Object.freeze({
     retainInputNodes: true,
     sha256: "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0",
   }),
+  cleanupVerifiedVersionOneRetentionDisabled: Object.freeze({
+    schemaVersion: 1,
+    retainInputNodes: false,
+    sha256: "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab",
+  }),
+  cleanupVerifiedVersionTwoRetentionEnabled: Object.freeze({
+    schemaVersion: 2,
+    retainInputNodes: true,
+    sha256: "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab",
+  }),
 });
 const VERSION_ONE_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.originalVersionOne.sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionOneRetentionDisabled.sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionOneRetentionDisabled
+    .sha256,
+]);
+const VERSION_TWO_OBSERVER_SOURCE_HASHES = new Set([
+  OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionTwoRetentionEnabled.sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionTwoRetentionEnabled
+    .sha256,
 ]);
 const OBSERVER_SIDECAR_INPUT_METHOD =
   "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.";
@@ -2351,10 +2368,7 @@ function validateObservedDiscreteEvidenceVersionTwo(
 
   const { declaration, sidecar, capture } = observerEvidence;
   const { caseRecord } = capture;
-  if (
-    capture.sourceHashSha256 !==
-    OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionTwoRetentionEnabled.sha256
-  ) {
+  if (!VERSION_TWO_OBSERVER_SOURCE_HASHES.has(capture.sourceHashSha256)) {
     return fail("COLLECTOR_SOURCE_HASH_MISMATCH");
   }
   if (
