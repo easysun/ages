@@ -236,6 +236,8 @@ const CROSSWALK_GATE_REASONS = [
   "VENDOR_PATCH_IDENTITY_UNVERIFIED",
   "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
 ];
+const BRAVE15585_PROTOCOL_CATALOG_ID =
+  "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99";
 const BRAVE155_METHOD_SCOPE = {
   observedBrowserVersion: "155.0.8059.40",
   pinnedSourceRevision: "cfaadc5a132d78e1828635aa8405a499f3e14864",
@@ -249,6 +251,22 @@ const BRAVE15580_METHOD_SCOPE = {
   observedBrowserVersion: "155.0.8059.80",
   pinnedSourceRevision: "43a195105613ac83c21d3f14de279f4a045c7da0",
   observedBundleRevision: "7bfa200812971b7811541ae6e5b72620abebe3a7",
+  evidenceClass: "installed-brave-schema-probe",
+  vendorPatchIdentity: "unverified",
+  navigationDocumentIdentity: "not-inferred",
+  originScope: "capture-case + renderer PID + frame",
+};
+const BRAVE15585_METHOD_SCOPE = {
+  observedBrowserVersion: "155.0.8059.85",
+  pinnedSourceRevision: "0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+  observedBundleRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+  chromiumSourceIdentity: "unverified",
+  protocolCatalogCompatibility: {
+    protocolCatalogId: BRAVE15585_PROTOCOL_CATALOG_ID,
+    comparedChromiumSourceRevision: "43a195105613ac83c21d3f14de279f4a045c7da0",
+    basis: "consumed-upstream-files-byte-identical-at-both-pins",
+    scope: "diagnostic-only",
+  },
   evidenceClass: "installed-brave-schema-probe",
   vendorPatchIdentity: "unverified",
   navigationDocumentIdentity: "not-inferred",
@@ -279,6 +297,11 @@ const BRAVE15580_BUNDLE_REVISION = "7bfa200812971b7811541ae6e5b72620abebe3a7";
 const BRAVE15580_RUNTIME_REVISION = "@7bfa200812971b7811541ae6e5b72620abebe3a";
 const BRAVE15580_EXECUTABLE_SHA256 =
   "a17d7d68343726bb2a601ef237b90198bf1bb0133952dc3935435c8fed70d6f5";
+const BRAVE15585_RUNTIME_PRODUCT = "Chrome/155.0.8059.85";
+const BRAVE15585_BUNDLE_REVISION = "c7357bfd2a76c2467ba1ae62593a81ae92c05205";
+const BRAVE15585_RUNTIME_REVISION = "@c7357bfd2a76c2467ba1ae62593a81ae92c0520";
+const BRAVE15585_EXECUTABLE_SHA256 =
+  "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7";
 
 export function nearestRank(values, percentile) {
   if (
@@ -1618,7 +1641,9 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
     return null;
   }
   if (
-    (profile === "brave155" || profile === "brave15580") &&
+    (profile === "brave155" ||
+      profile === "brave15580" ||
+      profile === "brave15585") &&
     !withinBrave155SignedInteractionBounds(
       [data.interactionId, data.interactionOffset],
       rejections,
@@ -1753,7 +1778,9 @@ function modernCrosswalkEntry(span, rejections, profile) {
     return null;
   }
   if (
-    (profile === "brave155" || profile === "brave15580") &&
+    (profile === "brave155" ||
+      profile === "brave15580" ||
+      profile === "brave15585") &&
     !withinBrave155SignedInteractionBounds(
       [timing.interaction_id, timing.interaction_offset],
       rejections,
@@ -2089,6 +2116,75 @@ function supportsBrave15580Profile(observations) {
   );
 }
 
+function supportsBrave15585Profile(observations) {
+  if (
+    !isRecord(observations) ||
+    !hasOnlyFields(
+      observations,
+      new Set(["browser", "browserIdentity", "qualification", "status"]),
+    ) ||
+    !isRecord(observations.browser) ||
+    !hasOnlyFields(observations.browser, new Set(["product", "version"])) ||
+    observations.browser.product !== BRAVE155_BROWSER_PRODUCT ||
+    observations.browser.version !==
+      BRAVE15585_METHOD_SCOPE.observedBrowserVersion ||
+    observations.qualification !== "installed-brave-schema-probe" ||
+    observations.status !== "installed-brave-schema-probe"
+  ) {
+    return false;
+  }
+
+  const identity = observations.browserIdentity;
+  if (
+    !isRecord(identity) ||
+    !hasOnlyFields(
+      identity,
+      new Set([
+        "bundle",
+        "executableSha256",
+        "runtime",
+        "chromiumSourceIdentity",
+      ]),
+    ) ||
+    identity.chromiumSourceIdentity !== "unverified" ||
+    identity.executableSha256 !== BRAVE15585_EXECUTABLE_SHA256
+  ) {
+    return false;
+  }
+
+  const bundle = identity.bundle;
+  if (
+    !isRecord(bundle) ||
+    !hasOnlyFields(
+      bundle,
+      new Set(["identifier", "shortVersion", "bundleVersion", "scmRevision"]),
+    ) ||
+    bundle.identifier !== "com.brave.Browser" ||
+    bundle.shortVersion !== "155.1.97.59" ||
+    bundle.bundleVersion !== "197.59" ||
+    bundle.scmRevision !== BRAVE15585_BUNDLE_REVISION
+  ) {
+    return false;
+  }
+
+  const runtime = identity.runtime;
+  return (
+    isRecord(runtime) &&
+    hasOnlyFields(
+      runtime,
+      new Set(["version", "product", "revision", "userAgent"]),
+    ) &&
+    runtime.version === BRAVE15585_METHOD_SCOPE.observedBrowserVersion &&
+    runtime.product === BRAVE15585_RUNTIME_PRODUCT &&
+    runtime.revision === BRAVE15585_RUNTIME_REVISION &&
+    typeof runtime.userAgent === "string" &&
+    hasPinnedChromeProductTokens(
+      runtime.userAgent,
+      BRAVE155_USER_AGENT_PRODUCT_VERSION,
+    )
+  );
+}
+
 function selectEventTimingCrosswalkProfile(observations) {
   if (!isRecord(observations) || !isRecord(observations.browser)) return null;
   if (
@@ -2113,6 +2209,13 @@ function selectEventTimingCrosswalkProfile(observations) {
       BRAVE15580_METHOD_SCOPE.observedBrowserVersion
   ) {
     return supportsBrave15580Profile(observations) ? "brave15580" : null;
+  }
+  if (
+    observations.browser.product === BRAVE155_BROWSER_PRODUCT &&
+    observations.browser.version ===
+      BRAVE15585_METHOD_SCOPE.observedBrowserVersion
+  ) {
+    return supportsBrave15585Profile(observations) ? "brave15585" : null;
   }
   return null;
 }
@@ -2408,7 +2511,7 @@ function validateObservedDiscreteEvidenceVersionTwo(
   ) {
     return fail("TRACE_DATA_LOSS_OR_LINK_MISMATCH");
   }
-  if (sourceProfile !== "brave15580") {
+  if (sourceProfile !== "brave15580" && sourceProfile !== "brave15585") {
     return fail("BROWSER_SOURCE_PROFILE_UNSUPPORTED");
   }
 
@@ -2460,6 +2563,10 @@ function validateObservedDiscreteEvidenceVersionTwo(
   ];
   const caseDeclaration = caseRecord.trustedStimulusObservation;
   const retainedDeclaration = declaration.retainedNodeEvidence;
+  const expectedProtocolCatalogId =
+    sourceProfile === "brave15585"
+      ? BRAVE15585_PROTOCOL_CATALOG_ID
+      : RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId;
   if (
     !hasExactFields(declaration, manifestDeclarationFields) ||
     declaration.schemaVersion !== 2 ||
@@ -2492,8 +2599,7 @@ function validateObservedDiscreteEvidenceVersionTwo(
     retainedDeclaration.maxNodes !== RETAINED_NODE_EVIDENCE_POLICY.maxNodes ||
     retainedDeclaration.mappingByteLimit !==
       RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit ||
-    retainedDeclaration.protocolCatalogId !==
-      RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId ||
+    retainedDeclaration.protocolCatalogId !== expectedProtocolCatalogId ||
     !hasExactFields(declaration.nextPaint, ["status", "reasonCode"]) ||
     declaration.nextPaint.status !== "unproven" ||
     declaration.nextPaint.reasonCode !== "NEXT_PAINT_METHOD_UNPROVEN" ||
@@ -3388,16 +3494,20 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
       ),
       rejectionCounts: diagnosticList(rejectionCounts),
       methodScope: {
-        ...(profile === "brave15580"
-          ? BRAVE15580_METHOD_SCOPE
-          : profile === "brave155"
-            ? BRAVE155_METHOD_SCOPE
-            : CROSSWALK_METHOD_SCOPE),
+        ...(profile === "brave15585"
+          ? BRAVE15585_METHOD_SCOPE
+          : profile === "brave15580"
+            ? BRAVE15580_METHOD_SCOPE
+            : profile === "brave155"
+              ? BRAVE155_METHOD_SCOPE
+              : CROSSWALK_METHOD_SCOPE),
       },
       formalActionStatus: "unavailable",
       formalActionSamples: [],
       gateReasonCodes:
-        profile === "brave155" || profile === "brave15580"
+        profile === "brave155" ||
+        profile === "brave15580" ||
+        profile === "brave15585"
           ? BRAVE155_GATE_REASONS
           : CROSSWALK_GATE_REASONS,
     },

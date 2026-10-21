@@ -383,6 +383,33 @@ function makeVersionTwoObservedFixture(t) {
   return input;
 }
 
+function applyBrave15585Identity(manifest) {
+  manifest.browser = {
+    product: "Runtime browser observation",
+    version: "155.0.8059.85",
+  };
+  manifest.browserIdentity = {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.59",
+      bundleVersion: "197.59",
+      scmRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    },
+    executableSha256:
+      "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7",
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  manifest.qualification = "installed-brave-schema-probe";
+  manifest.status = "installed-brave-schema-probe";
+}
+
 function rewriteObservedSidecar(input, sidecar) {
   const json =
     sidecar.schemaVersion === 2
@@ -1708,6 +1735,85 @@ test("loads version-two retained-node evidence with integrity checks and sanitiz
   ]) {
     assert.equal(result.stdout.includes(privateValue), false, privateValue);
   }
+});
+
+test("analyzes the exact Brave 155.0.8059.85 tuple against the preserved version-two catalog", (t) => {
+  const input = makeVersionTwoObservedFixture(t);
+  applyBrave15585Identity(input.manifest);
+  writeObservedManifest(input);
+  const traceBefore = readFileSync(input.tracePath);
+  const sidecarBefore = readFileSync(input.sidecarPath);
+
+  const result = runCli([input.manifestPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  const traceReport = report.traces[0];
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.status,
+    "diagnostic-only",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.observedBrowserVersion,
+    "155.0.8059.85",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.pinnedSourceRevision,
+    "0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.observedBundleRevision,
+    "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+  );
+  assert.deepEqual(
+    traceReport.discreteEventTimingCrosswalk.methodScope
+      .protocolCatalogCompatibility,
+    {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.chromiumSourceIdentity,
+    "unverified",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.vendorPatchIdentity,
+    "unverified",
+  );
+  assert.equal(traceReport.observedDiscreteInputs.status, "diagnostic-only");
+  assert.equal(traceReport.observedDiscreteInputs.counts.accepted, 1);
+  assert.equal(
+    traceReport.observedDiscreteInputs.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(traceReport.observedDiscreteInputs.formalActionSamples, []);
+  assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+  assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+
+  input.manifest.browser.version = "155.0.8059.86";
+  writeObservedManifest(input);
+  const unsupportedResult = runCli([input.manifestPath]);
+  assert.equal(unsupportedResult.status, 0, unsupportedResult.stderr);
+  const unsupportedTrace = JSON.parse(unsupportedResult.stdout).traces[0];
+  assert.equal(
+    unsupportedTrace.discreteEventTimingCrosswalk.status,
+    "unavailable",
+  );
+  assert.equal(unsupportedTrace.discreteEventTimingCrosswalk.methodScope, null);
+  assert.deepEqual(
+    unsupportedTrace.discreteEventTimingCrosswalk.gateReasonCodes,
+    ["BROWSER_SOURCE_PROFILE_UNSUPPORTED"],
+  );
+  assert.equal(unsupportedTrace.observedDiscreteInputs.status, "unavailable");
+  assert.deepEqual(
+    unsupportedTrace.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+  assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+  assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
 });
 
 test("continues offline analysis with integrity-checked unavailable version-two evidence", (t) => {
