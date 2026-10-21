@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -16,6 +17,12 @@ import {
   nearestRank,
   parseTrace,
 } from "./chromium-trace-metrics.mjs";
+import {
+  OWNED_CLEANUP_RECEIPT_BYTE_LIMIT,
+  OWNED_CLEANUP_RECEIPT_FILENAME,
+  parseOwnedCleanupReceipt,
+  summarizeOwnedCleanupReceipt,
+} from "./lib/owned-cleanup-receipt.mjs";
 
 const USAGE =
   "Usage: node scripts/analyze-chromium-traces.mjs <manifest.json> [--out <new-report.json>]";
@@ -913,7 +920,7 @@ function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
   };
 }
 
-function buildReport(manifest, manifestPath) {
+function buildReport(manifest, manifestPath, ownedCleanupReceipt = null) {
   const manifestDirectory = dirname(manifestPath);
   const observerInputs =
     manifest.observationEvidence === undefined
@@ -942,12 +949,94 @@ function buildReport(manifest, manifestPath) {
     metadata: selectedMetadata(manifest),
     traces: builtTraces.map(({ report: traceReport }) => traceReport),
   };
+  if (ownedCleanupReceipt !== null) {
+    report.metadata.ownedCleanupReceipt = ownedCleanupReceipt;
+  }
   if (manifest.protocolGroups !== undefined) {
     report.protocolGroups = manifest.protocolGroups.map((group, index) =>
       buildProtocolGroupReport(group, index, manifest, builtTraces),
     );
   }
   return report;
+}
+
+function readOptionalOwnedCleanupReceipt(manifestPath, manifestBytes) {
+  const directory = dirname(manifestPath);
+  const receiptPath = resolve(directory, OWNED_CLEANUP_RECEIPT_FILENAME);
+  let fileInfo;
+  try {
+    fileInfo = lstatSync(receiptPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw new Error("Unable to read owned cleanup receipt.");
+  }
+  if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) {
+    throw new Error("Invalid owned cleanup receipt file.");
+  }
+
+  let descriptor;
+  try {
+    descriptor = openSync(
+      receiptPath,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("Unable to read owned cleanup receipt.");
+  }
+
+  try {
+    const openedInfo = fstatSync(descriptor);
+    if (!openedInfo.isFile()) {
+      throw new Error("Invalid owned cleanup receipt file.");
+    }
+    if (openedInfo.size > OWNED_CLEANUP_RECEIPT_BYTE_LIMIT) {
+      throw new Error("Owned cleanup receipt exceeds the 16 KiB limit.");
+    }
+
+    const buffer = Buffer.alloc(OWNED_CLEANUP_RECEIPT_BYTE_LIMIT + 1);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const bytesRead = readSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        null,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > OWNED_CLEANUP_RECEIPT_BYTE_LIMIT) {
+      throw new Error("Owned cleanup receipt exceeds the 16 KiB limit.");
+    }
+
+    const receipt = parseOwnedCleanupReceipt(
+      buffer.subarray(0, offset),
+      manifestBytes,
+    );
+    return summarizeOwnedCleanupReceipt(receipt);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      [
+        "Invalid owned cleanup receipt file.",
+        "Owned cleanup receipt exceeds the 16 KiB limit.",
+        "Invalid owned cleanup receipt.",
+        "Owned cleanup receipt manifest binding failed.",
+      ].includes(error.message)
+    ) {
+      throw error;
+    }
+    throw new Error("Unable to read owned cleanup receipt.");
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // Preserve the receipt read or validation error.
+    }
+  }
 }
 
 function writeExclusive(outputPath, contents) {
@@ -1006,7 +1095,11 @@ function main(args) {
   }
 
   const manifest = parseManifest(manifestBytes);
-  const report = buildReport(manifest, manifestPath);
+  const ownedCleanupReceipt = readOptionalOwnedCleanupReceipt(
+    manifestPath,
+    manifestBytes,
+  );
+  const report = buildReport(manifest, manifestPath, ownedCleanupReceipt);
   const reportText = `${JSON.stringify(report, null, 2)}\n`;
 
   if (parsedArgs.outputPath === null) {

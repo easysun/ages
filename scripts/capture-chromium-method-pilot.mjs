@@ -35,6 +35,12 @@ import {
   TRUSTED_STIMULUS_EVIDENCE_CLASS,
   writeTrustedStimulusSidecar,
 } from "./browser-stimulus-observer.mjs";
+import {
+  OWNED_CLEANUP_RECEIPT_FILENAME,
+  sanitizeOwnedChildSignal,
+  serializeOwnedCleanupReceipt,
+  summarizePrimaryRunFailure,
+} from "./lib/owned-cleanup-receipt.mjs";
 import { createRetainedInputNodeEvidenceTracker } from "./retained-input-node-evidence.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -1181,6 +1187,7 @@ const SAFE_FAILURE_STAGES = new Set([
   "seed-library",
   "manifest",
   "owned-process-cleanup",
+  "run-cleanup",
   ...["seed-fixture", "capture"].flatMap((kind) =>
     buildCaptureCases().map(
       ({ workload, action }) => `${kind}:${workload}:${action}`,
@@ -3503,6 +3510,7 @@ function sourceHash() {
     "scripts/capture-chromium-method-pilot.mjs",
     "scripts/browser-stimulus-observer.mjs",
     "scripts/retained-input-node-evidence.mjs",
+    "scripts/lib/owned-cleanup-receipt.mjs",
     "wrangler.jsonc",
     "wrangler.tracking.jsonc",
   ];
@@ -3513,6 +3521,190 @@ function sourceHash() {
     hash.update(readFileSync(resolve(ROOT, path)));
   }
   return hash.digest("hex");
+}
+
+async function closeRunResource(resource, resourceName, timeoutMs) {
+  if (!resource) return { outcome: "not_created", errorCode: null };
+
+  let timer;
+  let timedOut = false;
+  const timeout = new Promise((resolveTimeout) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      resolveTimeout(false);
+    }, timeoutMs);
+  });
+  try {
+    const closeResult = Promise.resolve()
+      .then(() => resource.close())
+      .then(
+        () => true,
+        () => false,
+      );
+    const closed = await Promise.race([closeResult, timeout]);
+    if (timedOut) {
+      return {
+        outcome: "failed",
+        errorCode: `${resourceName}_CLOSE_TIMEOUT`,
+      };
+    }
+    return closed
+      ? { outcome: "closed", errorCode: null }
+      : { outcome: "failed", errorCode: `${resourceName}_CLOSE_REJECTED` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function runCleanupFailure(errorCode) {
+  const error = new Error(errorCode);
+  error.failureStage = "run-cleanup";
+  return error;
+}
+
+export async function finalizeRunCleanup({
+  runDirectory,
+  manifestSha256,
+  primaryError = null,
+  failureStage = "unknown",
+  context = null,
+  browser = null,
+  server = null,
+  cleanupTimeoutMs = 5000,
+  stopServer = (child) => stopOwnedProcess(child),
+  readProcessTable,
+  writeReceipt = (path, _receipt, serialized) => writeNewFile(path, serialized),
+  writeSuccess = () => {},
+}) {
+  const contextOutcome = await closeRunResource(
+    context,
+    "CONTEXT",
+    cleanupTimeoutMs,
+  );
+  const browserOutcome = await closeRunResource(
+    browser,
+    "BROWSER",
+    cleanupTimeoutMs,
+  );
+
+  let ownedServer;
+  if (!server?.pid) {
+    ownedServer = {
+      stopHelper: "not_created",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "not_created", memberCount: null },
+      childExitKnown: null,
+      exitCode: null,
+      signalCode: null,
+    };
+  } else {
+    let stopHelper = "returned";
+    let errorCode = null;
+    try {
+      await stopServer(server);
+    } catch {
+      stopHelper = "rejected";
+      errorCode = "OWNED_SERVER_STOP_FAILED";
+    }
+
+    let processGroupSnapshot = {
+      outcome: "unavailable",
+      memberCount: null,
+    };
+    try {
+      const snapshot = snapshotOwnedProcessGroup(
+        server,
+        readProcessTable,
+        1500,
+      );
+      if (
+        snapshot.snapshotAvailable === true &&
+        Number.isInteger(snapshot.memberCount) &&
+        snapshot.memberCount >= 0 &&
+        snapshot.memberCount <= MAX_OWNED_PROCESS_GROUP_MEMBERS
+      ) {
+        processGroupSnapshot = {
+          outcome: snapshot.memberCount === 0 ? "empty" : "nonempty",
+          memberCount: snapshot.memberCount,
+        };
+      }
+    } catch {
+      // An unavailable process table remains explicitly unverified.
+    }
+
+    const validExitCode =
+      Number.isInteger(server.exitCode) &&
+      server.exitCode >= 0 &&
+      server.exitCode <= 255;
+    const safeSignalCode = sanitizeOwnedChildSignal(server.signalCode);
+    const childExitKnown =
+      validExitCode ||
+      (typeof server.signalCode === "string" && safeSignalCode !== null);
+    ownedServer = {
+      stopHelper,
+      errorCode,
+      processGroupSnapshot,
+      childExitKnown,
+      exitCode: childExitKnown && validExitCode ? server.exitCode : null,
+      signalCode: childExitKnown && !validExitCode ? safeSignalCode : null,
+    };
+  }
+
+  const cleanupFailures = [];
+  if (contextOutcome.outcome === "failed") {
+    cleanupFailures.push({
+      resource: "context",
+      code: contextOutcome.errorCode,
+    });
+  }
+  if (browserOutcome.outcome === "failed") {
+    cleanupFailures.push({
+      resource: "browser",
+      code: browserOutcome.errorCode,
+    });
+  }
+  if (ownedServer.stopHelper === "rejected") {
+    cleanupFailures.push({
+      resource: "ownedServer",
+      code: ownedServer.errorCode,
+    });
+  }
+  if (ownedServer.processGroupSnapshot.outcome === "nonempty") {
+    cleanupFailures.push({
+      resource: "ownedServer",
+      code: "OWNED_SERVER_GROUP_REMAINS",
+    });
+  }
+
+  const receipt = {
+    schemaVersion: 1,
+    completedAtUtc: new Date().toISOString(),
+    manifestSha256: manifestSha256 ?? null,
+    primaryRunFailure: primaryError
+      ? summarizePrimaryRunFailure(primaryError, failureStage)
+      : null,
+    context: contextOutcome,
+    browser: {
+      ...browserOutcome,
+      descendants: "not_independently_verified",
+    },
+    ownedServer,
+    cleanupFailures,
+  };
+  const receiptPath = resolve(runDirectory, OWNED_CLEANUP_RECEIPT_FILENAME);
+  try {
+    const serialized = serializeOwnedCleanupReceipt(receipt);
+    await writeReceipt(receiptPath, receipt, serialized);
+  } catch {
+    if (primaryError) throw primaryError;
+    throw runCleanupFailure("METHOD_PILOT_RECEIPT_WRITE_FAILED");
+  }
+
+  if (primaryError) throw primaryError;
+  if (cleanupFailures.length > 0) {
+    throw runCleanupFailure("METHOD_PILOT_CLEANUP_FAILED");
+  }
+  writeSuccess();
 }
 
 function captureTimeSystem() {
@@ -3555,32 +3747,36 @@ async function runPilot(
   const runId = `run-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID()}`;
   setStage("workspace");
   const runDirectory = createRunDirectory(artifactRoots.runsRoot, runId);
-  const { workspace } = prepareWorkspace(runDirectory);
-  const { appPort, trackingPort } = await localPorts();
-  process.env.AGES_E2E_PORT = appPort;
-  process.env.AGES_E2E_TRACKING_PORT = trackingPort;
-
-  setStage("server-startup");
-  const server = spawn(
-    process.execPath,
-    [resolve(workspace, "tests/e2e/start-server.mjs")],
-    {
-      cwd: workspace,
-      env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-    },
-  );
-  server.once("error", () => {
-    server.spawnError = true;
-  });
+  let server;
   let context;
   let browser;
-  let installedBrowserIdentity;
-  let sessionCategories = [];
-  let categoryAvailability = { available: [], unavailable: [] };
-  const captureStartedAtUtc = new Date().toISOString();
+  let manifestSha256 = null;
+  let successText = "";
+  let primaryError = null;
   try {
+    const { workspace } = prepareWorkspace(runDirectory);
+    const { appPort, trackingPort } = await localPorts();
+    process.env.AGES_E2E_PORT = appPort;
+    process.env.AGES_E2E_TRACKING_PORT = trackingPort;
+
+    setStage("server-startup");
+    server = spawn(
+      process.execPath,
+      [resolve(workspace, "tests/e2e/start-server.mjs")],
+      {
+        cwd: workspace,
+        env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: true,
+      },
+    );
+    server.once("error", () => {
+      server.spawnError = true;
+    });
+    let installedBrowserIdentity;
+    let sessionCategories = [];
+    let categoryAvailability = { available: [], unavailable: [] };
+    const captureStartedAtUtc = new Date().toISOString();
     await waitForOwnedReadiness(server, appPort, trackingPort);
     if (server.spawnError) throw new Error("OWNED_SERVER_START_FAILED");
     await waitForAppHealth(appPort);
@@ -3767,56 +3963,47 @@ async function runPilot(
       traces,
       measurementSegments,
     };
-    writeNewFile(
-      resolve(runDirectory, "manifest.json"),
-      JSON.stringify(manifest, null, 2),
-    );
-    process.stdout.write(
-      `${JSON.stringify(
-        {
-          status:
-            browserMode === "installed-brave"
-              ? INSTALLED_BRAVE_QUALIFICATION
-              : "synthetic-method-pilot",
-          runId,
-          caseCount: cases.length,
-          capturedTraceCount: traces.length,
-          resolvedSegmentCount: measurementSegments.length,
-          inputToNextPaint: "unproven",
-          ...(browserMode === "installed-brave"
-            ? {
-                browser: "installed-brave",
-                qualification: INSTALLED_BRAVE_QUALIFICATION,
-                traceCategoryCatalogReadCount:
-                  failureState.traceCategoryCatalogReadCount,
-              }
-            : {}),
-        },
-        null,
-        2,
-      )}\n`,
-    );
-  } finally {
-    try {
-      if (context)
-        await withTimeout(
-          context.close(),
-          5000,
-          "BROWSER_CONTEXT_CLEANUP_TIMEOUT",
-        ).catch(() => {});
-    } finally {
-      try {
-        if (browser)
-          await withTimeout(
-            browser.close(),
-            5000,
-            "BROWSER_CLEANUP_TIMEOUT",
-          ).catch(() => {});
-      } finally {
-        await stopOwnedProcessForRun(server, setStage);
-      }
-    }
+    const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2));
+    writeNewFile(resolve(runDirectory, "manifest.json"), manifestBytes);
+    manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
+    successText = `${JSON.stringify(
+      {
+        status:
+          browserMode === "installed-brave"
+            ? INSTALLED_BRAVE_QUALIFICATION
+            : "synthetic-method-pilot",
+        runId,
+        caseCount: cases.length,
+        capturedTraceCount: traces.length,
+        resolvedSegmentCount: measurementSegments.length,
+        inputToNextPaint: "unproven",
+        ...(browserMode === "installed-brave"
+          ? {
+              browser: "installed-brave",
+              qualification: INSTALLED_BRAVE_QUALIFICATION,
+              traceCategoryCatalogReadCount:
+                failureState.traceCategoryCatalogReadCount,
+            }
+          : {}),
+      },
+      null,
+      2,
+    )}\n`;
+  } catch (error) {
+    primaryError = error;
   }
+
+  await finalizeRunCleanup({
+    runDirectory,
+    manifestSha256,
+    primaryError,
+    failureStage: failureState.stage,
+    context,
+    browser,
+    server,
+    stopServer: (child) => stopOwnedProcess(child),
+    writeSuccess: () => process.stdout.write(successText),
+  });
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
@@ -3854,6 +4041,8 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
         "SYNTHETIC_FIXTURE_MISSING",
         "BROWSER_METADATA_UNAVAILABLE",
         "TRACE_CATEGORIES_UNAVAILABLE",
+        "METHOD_PILOT_CLEANUP_FAILED",
+        "METHOD_PILOT_RECEIPT_WRITE_FAILED",
       ]);
       const code =
         typeof error?.message === "string" && allowed.has(error.message)
@@ -3863,7 +4052,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
         `${options?.browser === "installed-brave" ? "browser=installed-brave " : ""}${code} ${JSON.stringify(
           summarizeSafeFailure(
             error,
-            failureState.stage,
+            error?.failureStage ?? failureState.stage,
             options?.browser === "installed-brave"
               ? failureState.traceCategoryCatalogReadCount
               : undefined,

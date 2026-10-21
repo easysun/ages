@@ -130,17 +130,29 @@ const OBSERVER_SOURCE_HASH_LIFECYCLE = Object.freeze({
     retainInputNodes: true,
     sha256: "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab",
   }),
+  runLevelCleanupReceiptVersionOne: Object.freeze({
+    schemaVersion: 1,
+    retainInputNodes: false,
+    sha256: "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  }),
+  runLevelCleanupReceiptVersionTwo: Object.freeze({
+    schemaVersion: 2,
+    retainInputNodes: true,
+    sha256: "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  }),
 });
 const VERSION_ONE_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.originalVersionOne.sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionOneRetentionDisabled.sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionOneRetentionDisabled
     .sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.runLevelCleanupReceiptVersionOne.sha256,
 ]);
 const VERSION_TWO_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionTwoRetentionEnabled.sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionTwoRetentionEnabled
     .sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.runLevelCleanupReceiptVersionTwo.sha256,
 ]);
 const OBSERVER_SIDECAR_INPUT_METHOD =
   "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.";

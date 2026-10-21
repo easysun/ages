@@ -89,6 +89,36 @@ function makeFixture(
   return { directory, manifest, manifestPath, traceBytes, tracePath };
 }
 
+function writeOwnedCleanupReceipt(input, overrides = {}) {
+  const receiptPath = join(input.directory, "owned-cleanup-receipt.json");
+  const receipt = {
+    schemaVersion: 1,
+    completedAtUtc: "2026-10-20T00:00:00.000Z",
+    manifestSha256: sha256(readFileSync(input.manifestPath)),
+    primaryRunFailure: null,
+    context: { outcome: "closed", errorCode: null },
+    browser: {
+      outcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    ownedServer: {
+      stopHelper: "returned",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "unavailable", memberCount: null },
+      childExitKnown: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    cleanupFailures: [],
+    ...overrides,
+  };
+  writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    flag: "wx",
+  });
+  return { receipt, receiptPath };
+}
+
 const observedCollectorHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
 const currentRetainedCollectorHash =
@@ -1416,6 +1446,119 @@ test("writes reports exclusively and preserves existing files and symlink target
   assert.match(third.stderr, /output.*(exist|exclusive)/i);
   assert.equal(lstatSync(symlinkOutput).isSymbolicLink(), true);
   assert.equal(readFileSync(symlinkTarget, "utf8"), "keep symlink target");
+});
+
+test("selects a manifest-bound run cleanup receipt and leaves absent-receipt reports unchanged", (t) => {
+  const input = makeFixture(t);
+  const baselineResult = runCli([input.manifestPath]);
+  assert.equal(baselineResult.status, 0, baselineResult.stderr);
+  const baselineReport = JSON.parse(baselineResult.stdout);
+
+  const { receipt } = writeOwnedCleanupReceipt(input, {
+    primaryRunFailure: {
+      stage: "capture:100-interactive:append",
+      code: "METHOD_PILOT_FAILED",
+    },
+    context: { outcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+    browser: {
+      outcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+  });
+  const withReceiptResult = runCli([input.manifestPath]);
+
+  assert.equal(withReceiptResult.status, 0, withReceiptResult.stderr);
+  const withReceiptReport = JSON.parse(withReceiptResult.stdout);
+  assert.deepEqual(withReceiptReport.metadata.ownedCleanupReceipt, {
+    scope: "run",
+    primaryRunFailure: {
+      stage: "capture:100-interactive:append",
+      code: "METHOD_PILOT_FAILED",
+    },
+    context: { apiOutcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+    browser: {
+      apiOutcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    ownedServer: {
+      stopHelper: "returned",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "unavailable", memberCount: null },
+      childExitKnown: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+  });
+  const withoutSelectedReceipt = structuredClone(withReceiptReport);
+  delete withoutSelectedReceipt.metadata.ownedCleanupReceipt;
+  assert.deepEqual(withoutSelectedReceipt, baselineReport);
+  assert.doesNotMatch(
+    JSON.stringify(withReceiptReport),
+    /manifestSha256|completedAtUtc/,
+  );
+  assert.equal(
+    receipt.manifestSha256,
+    sha256(readFileSync(input.manifestPath)),
+  );
+});
+
+test("rejects malformed, oversized, mismatched, or unsafe run cleanup receipts without a report", async (t) => {
+  const scenarios = [
+    [
+      "malformed JSON",
+      (_input, path) => writeFileSync(path, "{", { flag: "wx" }),
+      /receipt/i,
+    ],
+    [
+      "oversized receipt",
+      (_input, path) =>
+        writeFileSync(path, Buffer.alloc(16 * 1024 + 1, 0x20), { flag: "wx" }),
+      /receipt/i,
+    ],
+    [
+      "manifest hash mismatch",
+      (input) =>
+        writeOwnedCleanupReceipt(input, { manifestSha256: "0".repeat(64) }),
+      /receipt/i,
+    ],
+    [
+      "unsafe receipt path field",
+      (input) =>
+        writeOwnedCleanupReceipt(input, {
+          receiptPath: "../outside.json",
+          privateValue: "PRIVATE_RECEIPT_MARKER",
+        }),
+      /receipt/i,
+    ],
+    [
+      "fixed sibling symlink",
+      (input, path) => {
+        const target = join(input.directory, "receipt-target.json");
+        writeFileSync(target, "{}", { flag: "wx" });
+        symlinkSync(target, path);
+      },
+      /receipt/i,
+    ],
+  ];
+
+  for (const [name, writeInvalid, expectedError] of scenarios) {
+    await t.test(name, (subtest) => {
+      const input = makeFixture(subtest);
+      const receiptPath = join(input.directory, "owned-cleanup-receipt.json");
+      writeInvalid(input, receiptPath);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, expectedError);
+      assert.equal(result.stderr.includes("PRIVATE_RECEIPT_MARKER"), false);
+    });
+  }
 });
 
 test("rejects trace path traversal before reading a neighboring file", (t) => {
