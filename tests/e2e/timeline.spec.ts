@@ -1,4 +1,11 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  test,
+} from "@playwright/test";
 import {
   e2eOrigin,
   executeFixtureSql,
@@ -1924,34 +1931,109 @@ test("media placeholders preserve asset proportions and size assets without dime
 test("media stays unmounted without IntersectionObserver until explicitly loaded", async ({
   page,
   context,
-}) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(window, "IntersectionObserver", {
-      value: undefined,
-      configurable: true,
-    });
-  });
-  const { owner, ids } = await seedLibrary(context);
-  const { id } = seedTimeline(owner, ids, 3);
-  await page.goto(`/timelines/${id}`);
+}, testInfo) => {
+  const diagnostic = {
+    endpoints: {
+      me: [] as number[],
+      overview: [] as number[],
+      items: [] as number[],
+    },
+    intersectionObserverType: null as string | null,
+    momentCount: null as number | null,
+    mediaCount: null as number | null,
+    loadButtonCount: null as number | null,
+    pageErrorCount: 0,
+    requestFailedCount: 0,
+  };
+  const onResponse = (response: Response) => {
+    const pathname = new URL(response.url()).pathname;
+    const endpoint =
+      pathname === "/api/me"
+        ? "me"
+        : /^\/api\/timelines\/[^/]+\/overview$/.test(pathname)
+          ? "overview"
+          : /^\/api\/timelines\/[^/]+\/items$/.test(pathname)
+            ? "items"
+            : undefined;
+    if (endpoint && diagnostic.endpoints[endpoint].length < 8)
+      diagnostic.endpoints[endpoint].push(response.status());
+  };
+  const onPageError = () => {
+    diagnostic.pageErrorCount++;
+  };
+  const onRequestFailed = () => {
+    diagnostic.requestFailedCount++;
+  };
+  page.on("response", onResponse);
+  page.on("pageerror", onPageError);
+  page.on("requestfailed", onRequestFailed);
 
-  await expect(
-    page.locator(".moment-media img, .moment-media video"),
-  ).toHaveCount(0);
-  const loadButtons = page.getByRole("button", {
-    name: "Load media",
-    exact: true,
-  });
-  await expect(loadButtons).toHaveCount(3);
-  const first = page.getByRole("group", { name: "Moment 1", exact: true });
-  const loadFirst = first.getByRole("button", { name: "Load media" });
-  await loadFirst.focus();
-  await expect(loadFirst).toBeFocused();
-  await loadFirst.click();
-  await expect(first.locator(".moment-media img")).toHaveCount(1);
-  await expect(
-    page.locator(".moment-media img, .moment-media video"),
-  ).toHaveCount(1);
+  try {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, "IntersectionObserver", {
+        value: undefined,
+        configurable: true,
+      });
+    });
+    const { owner, ids } = await seedLibrary(context);
+    const { id } = seedTimeline(owner, ids, 3);
+    await page.goto(`/timelines/${id}`);
+
+    await expect(
+      page.getByRole("group", { name: /^Moment [1-3]$/ }),
+    ).toHaveCount(3);
+    await expect
+      .poll(() => page.evaluate(() => typeof window.IntersectionObserver))
+      .toBe("undefined");
+    await expect(
+      page.locator(".moment-media img, .moment-media video"),
+    ).toHaveCount(0);
+    const loadButtons = page.getByRole("button", {
+      name: "Load media",
+      exact: true,
+    });
+    await expect(loadButtons).toHaveCount(3);
+    const first = page.getByRole("group", { name: "Moment 1", exact: true });
+    const loadFirst = first.getByRole("button", { name: "Load media" });
+    await loadFirst.focus();
+    await expect(loadFirst).toBeFocused();
+    await loadFirst.click();
+    await expect(first.locator(".moment-media img")).toHaveCount(1);
+    await expect(
+      page.locator(".moment-media img, .moment-media video"),
+    ).toHaveCount(1);
+  } catch (error) {
+    try {
+      Object.assign(
+        diagnostic,
+        await page.evaluate(() => ({
+          intersectionObserverType: typeof window.IntersectionObserver,
+          momentCount: document.querySelectorAll(".moment").length,
+          mediaCount: document.querySelectorAll(
+            ".moment-media img, .moment-media video",
+          ).length,
+          loadButtonCount: document.querySelectorAll(
+            ".moment-media button.moment-media-load",
+          ).length,
+        })),
+      );
+    } catch {
+      // Preserve partial diagnostics if the page is no longer available.
+    }
+    try {
+      await writeFile(
+        testInfo.outputPath("media-fallback-diagnostic.json"),
+        JSON.stringify(diagnostic, null, 2),
+      );
+    } catch {
+      // Do not replace the original test failure with a diagnostic-write failure.
+    }
+    throw error;
+  } finally {
+    page.off("response", onResponse);
+    page.off("pageerror", onPageError);
+    page.off("requestfailed", onRequestFailed);
+  }
 });
 
 test("mobile native touch pan and pinch navigate the story without disabling page magnification", async ({
