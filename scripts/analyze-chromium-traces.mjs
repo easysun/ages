@@ -921,6 +921,24 @@ function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
 }
 
 function buildReport(manifest, manifestPath, ownedCleanupReceipt = null) {
+  if (manifest.observationEvidence?.schemaVersion === 3) {
+    const measurementSegments = manifest.measurementSegments ?? [];
+    if (
+      !Array.isArray(manifest.traces) ||
+      manifest.traces.length !== 1 ||
+      !Array.isArray(manifest.cases) ||
+      manifest.cases.length !== 1 ||
+      !Array.isArray(measurementSegments) ||
+      measurementSegments.length !== 0 ||
+      (manifest.protocolGroups !== undefined &&
+        (!Array.isArray(manifest.protocolGroups) ||
+          manifest.protocolGroups.length !== 0))
+    ) {
+      throw new Error(
+        "Version-three analysis requires one case and trace without action segments.",
+      );
+    }
+  }
   const manifestDirectory = dirname(manifestPath);
   const observerInputs =
     manifest.observationEvidence === undefined
@@ -929,7 +947,9 @@ function buildReport(manifest, manifestPath, ownedCleanupReceipt = null) {
   const browserSourceObservations = {
     browser: manifest.browser,
     browserIdentity: manifest.browserIdentity,
-    qualification: manifest.qualification,
+    ...(manifest.qualification === undefined
+      ? {}
+      : { qualification: manifest.qualification }),
     status: manifest.status,
   };
   const builtTraces = manifest.traces.map((record) =>
@@ -960,14 +980,25 @@ function buildReport(manifest, manifestPath, ownedCleanupReceipt = null) {
   return report;
 }
 
-function readOptionalOwnedCleanupReceipt(manifestPath, manifestBytes) {
+function readOptionalOwnedCleanupReceipt(
+  manifestPath,
+  manifestBytes,
+  required = false,
+) {
   const directory = dirname(manifestPath);
   const receiptPath = resolve(directory, OWNED_CLEANUP_RECEIPT_FILENAME);
   let fileInfo;
   try {
     fileInfo = lstatSync(receiptPath);
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
+    if (error?.code === "ENOENT") {
+      if (required) {
+        throw new Error(
+          "Version-three cleanup receipt is required for analysis.",
+        );
+      }
+      return null;
+    }
     throw new Error("Unable to read owned cleanup receipt.");
   }
   if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) {
@@ -1016,6 +1047,19 @@ function readOptionalOwnedCleanupReceipt(manifestPath, manifestBytes) {
       buffer.subarray(0, offset),
       manifestBytes,
     );
+    if (
+      required &&
+      (receipt.primaryRunFailure !== null ||
+        receipt.context.outcome !== "closed" ||
+        receipt.browser.outcome !== "closed" ||
+        receipt.ownedServer.stopHelper !== "returned" ||
+        receipt.ownedServer.processGroupSnapshot.outcome === "nonempty" ||
+        receipt.cleanupFailures.length !== 0)
+    ) {
+      throw new Error(
+        "Version-three analysis requires a successful run cleanup receipt.",
+      );
+    }
     return summarizeOwnedCleanupReceipt(receipt);
   } catch (error) {
     if (
@@ -1025,6 +1069,7 @@ function readOptionalOwnedCleanupReceipt(manifestPath, manifestBytes) {
         "Owned cleanup receipt exceeds the 16 KiB limit.",
         "Invalid owned cleanup receipt.",
         "Owned cleanup receipt manifest binding failed.",
+        "Version-three analysis requires a successful run cleanup receipt.",
       ].includes(error.message)
     ) {
       throw error;
@@ -1098,6 +1143,7 @@ function main(args) {
   const ownedCleanupReceipt = readOptionalOwnedCleanupReceipt(
     manifestPath,
     manifestBytes,
+    manifest.observationEvidence?.schemaVersion === 3,
   );
   const report = buildReport(manifest, manifestPath, ownedCleanupReceipt);
   const reportText = `${JSON.stringify(report, null, 2)}\n`;

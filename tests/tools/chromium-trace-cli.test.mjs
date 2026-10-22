@@ -123,6 +123,8 @@ const observedCollectorHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
 const currentRetainedCollectorHash =
   "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
+const postReviewProducerHash =
+  "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a";
 const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
 const observedTargetToken = "t-bbbbbbbbbbbbbbbbbbbbbbbb";
 const observedManifestDeclaration = {
@@ -380,6 +382,145 @@ function makeVersionTwoObservedFixture(t) {
   });
   writeFileSync(input.sidecarPath, sidecarBytes, { flag: "w" });
   writeObservedManifest(input);
+  return input;
+}
+
+function makeVersionThreeObservedFixture(t) {
+  const input = makeVersionTwoObservedFixture(t);
+  const fixture = "100-interactive-open";
+  const traceName = `${fixture}.trace.json`;
+  const trace = JSON.parse(readFileSync(input.tracePath, "utf8"));
+  trace.traceEvents.splice(1, 0, {
+    name: "TimeStamp",
+    cat: "blink.user_timing",
+    ph: "I",
+    pid: 101,
+    tid: 1,
+    ts: 1,
+    args: {
+      data: { message: "pilot-100-interactive-open:segment-start" },
+    },
+  });
+  const traceBytes = Buffer.from(`${JSON.stringify(trace)}\n`);
+  input.tracePath = join(input.directory, traceName);
+  writeFileSync(input.tracePath, traceBytes, { flag: "wx" });
+  input.traceBytes = traceBytes;
+  input.traceRecord = input.manifest.traces[0];
+  Object.assign(input.traceRecord, {
+    fixture,
+    trace: traceName,
+    byteCount: traceBytes.byteLength,
+    sha256: sha256(traceBytes),
+  });
+
+  input.caseRecord.fixture = fixture;
+  input.caseRecord.trace = traceName;
+  input.caseRecord.workload = "100-interactive";
+  input.caseRecord.rowCount = 100;
+  input.sidecar.schemaVersion = 3;
+  input.sidecar.fixture = fixture;
+  input.sidecar.observation.schemaVersion = 3;
+  input.caseRecord.action = "open";
+  input.caseRecord.measurementStatus = "unavailable";
+  input.caseRecord.measurementReasonCode = "V3_DIAGNOSTIC_ONLY";
+  input.sidecar.observation.records[0].targetToken = null;
+  input.sidecar.observation.records[0].targetLabel = null;
+  input.sidecar.observation.records[0].targetResolution = "unknown";
+  input.sidecar.observation.recordBytes = Buffer.byteLength(
+    JSON.stringify(input.sidecar.observation.records),
+    "utf8",
+  );
+  input.sidecar.observation.sameDocumentLoadingWitness = {
+    status: "complete",
+    reasonCode: null,
+    protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    events: [
+      {
+        sequence: 0,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.frameStartedLoading",
+        frameId: "frame-A",
+      },
+      {
+        sequence: 1,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.navigatedWithinDocument",
+        frameId: "frame-A",
+        navigationType: "historyApi",
+      },
+    ],
+    droppedCount: 0,
+    overflow: false,
+    loadingCount: 1,
+    historyApiCount: 1,
+    orderingBasis: "cdp-receipt",
+    sourceOrder: "unknown",
+    retainedTargetProof: {
+      sourceRecordIndex: 1,
+      documentId: observedDocumentId,
+      targetToken: observedTargetToken,
+      mappingIndex: 0,
+      sourceCapture: {
+        targetIsNode: true,
+        ownerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        composedPathStartsAtTarget: true,
+      },
+      baselineScope: {
+        frameId: "frame-A",
+        loaderId: "loader-A",
+        contextUniqueId: "context-A",
+        targetId: "target-A",
+        sessionId: "session-A",
+      },
+      finalProof: {
+        stage: "post-trace-before-release",
+        savedDocumentSame: true,
+        savedRootSame: true,
+        savedTargetSame: true,
+        targetOwnerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        mappedBackendNodeId: 311,
+        finalBackendNodeId: 311,
+        cdpScope: {
+          frameId: "frame-A",
+          loaderId: "loader-A",
+          contextUniqueId: "context-A",
+          targetId: "target-A",
+          sessionId: "session-A",
+        },
+      },
+    },
+    firstInvalidation: null,
+    collectorCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+  };
+  input.manifest.observationEvidence = {
+    ...structuredClone(observedManifestDeclaration),
+    schemaVersion: 3,
+    recordByteLimit: 256 * 1024 - 36 * 1024 - 80 * 1024,
+    retainedNodeEvidence: {
+      enabled: true,
+      maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+      mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    },
+  };
+  input.manifest.sourceHashSha256 = postReviewProducerHash;
+  input.caseRecord.trustedStimulusObservation.fileName = `${fixture}.stimulus.json`;
+  input.sidecarPath = join(input.directory, `${fixture}.stimulus.json`);
+  applyBrave15585Identity(input.manifest);
+  input.manifest.status = "diagnostic-only";
+  delete input.manifest.qualification;
+  rewriteObservedSidecar(input, input.sidecar);
   return input;
 }
 
@@ -1814,6 +1955,135 @@ test("analyzes the exact Brave 155.0.8059.85 tuple against the preserved version
   );
   assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
   assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+});
+
+test("v3 CLI requires the actual manifest-bound run cleanup receipt before analysis", async (t) => {
+  await t.test("missing receipt blocks analysis", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /cleanup receipt.*required/i);
+  });
+
+  await t.test("matching receipt permits exact v3 association", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    const { receipt } = writeOwnedCleanupReceipt(input);
+    const manifestBytes = readFileSync(input.manifestPath);
+    assert.equal(receipt.manifestSha256, sha256(manifestBytes));
+
+    const result = runCli([input.manifestPath]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const observed = JSON.parse(result.stdout).traces[0].observedDiscreteInputs;
+    assert.equal(
+      observed.status,
+      "diagnostic-only",
+      JSON.stringify(observed.rejectionCounts),
+    );
+    assert.deepEqual(observed.counts, {
+      apiEntries: 1,
+      accepted: 1,
+      rejected: 0,
+    });
+    assert.equal(observed.formalActionStatus, "unavailable");
+    assert.deepEqual(observed.formalActionSamples, []);
+    assert.equal(result.stdout.includes(observedDocumentId), false);
+    assert.equal(result.stdout.includes(observedTargetToken), false);
+  });
+
+  await t.test("failed run cleanup prevents v3 analysis", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    writeOwnedCleanupReceipt(input, {
+      primaryRunFailure: {
+        stage: "capture:100-interactive:open",
+        code: "METHOD_PILOT_FAILED",
+      },
+      context: { outcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+      cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+    });
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(
+      result.stderr,
+      /version-three.*successful run cleanup receipt/i,
+    );
+  });
+
+  await t.test(
+    "action segments cannot be attached to v3 analysis",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      input.manifest.measurementSegments = [{ trace: input.traceRecord.trace }];
+      writeObservedManifest(input);
+      writeOwnedCleanupReceipt(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(
+        result.stderr,
+        /one case and trace without action segments/i,
+      );
+    },
+  );
+
+  await t.test("changed sidecar bytes fail before report output", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    writeOwnedCleanupReceipt(input);
+    writeFileSync(
+      input.sidecarPath,
+      Buffer.concat([readFileSync(input.sidecarPath), Buffer.from(" ")]),
+      { flag: "w" },
+    );
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /sidecar integrity check failed/i);
+  });
+
+  await t.test(
+    "receipt must bind the exact final manifest bytes",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      writeOwnedCleanupReceipt(input);
+      input.manifest.sourceHashSha256 = "f".repeat(64);
+      writeObservedManifest(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /manifest binding failed/i);
+    },
+  );
+
+  await t.test(
+    "unknown producer hash rejects the v3 association",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      input.manifest.sourceHashSha256 = "0".repeat(64);
+      writeObservedManifest(input);
+      writeOwnedCleanupReceipt(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.equal(result.status, 0, result.stderr);
+      const observed = JSON.parse(result.stdout).traces[0]
+        .observedDiscreteInputs;
+      assert.equal(observed.status, "unavailable");
+      assert.deepEqual(observed.rejectionCounts, [
+        { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+      ]);
+    },
+  );
 });
 
 test("continues offline analysis with integrity-checked unavailable version-two evidence", (t) => {

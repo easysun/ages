@@ -140,6 +140,22 @@ const OBSERVER_SOURCE_HASH_LIFECYCLE = Object.freeze({
     retainInputNodes: true,
     sha256: "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
   }),
+  postReviewVersionOneRetentionDisabled: Object.freeze({
+    schemaVersion: 1,
+    retainInputNodes: false,
+    sha256: "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a",
+  }),
+  postReviewVersionTwoRetentionEnabled: Object.freeze({
+    schemaVersion: 2,
+    retainInputNodes: true,
+    sha256: "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a",
+  }),
+  finalReviewedVersionThreeRetentionEnabled: Object.freeze({
+    schemaVersion: 3,
+    retainInputNodes: true,
+    browserProfile: "brave15585",
+    sha256: "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a",
+  }),
 });
 const VERSION_ONE_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.originalVersionOne.sha256,
@@ -147,13 +163,20 @@ const VERSION_ONE_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionOneRetentionDisabled
     .sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.runLevelCleanupReceiptVersionOne.sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.postReviewVersionOneRetentionDisabled.sha256,
 ]);
 const VERSION_TWO_OBSERVER_SOURCE_HASHES = new Set([
   OBSERVER_SOURCE_HASH_LIFECYCLE.currentVersionTwoRetentionEnabled.sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.cleanupVerifiedVersionTwoRetentionEnabled
     .sha256,
   OBSERVER_SOURCE_HASH_LIFECYCLE.runLevelCleanupReceiptVersionTwo.sha256,
+  OBSERVER_SOURCE_HASH_LIFECYCLE.postReviewVersionTwoRetentionEnabled.sha256,
 ]);
+const VERSION_THREE_OBSERVER_SOURCE_HASHES = new Set([
+  OBSERVER_SOURCE_HASH_LIFECYCLE.finalReviewedVersionThreeRetentionEnabled
+    .sha256,
+]);
+const V3_OBSERVATION_RECORD_BYTE_LIMIT = 256 * 1024 - 36 * 1024 - 80 * 1024;
 const OBSERVER_SIDECAR_INPUT_METHOD =
   "Synthetic Playwright stimulus; DOM isTrusted means browser-dispatched only and does not establish human input or physical equivalence.";
 const OBSERVER_SIDECAR_INTERPRETATION = {
@@ -2116,20 +2139,14 @@ function supportsBrave15580Profile(observations) {
   );
 }
 
-function supportsBrave15585Profile(observations) {
+function supportsBrave15585Identity(observations) {
   if (
     !isRecord(observations) ||
-    !hasOnlyFields(
-      observations,
-      new Set(["browser", "browserIdentity", "qualification", "status"]),
-    ) ||
     !isRecord(observations.browser) ||
     !hasOnlyFields(observations.browser, new Set(["product", "version"])) ||
     observations.browser.product !== BRAVE155_BROWSER_PRODUCT ||
     observations.browser.version !==
-      BRAVE15585_METHOD_SCOPE.observedBrowserVersion ||
-    observations.qualification !== "installed-brave-schema-probe" ||
-    observations.status !== "installed-brave-schema-probe"
+      BRAVE15585_METHOD_SCOPE.observedBrowserVersion
   ) {
     return false;
   }
@@ -2185,7 +2202,36 @@ function supportsBrave15585Profile(observations) {
   );
 }
 
-function selectEventTimingCrosswalkProfile(observations) {
+function supportsBrave15585Profile(observations) {
+  return (
+    isRecord(observations) &&
+    hasOnlyFields(
+      observations,
+      new Set(["browser", "browserIdentity", "qualification", "status"]),
+    ) &&
+    observations.qualification === "installed-brave-schema-probe" &&
+    observations.status === "installed-brave-schema-probe" &&
+    supportsBrave15585Identity(observations)
+  );
+}
+
+function supportsBrave15585VersionThreeProfile(observations) {
+  return (
+    isRecord(observations) &&
+    hasOnlyFields(
+      observations,
+      new Set(["browser", "browserIdentity", "status"]),
+    ) &&
+    !Object.hasOwn(observations, "qualification") &&
+    observations.status === "diagnostic-only" &&
+    supportsBrave15585Identity(observations)
+  );
+}
+
+function selectEventTimingCrosswalkProfile(
+  observations,
+  allowVersionThreeDiagnostic = false,
+) {
   if (!isRecord(observations) || !isRecord(observations.browser)) return null;
   if (
     observations.browser.product === PLAYWRIGHT_CHROMIUM_PRODUCT &&
@@ -2215,6 +2261,11 @@ function selectEventTimingCrosswalkProfile(observations) {
     observations.browser.version ===
       BRAVE15585_METHOD_SCOPE.observedBrowserVersion
   ) {
+    if (allowVersionThreeDiagnostic) {
+      return supportsBrave15585VersionThreeProfile(observations)
+        ? "brave15585"
+        : null;
+    }
     return supportsBrave15585Profile(observations) ? "brave15585" : null;
   }
   return null;
@@ -2695,6 +2746,399 @@ function validateObservedDiscreteEvidenceVersionTwo(
     frameId: frameProvenance.afterDrain.frameId,
     retainedNodeEvidence,
     caseRecord,
+  };
+}
+
+function validateObservedDiscreteEvidenceVersionThree(
+  traceRecord,
+  sourceProfile,
+  observerEvidence,
+) {
+  const apiEntries = observedApiEntryCount(observerEvidence?.sidecar);
+  const fail = (code) => ({ apiEntries, code });
+  if (
+    !hasExactFields(observerEvidence, ["declaration", "sidecar", "capture"]) ||
+    !hasExactFields(observerEvidence.capture, [
+      "sourceHashSha256",
+      "caseRecord",
+    ])
+  ) {
+    return fail("OBSERVER_EVIDENCE_INVALID");
+  }
+
+  const { declaration, sidecar, capture } = observerEvidence;
+  const { caseRecord } = capture;
+  if (!VERSION_THREE_OBSERVER_SOURCE_HASHES.has(capture.sourceHashSha256)) {
+    return fail("COLLECTOR_SOURCE_HASH_MISMATCH");
+  }
+  if (
+    !isRecord(caseRecord) ||
+    caseRecord.fixture !== "100-interactive-open" ||
+    caseRecord.trace !== `${caseRecord.fixture}.trace.json` ||
+    caseRecord.workload !== "100-interactive" ||
+    caseRecord.rowCount !== 100 ||
+    caseRecord.action !== "open" ||
+    caseRecord.actionStatus !== "completed" ||
+    Object.hasOwn(caseRecord, "actionReasonCode") ||
+    caseRecord.measurementStatus !== "unavailable" ||
+    caseRecord.measurementReasonCode !== "V3_DIAGNOSTIC_ONLY"
+  ) {
+    return fail("COLLECTOR_LIFECYCLE_INVALID");
+  }
+  if (
+    caseRecord.dataLossOccurred !== false ||
+    traceRecord?.dataLossOccurred !== false ||
+    traceRecord?.fixture !== caseRecord.fixture ||
+    typeof caseRecord.trace !== "string" ||
+    caseRecord.trace.length === 0 ||
+    caseRecord.trace !== traceRecord?.trace
+  ) {
+    return fail("TRACE_DATA_LOSS_OR_LINK_MISMATCH");
+  }
+  if (sourceProfile !== "brave15585") {
+    return fail("BROWSER_SOURCE_PROFILE_UNSUPPORTED");
+  }
+
+  const manifestDeclarationFields = [
+    "schemaVersion",
+    "evidenceClass",
+    "instrumented",
+    "qualification",
+    "inputMethod",
+    "performanceEventTiming",
+    "recordLimit",
+    "recordByteLimit",
+    "sidecarByteLimit",
+    "retainedNodeEvidence",
+    "nextPaint",
+  ];
+  const caseDeclarationFields = [
+    "fileName",
+    "byteCount",
+    "sha256",
+    "evidenceClass",
+    "status",
+    "reasonCode",
+    "recordCount",
+    "apiStatus",
+  ];
+  const sidecarFields = [
+    "schemaVersion",
+    "evidenceClass",
+    "instrumented",
+    "qualification",
+    "fixture",
+    "inputMethod",
+    "interpretation",
+    "observation",
+  ];
+  const observerPayloadFields = [
+    "schemaVersion",
+    "status",
+    "reasonCode",
+    "documentId",
+    "apiStatus",
+    "apiMetadata",
+    "records",
+    "recordCount",
+    "recordBytes",
+    "frameProvenance",
+    "retainedNodeEvidence",
+    "sameDocumentLoadingWitness",
+  ];
+  const caseDeclaration = caseRecord.trustedStimulusObservation;
+  const retainedDeclaration = declaration.retainedNodeEvidence;
+  if (
+    !hasExactFields(declaration, manifestDeclarationFields) ||
+    declaration.schemaVersion !== 3 ||
+    declaration.evidenceClass !== TRUSTED_STIMULUS_EVIDENCE_CLASS ||
+    declaration.instrumented !== true ||
+    declaration.qualification !== "diagnostic-only" ||
+    declaration.inputMethod !== OBSERVER_MANIFEST_INPUT_METHOD ||
+    !hasExactFields(declaration.performanceEventTiming, [
+      "status",
+      "durationThresholdMs",
+      "buffered",
+      "quantized",
+      "continuousInputExcluded",
+    ]) ||
+    declaration.performanceEventTiming.status !== "thresholded" ||
+    declaration.performanceEventTiming.durationThresholdMs !== 16 ||
+    declaration.performanceEventTiming.buffered !== false ||
+    declaration.performanceEventTiming.quantized !== true ||
+    declaration.performanceEventTiming.continuousInputExcluded !== true ||
+    declaration.recordLimit !== OBSERVATION_LIMITS.records ||
+    declaration.recordByteLimit !== V3_OBSERVATION_RECORD_BYTE_LIMIT ||
+    declaration.sidecarByteLimit !== OBSERVATION_LIMITS.sidecarBytes ||
+    !hasExactFields(retainedDeclaration, [
+      "enabled",
+      "maxNodes",
+      "mappingByteLimit",
+      "protocolCatalogId",
+    ]) ||
+    retainedDeclaration.enabled !== RETAINED_NODE_EVIDENCE_POLICY.enabled ||
+    retainedDeclaration.maxNodes !== RETAINED_NODE_EVIDENCE_POLICY.maxNodes ||
+    retainedDeclaration.mappingByteLimit !==
+      RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit ||
+    retainedDeclaration.protocolCatalogId !== BRAVE15585_PROTOCOL_CATALOG_ID ||
+    !hasExactFields(declaration.nextPaint, ["status", "reasonCode"]) ||
+    declaration.nextPaint.status !== "unproven" ||
+    declaration.nextPaint.reasonCode !== "NEXT_PAINT_METHOD_UNPROVEN" ||
+    !hasExactFields(caseDeclaration, caseDeclarationFields) ||
+    !hasExactFields(sidecar, sidecarFields) ||
+    sidecar.schemaVersion !== 3 ||
+    sidecar.evidenceClass !== TRUSTED_STIMULUS_EVIDENCE_CLASS ||
+    sidecar.instrumented !== true ||
+    sidecar.qualification !== "diagnostic-only" ||
+    sidecar.fixture !== caseRecord.fixture ||
+    sidecar.inputMethod !== OBSERVER_SIDECAR_INPUT_METHOD ||
+    !hasExactFields(sidecar.interpretation, ["eventTiming", "targets"]) ||
+    sidecar.interpretation.eventTiming !==
+      OBSERVER_SIDECAR_INTERPRETATION.eventTiming ||
+    sidecar.interpretation.targets !==
+      OBSERVER_SIDECAR_INTERPRETATION.targets ||
+    caseDeclaration.fileName !== `${caseRecord.fixture}.stimulus.json` ||
+    !Number.isSafeInteger(caseDeclaration.byteCount) ||
+    caseDeclaration.byteCount < 1 ||
+    caseDeclaration.byteCount > OBSERVATION_LIMITS.sidecarBytes ||
+    typeof caseDeclaration.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(caseDeclaration.sha256) ||
+    caseDeclaration.evidenceClass !== TRUSTED_STIMULUS_EVIDENCE_CLASS ||
+    !hasExactFields(sidecar.observation, observerPayloadFields)
+  ) {
+    return fail("OBSERVER_EVIDENCE_INVALID");
+  }
+
+  let observation;
+  let frameProvenance;
+  try {
+    const { frameProvenance: rawFrameProvenance, ...payload } =
+      sidecar.observation;
+    observation = validateTrustedStimulusObservation(
+      payload,
+      payload.documentId,
+    );
+    frameProvenance = validateInputFrameProvenance(
+      rawFrameProvenance,
+      observation.documentId,
+    );
+  } catch {
+    return fail("OBSERVER_EVIDENCE_INVALID");
+  }
+
+  const retainedNodeEvidence = observation.retainedNodeEvidence;
+  const witness = observation.sameDocumentLoadingWitness;
+  if (
+    caseDeclaration.status !== observation.status ||
+    caseDeclaration.reasonCode !== observation.reasonCode ||
+    caseDeclaration.recordCount !== observation.recordCount ||
+    caseDeclaration.apiStatus !== observation.apiStatus ||
+    declaration.performanceEventTiming.status !== observation.apiStatus
+  ) {
+    return fail("OBSERVER_EVIDENCE_INVALID");
+  }
+  if (
+    frameProvenance.status !== "stable" ||
+    frameProvenance.reasonCode !== null ||
+    frameProvenance.documentId !== observation.documentId
+  ) {
+    return fail("FRAME_PROVENANCE_UNSTABLE");
+  }
+  if (
+    observation.schemaVersion !== 3 ||
+    observation.status !== "diagnostic" ||
+    observation.reasonCode !== null ||
+    observation.apiStatus !== "thresholded"
+  ) {
+    return fail("OBSERVER_NOT_DIAGNOSTIC");
+  }
+  if (retainedNodeEvidence.status !== "complete") {
+    return fail(
+      retainedNodeEvidence.reasonCode ?? "RETAINED_NODE_EVIDENCE_UNAVAILABLE",
+    );
+  }
+  if (
+    retainedNodeEvidence.documentId !== observation.documentId ||
+    retainedNodeEvidence.executionContext?.isDefault !== true ||
+    retainedNodeEvidence.executionContext?.frameId !==
+      frameProvenance.afterDrain.frameId ||
+    retainedNodeEvidence.snapshots.afterDrain?.frameId !==
+      frameProvenance.afterDrain.frameId ||
+    retainedNodeEvidence.snapshots.afterDrain?.loaderId !==
+      frameProvenance.afterDrain.loaderId
+  ) {
+    return fail("RETAINED_NODE_EVIDENCE_INVALID");
+  }
+  if (
+    witness.status !== "complete" ||
+    witness.reasonCode !== null ||
+    witness.firstInvalidation !== null ||
+    witness.droppedCount !== 0 ||
+    witness.overflow !== false ||
+    witness.orderingBasis !== "cdp-receipt" ||
+    witness.sourceOrder !== "unknown" ||
+    Object.values(witness.collectorCleanup).some((value) => value !== true)
+  ) {
+    return fail(witness.reasonCode ?? "RETAINED_NODE_EVIDENCE_UNAVAILABLE");
+  }
+  const loadingEvents = witness.events.filter(
+    (event) => event.method === "Page.frameStartedLoading",
+  );
+  const historyEvents = witness.events.filter(
+    (event) => event.method === "Page.navigatedWithinDocument",
+  );
+  const rootSnapshot = retainedNodeEvidence.snapshots.beforeArm;
+  if (
+    witness.protocolCatalogId !== BRAVE15585_PROTOCOL_CATALOG_ID ||
+    witness.loadingCount !== 1 ||
+    witness.historyApiCount !== 1 ||
+    loadingEvents.length !== 1 ||
+    historyEvents.length !== 1 ||
+    loadingEvents[0].phase !== "primary-action" ||
+    !["primary-action", "route-ready"].includes(historyEvents[0].phase) ||
+    loadingEvents[0].sequence >= historyEvents[0].sequence ||
+    loadingEvents[0].frameId !== historyEvents[0].frameId ||
+    loadingEvents[0].frameId !== rootSnapshot.frameId ||
+    historyEvents[0].navigationType !== "historyApi"
+  ) {
+    return fail("RETAINED_NODE_TRACE_ASSOCIATION_INVALID");
+  }
+  if (
+    witness.events.some(
+      (event) =>
+        !(
+          event.method === "Page.frameStartedLoading" ||
+          event.method === "Page.navigatedWithinDocument" ||
+          (event.method === "Runtime.executionContextCreated" &&
+            event.phase === "baseline" &&
+            event.source === "page" &&
+            event.frameId === rootSnapshot.frameId &&
+            event.contextUniqueId ===
+              retainedNodeEvidence.executionContext.uniqueId &&
+            event.isDefault === true)
+        ) ||
+        (Object.hasOwn(event, "frameId") &&
+          event.frameId !== rootSnapshot.frameId),
+    )
+  ) {
+    return fail("RETAINED_NODE_TRACE_ASSOCIATION_INVALID");
+  }
+
+  const apiRecords = observation.records.filter(
+    (record) => record.kind === "event-timing",
+  );
+  const primaryClickRecords = observation.records
+    .map((record, index) => ({ record, index }))
+    .filter(
+      ({ record }) =>
+        record.kind === "dom" &&
+        record.type === "click" &&
+        record.phase === "primary" &&
+        record.isTrusted === true,
+    );
+  const proof = witness.retainedTargetProof;
+  if (apiRecords.length !== 1) {
+    return fail("API_IDENTITY_AMBIGUOUS");
+  }
+  const apiRecord = apiRecords[0];
+  const interactionId = Number.isSafeInteger(apiRecord.interactionId)
+    ? BigInt(apiRecord.interactionId)
+    : null;
+  if (
+    apiRecord.type !== "click" ||
+    interactionId === null ||
+    interactionId <= 0n ||
+    interactionId > SIGNED_INT32_MAX
+  ) {
+    return fail("API_INTERACTION_ID_INVALID");
+  }
+  if (!proof || primaryClickRecords.length !== 1) {
+    return fail("RETAINED_TARGET_PROOF_INVALID");
+  }
+  const { record: domRecord, index: domRecordIndex } = primaryClickRecords[0];
+  if (
+    proof.sourceRecordIndex !== domRecordIndex ||
+    proof.documentId !== observation.documentId ||
+    proof.documentId !== domRecord.documentId ||
+    proof.targetToken === null ||
+    proof.targetToken !== domRecord.targetToken ||
+    domRecord.timeStamp !== apiRecord.startTime ||
+    domRecord.type !== apiRecord.type ||
+    !domRecord.isTrusted ||
+    !Object.values(proof.sourceCapture).every((value) => value === true)
+  ) {
+    return fail("RETAINED_TARGET_PROOF_INVALID");
+  }
+  if (
+    apiRecord.targetToken !== null &&
+    apiRecord.targetToken !== proof.targetToken
+  ) {
+    return fail("TARGET_IDENTITY_MISMATCH");
+  }
+
+  const selectedAction = OBSERVED_ACTION_LABELS.get(domRecord.targetLabel);
+  if (
+    selectedAction === undefined ||
+    selectedAction.action !== "open" ||
+    apiRecord.type !== "click" ||
+    domRecord.phase !== selectedAction.phase ||
+    (domRecord.targetResolution !== "registered-target" &&
+      domRecord.targetResolution !== "registered-ancestor") ||
+    caseRecord.action !== selectedAction.action
+  ) {
+    return fail("UNSELECTED_ACTION_DISPATCH");
+  }
+
+  const mapping = retainedNodeEvidence.mappings[proof.mappingIndex];
+  const finalProof = proof.finalProof;
+  const baselineScope = proof.baselineScope;
+  const finalScope = finalProof?.cdpScope;
+  const sameScope =
+    isRecord(baselineScope) &&
+    isRecord(finalScope) &&
+    ["frameId", "loaderId", "contextUniqueId", "targetId", "sessionId"].every(
+      (key) => baselineScope[key] === finalScope[key],
+    );
+  if (
+    !mapping ||
+    mapping.targetToken !== proof.targetToken ||
+    !Number.isSafeInteger(mapping.backendNodeId) ||
+    mapping.backendNodeId <= 0 ||
+    !finalProof ||
+    finalProof.stage !== "post-trace-before-release" ||
+    ![
+      finalProof.savedDocumentSame,
+      finalProof.savedRootSame,
+      finalProof.savedTargetSame,
+      finalProof.targetOwnerDocumentMatches,
+    ].every((value) => value === true) ||
+    finalProof.mappedBackendNodeId !== mapping.backendNodeId ||
+    finalProof.finalBackendNodeId !== mapping.backendNodeId ||
+    !sameScope ||
+    baselineScope.frameId !==
+      retainedNodeEvidence.snapshots.beforeArm.frameId ||
+    baselineScope.loaderId !==
+      retainedNodeEvidence.snapshots.beforeArm.loaderId ||
+    baselineScope.contextUniqueId !==
+      retainedNodeEvidence.executionContext.uniqueId ||
+    baselineScope.frameId !== retainedNodeEvidence.executionContext.frameId ||
+    baselineScope.frameId !== frameProvenance.afterDrain.frameId ||
+    baselineScope.loaderId !== frameProvenance.afterDrain.loaderId
+  ) {
+    return fail("RETAINED_TARGET_PROOF_INVALID");
+  }
+
+  return {
+    apiEntries: apiRecords.length,
+    apiRecords,
+    domRecord,
+    documentId: observation.documentId,
+    frameId: frameProvenance.afterDrain.frameId,
+    retainedNodeEvidence,
+    witness,
+    caseRecord,
+    proof,
+    mapping,
   };
 }
 
@@ -3219,6 +3663,135 @@ function associateObservedDiscreteInputsVersionTwo(
   };
 }
 
+function associateObservedDiscreteInputsVersionThree(
+  trace,
+  traceRecord,
+  sourceProfile,
+  observerEvidence,
+  candidateByBeginIndex,
+) {
+  const validated = validateObservedDiscreteEvidenceVersionThree(
+    traceRecord,
+    sourceProfile,
+    observerEvidence,
+  );
+  if (validated.code) {
+    return rejectedObservedDiscreteInputs(validated.apiEntries, validated.code);
+  }
+
+  const apiRecord = validated.apiRecords[0];
+  const legacyType = OBSERVED_API_TO_LEGACY_TYPE.get(apiRecord.type);
+  const interactionId = BigInt(apiRecord.interactionId);
+  const apiKey = observedDiscreteIdentityKey(
+    validated.frameId,
+    legacyType,
+    interactionId,
+  );
+  const typeAndInteractionKey = JSON.stringify([
+    legacyType,
+    interactionId.toString(),
+  ]);
+  const {
+    identities: legacyIdentities,
+    byTypeAndInteraction,
+    unclassifiable,
+  } = rawObservedLegacyBeginsVersionTwo(trace);
+  if (unclassifiable) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_CONTENDER_UNCLASSIFIABLE");
+  }
+
+  const traceEpoch = observedTraceRendererEpoch(trace, validated.frameId);
+  if (traceEpoch.code) {
+    return rejectedObservedDiscreteInputs(1, traceEpoch.code);
+  }
+
+  const markerCandidates = trace.traceEvents
+    .map((event, index) => ({ event, index }))
+    .filter(
+      ({ event }) =>
+        event?.name === "TimeStamp" &&
+        event?.args?.data?.message ===
+          "pilot-100-interactive-open:segment-start",
+    );
+  if (markerCandidates.length !== 1) {
+    return rejectedObservedDiscreteInputs(
+      1,
+      markerCandidates.length === 0
+        ? "TRACE_MARKER_MISSING"
+        : "TRACE_MARKER_AMBIGUOUS",
+    );
+  }
+  const { event: marker, index: markerIndex } = markerCandidates[0];
+  if (
+    !isRecord(marker) ||
+    typeof marker.cat !== "string" ||
+    !marker.cat.split(",").includes("blink.user_timing") ||
+    (marker.ph !== "I" && marker.ph !== "R") ||
+    !Number.isSafeInteger(marker.pid) ||
+    marker.pid <= 0 ||
+    markerIndex <= traceEpoch.initialIndex
+  ) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_MARKER_INVALID");
+  }
+  if (marker.pid !== traceEpoch.rendererPid) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_PID_EPOCH_MISMATCH");
+  }
+
+  const peers = byTypeAndInteraction.get(typeAndInteractionKey) ?? [];
+  if (peers.length > 1) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_IDENTITY_AMBIGUOUS");
+  }
+  const legacyCandidates = legacyIdentities.get(apiKey) ?? [];
+  if (legacyCandidates.length > 1) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_IDENTITY_AMBIGUOUS");
+  }
+  if (legacyCandidates.length === 0) {
+    return rejectedObservedDiscreteInputs(
+      1,
+      peers.length > 0 ? "TRACE_FRAME_MISMATCH" : "TRACE_IDENTITY_NOT_FOUND",
+    );
+  }
+  if (peers.length !== 1) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_IDENTITY_AMBIGUOUS");
+  }
+
+  const legacy = legacyCandidates[0];
+  if (
+    legacy.beginIndex <= traceEpoch.initialIndex ||
+    legacy.beginIndex <= markerIndex
+  ) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_ORDER_INVALID");
+  }
+  if (legacy.pid !== traceEpoch.rendererPid) {
+    return rejectedObservedDiscreteInputs(1, "TRACE_PID_EPOCH_MISMATCH");
+  }
+  if (legacy.nodeId !== validated.mapping.backendNodeId) {
+    return rejectedObservedDiscreteInputs(1, "RETAINED_NODE_MAPPING_MISMATCH");
+  }
+
+  const candidate = candidateByBeginIndex.get(legacy.beginIndex);
+  if (!candidate || candidate.eventType !== apiRecord.type) {
+    return rejectedObservedDiscreteInputs(1, "CROSSWALK_CANDIDATE_UNAVAILABLE");
+  }
+  return {
+    status: "diagnostic-only",
+    counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+    entries: [
+      {
+        dispatchPhase: validated.domRecord.phase,
+        actionLabel: validated.domRecord.targetLabel,
+        eventType: candidate.eventType,
+        durationUs: candidate.durationUs,
+        processingEndToPresentationUs: candidate.processingEndToPresentationUs,
+        status: "diagnostic-only",
+      },
+    ],
+    rejectionCounts: [],
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+  };
+}
+
 function observerEvidenceSchemaVersion(observerEvidence) {
   const declaration = observerEvidence?.declaration;
   const sidecar = observerEvidence?.sidecar;
@@ -3239,6 +3812,15 @@ function observerEvidenceSchemaVersion(observerEvidence) {
     sidecar.observation?.schemaVersion === 2
   ) {
     return 2;
+  }
+  if (
+    isRecord(declaration) &&
+    declaration.schemaVersion === 3 &&
+    isRecord(sidecar) &&
+    sidecar.schemaVersion === 3 &&
+    sidecar.observation?.schemaVersion === 3
+  ) {
+    return 3;
   }
   return null;
 }
@@ -3263,6 +3845,15 @@ function associateObservedDiscreteInputs(
   }
   if (schemaVersion === 2) {
     return associateObservedDiscreteInputsVersionTwo(
+      trace,
+      traceRecord,
+      sourceProfile,
+      observerEvidence,
+      candidateByBeginIndex,
+    );
+  }
+  if (schemaVersion === 3) {
+    return associateObservedDiscreteInputsVersionThree(
       trace,
       traceRecord,
       sourceProfile,
@@ -3530,6 +4121,14 @@ export function analyzeTrace(
     throw new TypeError("Analyzer requires a parsed trace and trace record.");
   }
 
+  const versionThreeEvidence =
+    observerEvidenceSchemaVersion(observerEvidence) === 3;
+  if (versionThreeEvidence && Array.isArray(segments) && segments.length > 0) {
+    throw new TypeError(
+      "Version-three analysis cannot include action measurement segments.",
+    );
+  }
+
   const diagnosticCounts = new Map();
   const { spans, malformedReporterEvents, reporterBegins } = pairAsyncSlices(
     trace.traceEvents,
@@ -3550,7 +4149,10 @@ export function analyzeTrace(
     reporterBegins,
     diagnosticCounts,
   );
-  const profile = selectEventTimingCrosswalkProfile(sourceObservations);
+  const profile = selectEventTimingCrosswalkProfile(
+    sourceObservations,
+    versionThreeEvidence,
+  );
   const crosswalk = profile
     ? discreteEventTimingCrosswalk(trace, traceRecord, profile)
     : {
