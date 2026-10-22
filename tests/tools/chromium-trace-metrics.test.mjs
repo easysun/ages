@@ -203,6 +203,11 @@ const knownBrave15585Observations = {
   qualification: "installed-brave-schema-probe",
   status: "installed-brave-schema-probe",
 };
+const knownBrave15585VersionThreeObservations = {
+  browser: structuredClone(knownBrave15585Observations.browser),
+  browserIdentity: structuredClone(knownBrave15585Observations.browserIdentity),
+  status: "diagnostic-only",
+};
 
 function withBrave155InteractionValues(trace) {
   const legacy = trace.traceEvents[0].args.data;
@@ -304,6 +309,8 @@ const currentRetainedCollectorSourceHash =
   "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
 const cleanupVerifiedCollectorSourceHash =
   "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab";
+const postReviewFrozenProducerSourceHash =
+  "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a";
 
 function currentCollectorSourceHash() {
   const collectorSource = readFileSync(
@@ -365,6 +372,7 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
   assert.ok(!producerInputs.includes("scripts/analyze-chromium-traces.mjs"));
 
   const actualHash = currentCollectorSourceHash();
+  assert.equal(actualHash, postReviewFrozenProducerSourceHash);
   assert.notEqual(actualHash, cleanupVerifiedCollectorSourceHash);
   const metricsSource = readFileSync(
     resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
@@ -397,8 +405,32 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     lifecycleHash("cleanupVerifiedVersionTwoRetentionEnabled"),
     cleanupVerifiedCollectorSourceHash,
   );
-  assert.equal(lifecycleHash("runLevelCleanupReceiptVersionOne"), actualHash);
-  assert.equal(lifecycleHash("runLevelCleanupReceiptVersionTwo"), actualHash);
+  assert.equal(
+    lifecycleHash("runLevelCleanupReceiptVersionOne"),
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  );
+  assert.equal(
+    lifecycleHash("runLevelCleanupReceiptVersionTwo"),
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  );
+  assert.equal(
+    lifecycleHash("postReviewVersionOneRetentionDisabled"),
+    actualHash,
+  );
+  assert.equal(
+    lifecycleHash("postReviewVersionTwoRetentionEnabled"),
+    actualHash,
+  );
+  assert.equal(
+    lifecycleHash("finalReviewedVersionThreeRetentionEnabled"),
+    actualHash,
+  );
+  assert.match(
+    metricsSource.match(
+      /finalReviewedVersionThreeRetentionEnabled: Object\.freeze\(\{([\s\S]*?)\n {2}\}\)/,
+    )?.[1] ?? "",
+    /browserProfile: "brave15585"/,
+  );
   assert.notEqual(
     lifecycleHash("runLevelCleanupReceiptVersionOne"),
     lifecycleHash("originalVersionOne"),
@@ -680,6 +712,168 @@ function makeVersionTwoObserverEvidence({
   };
 }
 
+function validSameDocumentLoadingWitness(overrides = {}) {
+  const scope = {
+    frameId: observedFrameId,
+    loaderId: "loader-A",
+    contextUniqueId: "context-A",
+    targetId: "target-A",
+    sessionId: "session-A",
+  };
+  return {
+    status: "complete",
+    reasonCode: null,
+    protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    events: [
+      {
+        sequence: 0,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.frameStartedLoading",
+        frameId: observedFrameId,
+      },
+      {
+        sequence: 1,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.navigatedWithinDocument",
+        frameId: observedFrameId,
+        navigationType: "historyApi",
+      },
+    ],
+    droppedCount: 0,
+    overflow: false,
+    loadingCount: 1,
+    historyApiCount: 1,
+    orderingBasis: "cdp-receipt",
+    sourceOrder: "unknown",
+    retainedTargetProof: {
+      sourceRecordIndex: 1,
+      documentId: observedDocumentId,
+      targetToken: observedTargetToken,
+      mappingIndex: 0,
+      sourceCapture: {
+        targetIsNode: true,
+        ownerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        composedPathStartsAtTarget: true,
+      },
+      baselineScope: { ...scope },
+      finalProof: {
+        stage: "post-trace-before-release",
+        savedDocumentSame: true,
+        savedRootSame: true,
+        savedTargetSame: true,
+        targetOwnerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        mappedBackendNodeId: 311,
+        finalBackendNodeId: 311,
+        cdpScope: { ...scope },
+      },
+    },
+    firstInvalidation: null,
+    collectorCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+    ...overrides,
+  };
+}
+
+function makeVersionThreeObserverEvidence({
+  records = [
+    observedApiEntry({
+      targetToken: null,
+      targetLabel: null,
+      targetResolution: "unknown",
+    }),
+    observedDomEntry(),
+  ],
+  retainedOverrides = {},
+  witnessOverrides = {},
+  observationOverrides = {},
+  sidecarOverrides = {},
+  declarationOverrides = {},
+  traceRecordOverrides = {},
+  sourceHashSha256 = postReviewFrozenProducerSourceHash,
+  traceDataLossOccurred = false,
+} = {}) {
+  const base = makeObserverEvidence({
+    records,
+    observationOverrides,
+    traceRecordOverrides,
+    sourceHashSha256,
+    traceDataLossOccurred,
+  });
+  const fixture = "100-interactive-open";
+  const traceName = `${fixture}.trace.json`;
+  const observation = {
+    ...base.sidecar.observation,
+    schemaVersion: 3,
+    retainedNodeEvidence: validRetainedNodeEvidence(retainedOverrides),
+    sameDocumentLoadingWitness:
+      validSameDocumentLoadingWitness(witnessOverrides),
+  };
+  const sidecar = {
+    ...base.sidecar,
+    schemaVersion: 3,
+    fixture,
+    observation,
+    ...sidecarOverrides,
+  };
+  const declaration = {
+    ...base.declaration,
+    schemaVersion: 3,
+    recordByteLimit: 256 * 1024 - 36 * 1024 - 80 * 1024,
+    retainedNodeEvidence: {
+      enabled: true,
+      maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+      mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    },
+    ...declarationOverrides,
+  };
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar)}\n`);
+  const caseRecord = {
+    ...base.capture.caseRecord,
+    fixture,
+    trace: traceName,
+    workload: "100-interactive",
+    rowCount: 100,
+    action: "open",
+    measurementStatus: "unavailable",
+    measurementReasonCode: "V3_DIAGNOSTIC_ONLY",
+    trustedStimulusObservation: {
+      ...base.capture.caseRecord.trustedStimulusObservation,
+      fileName: `${fixture}.stimulus.json`,
+      byteCount: sidecarBytes.byteLength,
+      sha256: createHash("sha256").update(sidecarBytes).digest("hex"),
+    },
+  };
+  return {
+    declaration,
+    sidecar,
+    capture: { sourceHashSha256, caseRecord },
+    traceRecord: { ...base.traceRecord, fixture, trace: traceName },
+  };
+}
+
+function refreshVersionThreeEvidenceBytes(evidence) {
+  evidence.sidecar.observation.recordBytes = Buffer.byteLength(
+    JSON.stringify(evidence.sidecar.observation.records),
+    "utf8",
+  );
+  const bytes = Buffer.from(`${JSON.stringify(evidence.sidecar)}\n`);
+  Object.assign(evidence.capture.caseRecord.trustedStimulusObservation, {
+    byteCount: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+}
+
 function makeVersionTwoTrace({
   trace = makeBrave155Trace(),
   frame = observedFrameId,
@@ -701,6 +895,33 @@ function makeVersionTwoTrace({
   return trace;
 }
 
+function makeVersionThreeTrace({
+  trace = makeBrave155Trace(),
+  frame = observedFrameId,
+  processId = 101,
+  markerPid = processId,
+  metadataEvents = [],
+} = {}) {
+  const versionTwoTrace = makeVersionTwoTrace({
+    trace,
+    frame,
+    processId,
+    metadataEvents,
+  });
+  versionTwoTrace.traceEvents.splice(1, 0, {
+    name: "TimeStamp",
+    cat: "blink.user_timing",
+    ph: "I",
+    pid: markerPid,
+    tid: 1,
+    ts: 1n,
+    args: {
+      data: { message: "pilot-100-interactive-open:segment-start" },
+    },
+  });
+  return versionTwoTrace;
+}
+
 function analyzeVersionTwoTrace({
   evidence = makeVersionTwoObserverEvidence(),
   trace = makeVersionTwoTrace(),
@@ -713,6 +934,25 @@ function analyzeVersionTwoTrace({
   }).observedDiscreteInputs;
 }
 
+function analyzeVersionThreeTrace({
+  evidence = makeVersionThreeObserverEvidence(),
+  trace = makeVersionThreeTrace(),
+  segments = [],
+  sourceObservations = knownBrave15585VersionThreeObservations,
+} = {}) {
+  return analyzeTrace(
+    trace,
+    evidence.traceRecord,
+    segments,
+    sourceObservations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  ).observedDiscreteInputs;
+}
+
 function assertVersionTwoUnavailable(result) {
   assert.equal(result.status, "unavailable");
   assert.equal(result.counts.accepted, 0);
@@ -720,6 +960,407 @@ function assertVersionTwoUnavailable(result) {
   assert.equal(result.formalActionStatus, "unavailable");
   assert.deepEqual(result.formalActionSamples, []);
 }
+
+function assertVersionThreeUnavailable(result, message) {
+  assert.equal(result.status, "unavailable", message);
+  assert.equal(result.counts.accepted, 0, message);
+  assert.equal(result.counts.rejected, result.counts.apiEntries, message);
+  assert.equal(result.formalActionStatus, "unavailable", message);
+  assert.deepEqual(result.formalActionSamples, [], message);
+}
+
+test("v3 association requires singleton raw positive backend node equality and preserves API null", () => {
+  const evidence = makeVersionThreeObserverEvidence();
+  const result = analyzeVersionThreeTrace({ evidence });
+
+  assert.deepEqual(result, {
+    status: "diagnostic-only",
+    counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+    entries: [
+      {
+        dispatchPhase: "primary",
+        actionLabel: "open-primary",
+        eventType: "click",
+        durationUs: 8,
+        processingEndToPresentationUs: 3,
+        status: "diagnostic-only",
+      },
+    ],
+    rejectionCounts: [],
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+  });
+  assert.equal(
+    evidence.sidecar.observation.records[0].targetToken,
+    null,
+    "the API's null target remains null while independent proof binds the DOM target",
+  );
+
+  for (const field of ["connected", "rootContainsTarget"]) {
+    const detached = makeVersionThreeObserverEvidence();
+    detached.sidecar.observation.sameDocumentLoadingWitness.retainedTargetProof.finalProof[
+      field
+    ] = false;
+    assert.equal(
+      analyzeVersionThreeTrace({ evidence: detached }).counts.accepted,
+      1,
+    );
+  }
+
+  const mismatchedMapping = makeVersionThreeObserverEvidence({
+    retainedOverrides: {
+      mappings: [{ targetToken: observedTargetToken, backendNodeId: 312 }],
+    },
+  });
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ evidence: mismatchedMapping }),
+  );
+
+  const rawNodeMismatch = makeVersionThreeObserverEvidence({
+    retainedOverrides: {
+      mappings: [{ targetToken: observedTargetToken, backendNodeId: 312 }],
+    },
+  });
+  const rawNodeProof =
+    rawNodeMismatch.sidecar.observation.sameDocumentLoadingWitness
+      .retainedTargetProof.finalProof;
+  rawNodeProof.mappedBackendNodeId = 312;
+  rawNodeProof.finalBackendNodeId = 312;
+  const rawNodeMismatchResult = analyzeVersionThreeTrace({
+    evidence: rawNodeMismatch,
+  });
+  assertVersionThreeUnavailable(rawNodeMismatchResult);
+  assert.deepEqual(rawNodeMismatchResult.rejectionCounts, [
+    { code: "RETAINED_NODE_MAPPING_MISMATCH", count: 1 },
+  ]);
+
+  const nonNullApiTargetMismatch = makeVersionThreeObserverEvidence();
+  nonNullApiTargetMismatch.sidecar.observation.records[0].targetToken =
+    "t-cccccccccccccccccccccccc";
+  refreshVersionThreeEvidenceBytes(nonNullApiTargetMismatch);
+  const nonNullTargetResult = analyzeVersionThreeTrace({
+    evidence: nonNullApiTargetMismatch,
+  });
+  assertVersionThreeUnavailable(nonNullTargetResult);
+  assert.deepEqual(nonNullTargetResult.rejectionCounts, [
+    { code: "TARGET_IDENTITY_MISMATCH", count: 1 },
+  ]);
+
+  const duplicateRawContender = makeVersionThreeTrace();
+  duplicateRawContender.traceEvents.push({
+    ...structuredClone(duplicateRawContender.traceEvents[2]),
+    id: "0xduplicate",
+  });
+  const ambiguous = analyzeVersionThreeTrace({
+    trace: duplicateRawContender,
+  });
+  assertVersionThreeUnavailable(ambiguous);
+  assert.deepEqual(ambiguous.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+
+  const crossFramePeer = makeVersionThreeTrace();
+  const otherFrameCandidate = structuredClone(crossFramePeer.traceEvents[2]);
+  otherFrameCandidate.id = "0xcrossframe";
+  otherFrameCandidate.args.data.frame = "other-frame";
+  crossFramePeer.traceEvents.push(otherFrameCandidate);
+  const crossFrameAmbiguous = analyzeVersionThreeTrace({
+    trace: crossFramePeer,
+  });
+  assertVersionThreeUnavailable(crossFrameAmbiguous);
+  assert.deepEqual(crossFrameAmbiguous.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+
+  const nonpositiveRawNode = makeVersionThreeTrace();
+  nonpositiveRawNode.traceEvents[2].args.data.nodeId = 0;
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: nonpositiveRawNode }),
+  );
+
+  const rawFrameMismatch = makeVersionThreeTrace();
+  rawFrameMismatch.traceEvents[2].args.data.frame = "other-frame";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: rawFrameMismatch }),
+  );
+
+  const actionMismatch = makeVersionThreeObserverEvidence();
+  actionMismatch.sidecar.observation.records[1].targetLabel = "fit-all";
+  refreshVersionThreeEvidenceBytes(actionMismatch);
+  const actionMismatchResult = analyzeVersionThreeTrace({
+    evidence: actionMismatch,
+  });
+  assertVersionThreeUnavailable(actionMismatchResult);
+  assert.deepEqual(actionMismatchResult.rejectionCounts, [
+    { code: "UNSELECTED_ACTION_DISPATCH", count: 1 },
+  ]);
+});
+
+test("v3 rejects each missing, false, or inconsistent retained-target proof field", () => {
+  assert.equal(analyzeVersionThreeTrace().counts.accepted, 1);
+  const scenarios = [
+    ["source record index missing", (proof) => delete proof.sourceRecordIndex],
+    ["source record index mismatch", (proof) => (proof.sourceRecordIndex = 0)],
+    ["document binding missing", (proof) => delete proof.documentId],
+    [
+      "document binding mismatch",
+      (proof) => (proof.documentId = "d-cccccccccccccccccccccccc"),
+    ],
+    ["target token missing", (proof) => delete proof.targetToken],
+    [
+      "target token binding mismatch",
+      (proof) => (proof.targetToken = "t-cccccccccccccccccccccccc"),
+    ],
+    ["mapping index missing", (proof) => delete proof.mappingIndex],
+    ["mapping index mismatch", (proof) => (proof.mappingIndex = 1)],
+    ["source capture missing", (proof) => delete proof.sourceCapture],
+    ["baseline scope missing", (proof) => delete proof.baselineScope],
+    ...[
+      ["frameId", "other-frame"],
+      ["loaderId", "other-loader"],
+      ["contextUniqueId", "other-context"],
+      ["targetId", "other-target"],
+      ["sessionId", "other-session"],
+    ].flatMap(([field, value]) => [
+      [
+        `baseline ${field} missing`,
+        (proof) => delete proof.baselineScope[field],
+      ],
+      [
+        `baseline ${field} mismatch`,
+        (proof) => (proof.baselineScope[field] = value),
+      ],
+    ]),
+    ["final proof missing", (proof) => delete proof.finalProof],
+    [
+      "final proof stage mismatch",
+      (proof) => (proof.finalProof.stage = "after-release"),
+    ],
+    [
+      "mapped backend node missing",
+      (proof) => delete proof.finalProof.mappedBackendNodeId,
+    ],
+    [
+      "mapped backend node mismatch",
+      (proof) => (proof.finalProof.mappedBackendNodeId = 312),
+    ],
+    [
+      "final backend node missing",
+      (proof) => delete proof.finalProof.finalBackendNodeId,
+    ],
+    [
+      "final backend node mismatch",
+      (proof) => (proof.finalProof.finalBackendNodeId = 312),
+    ],
+    ["final CDP scope missing", (proof) => delete proof.finalProof.cdpScope],
+    ...[
+      ["frameId", "other-frame"],
+      ["loaderId", "other-loader"],
+      ["contextUniqueId", "other-context"],
+      ["targetId", "other-target"],
+      ["sessionId", "other-session"],
+    ].flatMap(([field, value]) => [
+      [
+        `final CDP ${field} missing`,
+        (proof) => delete proof.finalProof.cdpScope[field],
+      ],
+      [
+        `final CDP ${field} mismatch`,
+        (proof) => (proof.finalProof.cdpScope[field] = value),
+      ],
+    ]),
+    ["extra proof field", (proof) => (proof.unreviewed = true)],
+    ...[
+      "targetIsNode",
+      "ownerDocumentMatches",
+      "rootContainsTarget",
+      "connected",
+      "composedPathStartsAtTarget",
+    ].flatMap((field) => [
+      [`${field} missing`, (proof) => delete proof.sourceCapture[field]],
+      [`${field} false`, (proof) => (proof.sourceCapture[field] = false)],
+    ]),
+    ...[
+      "savedDocumentSame",
+      "savedRootSame",
+      "savedTargetSame",
+      "targetOwnerDocumentMatches",
+    ].flatMap((field) => [
+      [`${field} missing`, (proof) => delete proof.finalProof[field]],
+      [`${field} false`, (proof) => (proof.finalProof[field] = false)],
+    ]),
+    ...["rootContainsTarget", "connected"].map((field) => [
+      `${field} missing in final proof`,
+      (proof) => delete proof.finalProof[field],
+    ]),
+  ];
+
+  for (const [name, mutateProof] of scenarios) {
+    const evidence = makeVersionThreeObserverEvidence();
+    mutateProof(
+      evidence.sidecar.observation.sameDocumentLoadingWitness
+        .retainedTargetProof,
+    );
+    assertVersionThreeUnavailable(analyzeVersionThreeTrace({ evidence }), name);
+  }
+});
+
+test("v3 rejects identity and trace-order mismatches", () => {
+  assert.equal(analyzeVersionThreeTrace().counts.accepted, 1);
+  assert.throws(
+    () => analyzeVersionThreeTrace({ segments: [{}] }),
+    /version-three analysis cannot include action measurement segments/i,
+  );
+
+  const unknownHash = makeVersionThreeObserverEvidence({
+    sourceHashSha256: "0".repeat(64),
+  });
+  const unknownHashResult = analyzeVersionThreeTrace({ evidence: unknownHash });
+  assertVersionThreeUnavailable(unknownHashResult);
+  assert.deepEqual(unknownHashResult.rejectionCounts, [
+    { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+  ]);
+
+  const eightyProfile = analyzeTrace(
+    makeVersionThreeTrace(),
+    makeVersionThreeObserverEvidence().traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: makeVersionThreeObserverEvidence().declaration,
+      sidecar: makeVersionThreeObserverEvidence().sidecar,
+      capture: makeVersionThreeObserverEvidence().capture,
+    },
+  ).observedDiscreteInputs;
+  assertVersionThreeUnavailable(eightyProfile);
+
+  const qualifiedProfile = analyzeVersionThreeTrace({
+    sourceObservations: knownBrave15585Observations,
+  });
+  assertVersionThreeUnavailable(qualifiedProfile);
+  assert.deepEqual(qualifiedProfile.rejectionCounts, [
+    { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+  ]);
+
+  const markerPidMismatch = analyzeVersionThreeTrace({
+    trace: makeVersionThreeTrace({ markerPid: 202 }),
+  });
+  assertVersionThreeUnavailable(markerPidMismatch);
+
+  const rendererPidMismatchTrace = makeVersionThreeTrace({
+    processId: 202,
+    markerPid: 202,
+  });
+  const rendererPidMismatch = analyzeVersionThreeTrace({
+    trace: rendererPidMismatchTrace,
+  });
+  assertVersionThreeUnavailable(rendererPidMismatch);
+
+  const candidateBeforeMarker = makeVersionThreeTrace();
+  const marker = candidateBeforeMarker.traceEvents.splice(1, 1)[0];
+  candidateBeforeMarker.traceEvents.push(marker);
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: candidateBeforeMarker }),
+  );
+
+  const missingMarker = makeVersionThreeTrace();
+  missingMarker.traceEvents.splice(1, 1);
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: missingMarker }),
+  );
+
+  const duplicateMarker = makeVersionThreeTrace();
+  duplicateMarker.traceEvents.splice(
+    2,
+    0,
+    structuredClone(duplicateMarker.traceEvents[1]),
+  );
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: duplicateMarker }),
+  );
+
+  const malformedMarker = makeVersionThreeTrace();
+  malformedMarker.traceEvents[1].cat = "devtools.timeline";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: malformedMarker }),
+  );
+
+  const malformedMarkerPhase = makeVersionThreeTrace();
+  malformedMarkerPhase.traceEvents[1].ph = "X";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: malformedMarkerPhase }),
+  );
+
+  const epochChangesAfterMarker = makeVersionThreeTrace();
+  epochChangesAfterMarker.traceEvents.push({
+    name: "FrameCommittedInBrowser",
+    ph: "I",
+    args: { data: { frame: observedFrameId } },
+  });
+  const epochInvalidated = analyzeVersionThreeTrace({
+    trace: epochChangesAfterMarker,
+  });
+  assertVersionThreeUnavailable(epochInvalidated);
+  assert.deepEqual(epochInvalidated.rejectionCounts, [
+    { code: "TRACE_FRAME_EPOCH_INVALIDATED", count: 1 },
+  ]);
+});
+
+test("v1 and v2 historical and current fingerprints stay profile-bound", () => {
+  const v1Hashes = [
+    observedSourceHash,
+    currentRetainedCollectorSourceHash,
+    cleanupVerifiedCollectorSourceHash,
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+    postReviewFrozenProducerSourceHash,
+  ];
+  for (const sourceHashSha256 of v1Hashes) {
+    const evidence = makeObserverEvidence({ sourceHashSha256 });
+    const supported = analyzeObservedTrace({ evidence });
+    assert.equal(supported.counts.accepted, 1, sourceHashSha256);
+    const unsupported = analyzeTrace(
+      makeBrave155Trace(),
+      evidence.traceRecord,
+      [],
+      knownBrave15585Observations,
+      {
+        declaration: evidence.declaration,
+        sidecar: evidence.sidecar,
+        capture: evidence.capture,
+      },
+    ).observedDiscreteInputs;
+    assertVersionTwoUnavailable(unsupported);
+    assert.deepEqual(unsupported.rejectionCounts, [
+      { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+    ]);
+  }
+
+  const v2Hashes = [
+    currentRetainedCollectorSourceHash,
+    cleanupVerifiedCollectorSourceHash,
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+    postReviewFrozenProducerSourceHash,
+  ];
+  for (const sourceHashSha256 of v2Hashes) {
+    const evidence = makeVersionTwoObserverEvidence({ sourceHashSha256 });
+    assert.equal(analyzeVersionTwoTrace({ evidence }).counts.accepted, 1);
+    assert.equal(
+      analyzeVersionTwoTrace({
+        evidence,
+        sourceObservations: knownBrave15585Observations,
+      }).counts.accepted,
+      1,
+    );
+  }
+
+  const v3UnknownHash = makeVersionThreeObserverEvidence({
+    sourceHashSha256:
+      "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  });
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ evidence: v3UnknownHash }),
+  );
+});
 
 test("accepts the complete installed Brave 155 tuple as a separate diagnostic profile", () => {
   const crosswalk = brave155Crosswalk();

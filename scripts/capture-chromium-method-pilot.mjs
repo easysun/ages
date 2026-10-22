@@ -568,6 +568,20 @@ export function parseRunnerArgs(args) {
     return { mode: "run", browser: "installed-brave" };
   }
   if (
+    args.length === 4 &&
+    args[0] === "--run" &&
+    args[1] === "--browser=installed-brave" &&
+    args[2] === "--observe-inputs" &&
+    args[3] === "--retain-input-nodes-v3"
+  ) {
+    return {
+      mode: "run",
+      browser: "installed-brave",
+      observeInputs: true,
+      retainInputNodesV3: true,
+    };
+  }
+  if (
     args.length === 3 &&
     args[0] === "--run" &&
     args[1] === "--browser=installed-brave" &&
@@ -595,8 +609,12 @@ export function parseRunnerArgs(args) {
 export function artifactRootsForBrowser(
   browser = "playwright-chromium",
   observeInputs = false,
+  retainInputNodesV3 = false,
 ) {
-  if (observeInputs && browser !== "installed-brave") {
+  if (
+    (observeInputs && browser !== "installed-brave") ||
+    (retainInputNodesV3 && (!observeInputs || browser !== "installed-brave"))
+  ) {
     throw new Error("unsupported capture option");
   }
   if (browser === "playwright-chromium") {
@@ -606,7 +624,9 @@ export function artifactRootsForBrowser(
     const artifactRoot = resolve(
       ROOT,
       observeInputs
-        ? ".superpowers/sdd/trusted-stimulus-discovery"
+        ? retainInputNodesV3
+          ? ".superpowers/sdd/same-document-retained-node-v3"
+          : ".superpowers/sdd/trusted-stimulus-discovery"
         : ".superpowers/sdd/installed-brave-schema-probe",
     );
     return { artifactRoot, runsRoot: resolve(artifactRoot, "runs") };
@@ -814,9 +834,12 @@ export function aggregateTrustedStimulusApiStatus(cases) {
 export function buildObservationEvidenceDeclaration(
   cases,
   retainInputNodes = false,
+  retainedNodeEvidenceVersion = 2,
 ) {
+  const retainInputNodesV3 =
+    retainInputNodes && retainedNodeEvidenceVersion === 3;
   return {
-    ...(retainInputNodes ? { schemaVersion: 2 } : {}),
+    ...(retainInputNodes ? { schemaVersion: retainInputNodesV3 ? 3 : 2 } : {}),
     evidenceClass: TRUSTED_STIMULUS_EVIDENCE_CLASS,
     instrumented: true,
     qualification: "diagnostic-only",
@@ -830,9 +853,11 @@ export function buildObservationEvidenceDeclaration(
       continuousInputExcluded: true,
     },
     recordLimit: 512,
-    recordByteLimit: retainInputNodes
-      ? RETAINED_NODE_RECORD_BYTE_LIMIT
-      : 240 * 1024,
+    recordByteLimit: retainInputNodesV3
+      ? 256 * 1024 - 36 * 1024 - 80 * 1024
+      : retainInputNodes
+        ? RETAINED_NODE_RECORD_BYTE_LIMIT
+        : 240 * 1024,
     sidecarByteLimit: 256 * 1024,
     ...(retainInputNodes
       ? {
@@ -944,6 +969,105 @@ function timestampMarkers(events, label) {
         ) &&
       event.args?.data?.message === label,
   );
+}
+
+const TRACE_EPOCH_METADATA_NAMES = new Set([
+  "ProcessReady",
+  "ProcessReadyInBrowser",
+  "FrameCommitted",
+  "FrameCommittedInBrowser",
+  "FrameDeleted",
+  "FrameDeletedInBrowser",
+]);
+
+export function inspectTraceEpochBeforeInput(traceBytes, markerName) {
+  if (
+    !(Buffer.isBuffer(traceBytes) || traceBytes instanceof Uint8Array) ||
+    traceBytes.byteLength === 0 ||
+    traceBytes.byteLength > TRACE_BYTE_LIMIT ||
+    typeof markerName !== "string" ||
+    markerName.length === 0 ||
+    markerName.length > 128
+  ) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  let trace;
+  try {
+    trace = JSON.parse(Buffer.from(traceBytes).toString("utf8"));
+  } catch {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  const events = trace?.traceEvents;
+  if (!Array.isArray(events)) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  const initialEvents = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => event?.name === "TracingStartedInBrowser");
+  if (initialEvents.length !== 1) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  const { event: initial, index: tracingStartedEventIndex } = initialEvents[0];
+  const frames = initial?.args?.data?.frames;
+  const roots = Array.isArray(frames)
+    ? frames.filter(
+        (frame) => isRecord(frame) && !Object.hasOwn(frame, "parent"),
+      )
+    : [];
+  if (initial?.ph !== "I" || roots.length !== 1) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  const rootFrameId = roots[0].frame;
+  const rendererPid = roots[0].processId;
+  if (
+    typeof rootFrameId !== "string" ||
+    !INPUT_FRAME_PROVENANCE_OPAQUE_ID.test(rootFrameId) ||
+    !Number.isSafeInteger(rendererPid) ||
+    rendererPid <= 0
+  ) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  const markers = timestampMarkers(events, markerName);
+  if (markers.length !== 1) {
+    return unavailable(
+      markers.length === 0 ? "TRACE_MARKER_MISSING" : "TRACE_MARKER_AMBIGUOUS",
+    );
+  }
+  const markerEventIndex = events.indexOf(markers[0]);
+  if (tracingStartedEventIndex >= markerEventIndex) {
+    return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+  }
+  if (markers[0].pid !== rendererPid) {
+    return unavailable("TRACE_MARKER_PID_MISMATCH");
+  }
+  for (
+    let index = tracingStartedEventIndex + 1;
+    index < markerEventIndex;
+    index += 1
+  ) {
+    const event = events[index];
+    if (!isRecord(event) || !TRACE_EPOCH_METADATA_NAMES.has(event.name)) {
+      continue;
+    }
+    const data = event.args?.data;
+    if (
+      !isRecord(data) ||
+      typeof data.frame !== "string" ||
+      data.frame.length === 0
+    ) {
+      return unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+    }
+    if (data.frame === rootFrameId) {
+      return unavailable("TRACE_FRAME_EPOCH_INVALIDATED");
+    }
+  }
+  return {
+    status: "complete",
+    rootFrameId,
+    rendererPid,
+    tracingStartedEventIndex,
+    markerEventIndex,
+  };
 }
 
 function unavailable(reasonCode) {
@@ -1169,13 +1293,14 @@ export function buildMeasurementSegment({
   };
 }
 
-export function buildCaptureCases() {
-  return [
+export function buildCaptureCases({ retainInputNodesV3 = false } = {}) {
+  const cases = [
     { workload: "100-interactive", rowCount: 100 },
     { workload: "10000-chronological", rowCount: 10_000 },
   ].flatMap(({ workload, rowCount }) =>
     ACTIONS.map((action) => ({ workload, rowCount, action })),
   );
+  return retainInputNodesV3 ? [cases[0]] : cases;
 }
 
 const SAFE_FAILURE_STAGES = new Set([
@@ -1983,6 +2108,7 @@ async function captureTrace(
   categories,
   action,
   actionDiagnostic,
+  beforeTraceStart = null,
 ) {
   const chunks = [];
   let traceStarted = false;
@@ -1992,6 +2118,7 @@ async function captureTrace(
   let actionResult = null;
   let byteCount = 0;
   try {
+    if (beforeTraceStart) await beforeTraceStart();
     await withTimeout(
       session.send("Tracing.start", {
         categories: categories.join(","),
@@ -2245,6 +2372,7 @@ async function setupOpenCase(
   timelineId,
   timelineListUrl,
   observeInputs = false,
+  retainedNodeTrackerForPhase = null,
 ) {
   const title = timelineTitle(item);
   const marker = markerNames(item);
@@ -2278,7 +2406,9 @@ async function setupOpenCase(
     action: async () =>
       runOpenStimuli(item.workload, {
         primaryOpen: async () => {
+          retainedNodeTrackerForPhase?.()?.setPhase("before-input");
           await mark(page, marker.start);
+          retainedNodeTrackerForPhase?.()?.setPhase("primary-action");
           if (observeInputs) await setTrustedStimulusPhase(page, "primary");
           await link.click();
           await withTimeout(
@@ -2309,6 +2439,7 @@ async function setupOpenCase(
           const opened = await response;
           if (!opened.ok()) throw new Error("OPEN_RESPONSE_FAILED");
           await waitForStoryEditor(page, title);
+          retainedNodeTrackerForPhase?.()?.setPhase("route-ready");
           await twoFrames(page);
           await mark(page, marker.completionEnd);
           return {
@@ -2869,7 +3000,9 @@ export async function captureCase(
   workloadCount,
   observeInputs = false,
   retainInputNodes = false,
+  retainInputNodesV3 = false,
 ) {
+  if (retainInputNodesV3) retainInputNodes = true;
   const page = await context.newPage();
   let session;
   let setup;
@@ -2889,12 +3022,15 @@ export async function captureCase(
   let frameProvenanceTracker = null;
   let frameProvenance = null;
   let retainedNodeTracker = null;
+  let retainedNodeMappings = null;
   let retainedNodeEvidenceFinalized = false;
+  let retainedNodeObservationFrozen = false;
 
   const finishFrameProvenance = async () => {
     if (!observeInputs || frameProvenance) return frameProvenance;
     if (
       retainInputNodes &&
+      !retainInputNodesV3 &&
       retainedNodeTracker &&
       !retainedNodeTracker.isAvailable()
     ) {
@@ -2915,11 +3051,17 @@ export async function captureCase(
 
   const saveStimulusObservation = () => {
     if (!observeInputs) return null;
+    if (retainInputNodesV3 && !retainedNodeEvidenceFinalized) return null;
     if (observationArtifact) return observationArtifact;
     const payload =
       stimulusObservation ??
       (retainInputNodes
-        ? createUnavailableRetainedNodeObservation("OBSERVATION_NOT_ARMED")
+        ? createUnavailableRetainedNodeObservation(
+            "OBSERVATION_NOT_ARMED",
+            undefined,
+            undefined,
+            retainInputNodesV3 ? 3 : 2,
+          )
         : createUnavailableTrustedStimulusObservation("OBSERVATION_NOT_ARMED"));
     try {
       observationArtifact = writeTrustedStimulusSidecar({
@@ -2952,37 +3094,86 @@ export async function captureCase(
   };
 
   const finalizeRetainedNodeEvidence = async (observerCleanup) => {
-    if (
-      !retainInputNodes ||
-      !retainedNodeTracker ||
-      retainedNodeEvidenceFinalized
-    ) {
+    if (!retainInputNodes || retainedNodeEvidenceFinalized) {
       return stimulusObservation?.retainedNodeEvidence ?? null;
+    }
+    if (!retainedNodeTracker) {
+      if (!retainInputNodesV3) return null;
+      const cleanup = observerCleanup ?? (await clearRetainedInputNodes(page));
+      const unavailableObservation = createUnavailableRetainedNodeObservation(
+        "OBSERVATION_DRAIN_FAILED",
+        observationDocumentId,
+        "RETAINED_NODE_CLEANUP_FAILED",
+        3,
+      );
+      stimulusObservation ??= unavailableObservation;
+      stimulusObservation.retainedNodeEvidence =
+        unavailableObservation.retainedNodeEvidence;
+      stimulusObservation.sameDocumentLoadingWitness = {
+        ...unavailableObservation.sameDocumentLoadingWitness,
+        collectorCleanup: {
+          windowListenersRemoved: cleanup.windowListenersRemoved,
+          strongReferencesCleared: cleanup.strongReferencesCleared,
+          objectGroupReleased: null,
+          cdpListenersRemoved: null,
+        },
+      };
+      retainedNodeEvidenceFinalized = true;
+      return stimulusObservation.retainedNodeEvidence;
+    }
+    if (retainInputNodesV3) {
+      try {
+        retainedNodeTracker.setPhase("post-trace-analysis");
+      } catch {
+        // Finalization still drains and reports the tracker failure.
+      }
     }
     const cleanup = observerCleanup ?? (await clearRetainedInputNodes(page));
     let evidence;
     try {
+      const sourceProof =
+        retainInputNodesV3 && stimulusObservation?.schemaVersion === 3
+          ? stimulusObservation.sameDocumentLoadingWitness?.retainedTargetProof
+          : null;
       evidence = await retainedNodeTracker.finalize({
         documentId: observationDocumentId,
         scope: stimulusObservation?.retainedNodeEvidence?.scope ?? null,
         observerCleanup: cleanup,
         observerFailureReasonCode: retainedObserverFailureReasonCode(),
+        ...(sourceProof === null ? {} : { sourceProof }),
       });
     } catch {
       evidence = createUnavailableRetainedNodeObservation(
         "OBSERVATION_DRAIN_FAILED",
         observationDocumentId,
         "RETAINED_NODE_CLEANUP_FAILED",
-      ).retainedNodeEvidence;
+        retainInputNodesV3 ? 3 : 2,
+      );
+      evidence = retainInputNodesV3
+        ? {
+            retainedNodeEvidence: evidence.retainedNodeEvidence,
+            sameDocumentLoadingWitness: evidence.sameDocumentLoadingWitness,
+          }
+        : evidence.retainedNodeEvidence;
     }
     stimulusObservation ??= createUnavailableRetainedNodeObservation(
       "OBSERVATION_NOT_ARMED",
       observationDocumentId,
-      evidence.reasonCode ?? "RETAINED_NODE_CLEANUP_FAILED",
+      retainInputNodesV3
+        ? (evidence.retainedNodeEvidence.reasonCode ??
+            "RETAINED_NODE_CLEANUP_FAILED")
+        : (evidence.reasonCode ?? "RETAINED_NODE_CLEANUP_FAILED"),
+      retainInputNodesV3 ? 3 : 2,
     );
-    stimulusObservation.retainedNodeEvidence = evidence;
+    if (retainInputNodesV3) {
+      stimulusObservation.retainedNodeEvidence = evidence.retainedNodeEvidence;
+      stimulusObservation.sameDocumentLoadingWitness =
+        evidence.sameDocumentLoadingWitness;
+    } else {
+      stimulusObservation.retainedNodeEvidence = evidence;
+    }
     retainedNodeEvidenceFinalized = true;
-    return evidence;
+    return retainInputNodesV3 ? evidence.retainedNodeEvidence : evidence;
   };
 
   const finishRetainedNodeObservation = async () => {
@@ -2992,7 +3183,10 @@ export async function captureCase(
         stimulusObservation = await freezeTrustedStimulusObserver(
           page,
           observationDocumentId,
+          undefined,
+          retainInputNodesV3 ? 3 : 2,
         );
+        retainedNodeObservationFrozen = true;
         await finishFrameProvenance();
         await retainedNodeTracker?.snapshot(
           "afterDrain",
@@ -3008,23 +3202,95 @@ export async function captureCase(
                 ),
               ]
             : [];
-          await retainedNodeTracker?.mapTargets(
+          const mappings = await retainedNodeTracker?.mapTargets(
             observationDocumentId,
             targetTokens,
           );
+          if (retainInputNodesV3) retainedNodeMappings = mappings ?? null;
         }
         await retainedNodeTracker?.snapshot(
           "afterMapping",
           observationDocumentId,
         );
+        if (retainInputNodesV3) return;
       } catch {
         // The tracker permanently records failures and prevents later CDP work.
       }
     } else {
       stimulusObservation ??= createUnavailableRetainedNodeObservation(
         "OBSERVATION_NOT_ARMED",
+        undefined,
+        undefined,
+        retainInputNodesV3 ? 3 : 2,
       );
       await finishFrameProvenance();
+    }
+    if (retainInputNodesV3) return;
+    const cleanup = await clearRetainedInputNodes(page);
+    await finalizeRetainedNodeEvidence(cleanup);
+  };
+
+  const finalizeV3AfterTrace = async () => {
+    if (!retainInputNodesV3 || retainedNodeEvidenceFinalized) return;
+    let traceEpoch = unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+    if (captured?.tracePath) {
+      try {
+        const metadata = describeTraceArtifact(captured.tracePath);
+        if (!verifyTraceArtifact(captured.tracePath, metadata)) {
+          actionReason ??= "TRACE_IMMUTABILITY_FAILED";
+        } else {
+          const traceBytes = readFileSync(captured.tracePath);
+          traceEpoch = inspectTraceEpochBeforeInput(
+            traceBytes,
+            markerNames(item).start,
+          );
+        }
+      } catch {
+        traceEpoch = unavailable("TRACE_FRAME_ASSOCIATION_INVALID");
+      }
+    }
+    try {
+      retainedNodeTracker?.setPhase("post-trace-analysis");
+    } catch {
+      // A failed tracker cannot produce a final identity proof.
+    }
+
+    const provenanceMatchesTraceRoot =
+      frameProvenance?.status === "stable" &&
+      ["beforeArm", "afterArm", "afterDrain"].every(
+        (stage) => frameProvenance[stage]?.frameId === traceEpoch.rootFrameId,
+      );
+    const frozenObservation = stimulusObservation;
+    const sourceProof =
+      frozenObservation?.schemaVersion === 3
+        ? frozenObservation.sameDocumentLoadingWitness?.retainedTargetProof
+        : null;
+    const mappingIndex = Array.isArray(retainedNodeMappings)
+      ? retainedNodeMappings.findIndex(
+          (mapping) => mapping.targetToken === sourceProof?.targetToken,
+        )
+      : -1;
+    if (
+      captured?.failureCode === null &&
+      captured?.dataLossOccurred === false &&
+      traceEpoch.status === "complete" &&
+      provenanceMatchesTraceRoot &&
+      retainedNodeObservationFrozen &&
+      observationDocumentId &&
+      sourceProof &&
+      mappingIndex >= 0
+    ) {
+      try {
+        await retainedNodeTracker?.captureFinalIdentityProof({
+          documentId: sourceProof.documentId,
+          sourceRecordIndex: sourceProof.sourceRecordIndex,
+          targetToken: sourceProof.targetToken,
+          mappingIndex,
+          sourceProof,
+        });
+      } catch {
+        // The collector retains the failure and will finalize an unavailable pair.
+      }
     }
     const cleanup = await clearRetainedInputNodes(page);
     await finalizeRetainedNodeEvidence(cleanup);
@@ -3032,7 +3298,10 @@ export async function captureCase(
 
   try {
     if (observeInputs) {
-      await installTrustedStimulusObserver(page, { retainInputNodes });
+      await installTrustedStimulusObserver(page, {
+        retainInputNodes,
+        ...(retainInputNodesV3 ? { retainedNodeEvidenceVersion: 3 } : {}),
+      });
     }
     if (item.action === "open") {
       setup = await setupOpenCase(
@@ -3041,6 +3310,7 @@ export async function captureCase(
         timelineId,
         listUrl,
         observeInputs,
+        retainInputNodesV3 ? () => retainedNodeTracker : null,
       );
     } else if (item.action === "append") {
       setup = await prepareAppend(page, item, timelineId);
@@ -3114,6 +3384,7 @@ export async function captureCase(
         page,
         pageSession: session,
         browserSession,
+        ...(retainInputNodesV3 ? { retainedNodeEvidenceVersion: 3 } : {}),
       });
       await retainedNodeTracker.start();
       try {
@@ -3127,13 +3398,44 @@ export async function captureCase(
     });
     const names = markerNames(item);
     captureStartedAtUtc = new Date().toISOString();
+    const armV3ObserverBeforeTrace = async () => {
+      if (!observeInputs || !retainInputNodesV3) return;
+      await frameProvenanceTracker?.captureBeforeArm();
+      try {
+        const armed = await armTrustedStimulusObserver(page);
+        if (armed.status === "armed") {
+          observationDocumentId = armed.documentId;
+          await retainedNodeTracker?.snapshot(
+            "afterArm",
+            observationDocumentId,
+          );
+          await frameProvenanceTracker?.captureAfterArm(observationDocumentId);
+        } else {
+          stimulusObservation = createUnavailableRetainedNodeObservation(
+            "OBSERVATION_DRAIN_FAILED",
+            undefined,
+            undefined,
+            3,
+          );
+          await frameProvenanceTracker?.captureAfterArm(null);
+        }
+      } catch {
+        stimulusObservation = createUnavailableRetainedNodeObservation(
+          "OBSERVATION_DRAIN_FAILED",
+          observationDocumentId,
+          "RETAINED_NODE_CLEANUP_FAILED",
+          3,
+        );
+        await frameProvenanceTracker?.captureAfterArm(null);
+      }
+    };
 
     captured = await captureTrace(
       session,
       tracePath,
       categories,
       async () => {
-        if (observeInputs) {
+        if (observeInputs && !retainInputNodesV3) {
           await frameProvenanceTracker?.captureBeforeArm();
           try {
             const armed = await armTrustedStimulusObserver(page);
@@ -3233,7 +3535,8 @@ export async function captureCase(
                 );
               }
               if (
-                stimulusObservation.reasonCode === "NAVIGATION_OBSERVATION_LOST"
+                stimulusObservation?.reasonCode ===
+                "NAVIGATION_OBSERVATION_LOST"
               ) {
                 actionReason = "NAVIGATION_OBSERVATION_LOST";
               }
@@ -3252,9 +3555,11 @@ export async function captureCase(
         return actionOutcome;
       },
       actionDiagnostic,
+      retainInputNodesV3 ? armV3ObserverBeforeTrace : null,
     );
 
-    await finalizeRetainedNodeEvidence();
+    if (retainInputNodesV3) await finalizeV3AfterTrace();
+    else await finalizeRetainedNodeEvidence();
     await finishFrameProvenance();
     const safeStimulusObservation = saveStimulusObservation();
     const safeActionDiagnostic = serializeActionDiagnostic(actionDiagnostic);
@@ -3274,10 +3579,11 @@ export async function captureCase(
       }
       const evidence = summarizeTraceEvidence(traceEvents, categories);
       const marker = markerNames(item);
-      const segmentResult =
-        actionReason ||
-        captured.failureCode ||
-        captured.dataLossOccurred !== false
+      const segmentResult = retainInputNodesV3
+        ? unavailable("V3_DIAGNOSTIC_ONLY")
+        : actionReason ||
+            captured.failureCode ||
+            captured.dataLossOccurred !== false
           ? unavailable(
               actionReason ??
                 captured.failureCode ??
@@ -3348,7 +3654,9 @@ export async function captureCase(
         caseRecord,
         traceRecord,
         segment:
-          segmentResult.status === "resolved" ? segmentResult.segment : null,
+          !retainInputNodesV3 && segmentResult.status === "resolved"
+            ? segmentResult.segment
+            : null,
       };
     }
     return {
@@ -3462,7 +3770,12 @@ export async function captureCase(
   }
 }
 
-async function seedFixtures(context, workspace, setStage) {
+async function seedFixtures(
+  context,
+  workspace,
+  setStage,
+  retainInputNodesV3 = false,
+) {
   const previousDirectory = process.cwd();
   process.chdir(workspace);
   try {
@@ -3472,10 +3785,13 @@ async function seedFixtures(context, workspace, setStage) {
     setStage("seed-library");
     const { owner, ids } = await fixtures.seedLibrary(context);
     fixtures.executeFixtureSql(
-      buildSyntheticTimelineQuotaSql(owner, buildCaptureCases().length),
+      buildSyntheticTimelineQuotaSql(
+        owner,
+        buildCaptureCases({ retainInputNodesV3 }).length,
+      ),
     );
     const timelineIds = new Map();
-    for (const item of buildCaptureCases()) {
+    for (const item of buildCaptureCases({ retainInputNodesV3 })) {
       setStage(`seed-fixture:${item.workload}:${item.action}`);
       const title = timelineTitle(item);
       const timeline =
@@ -3496,7 +3812,7 @@ async function seedFixtures(context, workspace, setStage) {
   }
 }
 
-function sourceHash() {
+export function producerSourceHashInputs() {
   const tracked = execFileSync("git", ["ls-files", "-z", "src", "migrations"], {
     cwd: ROOT,
     encoding: "utf8",
@@ -3514,8 +3830,12 @@ function sourceHash() {
     "wrangler.jsonc",
     "wrangler.tracking.jsonc",
   ];
+  return [...new Set([...tracked, ...extras])].sort();
+}
+
+function sourceHash() {
   const hash = createHash("sha256");
-  for (const path of [...new Set([...tracked, ...extras])].sort()) {
+  for (const path of producerSourceHashInputs()) {
     hash.update(path);
     hash.update("\0");
     hash.update(readFileSync(resolve(ROOT, path)));
@@ -3728,6 +4048,7 @@ async function runPilot(
   browserMode = "playwright-chromium",
   observeInputs = false,
   retainInputNodes = false,
+  retainInputNodesV3 = false,
 ) {
   const setStage = (stage) => {
     failureState.stage = stage;
@@ -3741,7 +4062,11 @@ async function runPilot(
     installedBundleInfo = validateInstalledBraveInstallation();
     executableSha256 = hashInstalledBraveExecutable();
   }
-  const artifactRoots = artifactRootsForBrowser(browserMode, observeInputs);
+  const artifactRoots = artifactRootsForBrowser(
+    browserMode,
+    observeInputs,
+    retainInputNodesV3,
+  );
   ensureArtifactRoot(artifactRoots.artifactRoot);
   stripCloudAuth();
   const runId = `run-${new Date().toISOString().replaceAll(/[:.]/g, "-")}-${randomUUID()}`;
@@ -3834,12 +4159,17 @@ async function runPilot(
     await page.close();
     sessionCategories = requireTraceCategories(categoryAvailability);
     setStage("seed-library");
-    const timelineIds = await seedFixtures(context, workspace, setStage);
+    const timelineIds = await seedFixtures(
+      context,
+      workspace,
+      setStage,
+      retainInputNodesV3,
+    );
     const timelineListUrl = `http://127.0.0.1:${appPort}/timelines`;
     let cases = [];
     const traces = [];
     let measurementSegments = [];
-    for (const item of buildCaptureCases()) {
+    for (const item of buildCaptureCases({ retainInputNodesV3 })) {
       setStage(`capture:${item.workload}:${item.action}`);
       const timelineId = timelineIds.get(`${item.workload}/${item.action}`);
       if (!timelineId) throw new Error("SYNTHETIC_FIXTURE_MISSING");
@@ -3852,14 +4182,15 @@ async function runPilot(
         sessionCategories,
         item.rowCount,
         observeInputs,
-        retainInputNodes,
+        retainInputNodes || retainInputNodesV3,
+        retainInputNodesV3,
       );
       cases.push(captured.caseRecord);
       if (captured.traceRecord) traces.push(captured.traceRecord);
       if (captured.segment) measurementSegments.push(captured.segment);
     }
 
-    if (browserMode === "installed-brave") {
+    if (browserMode === "installed-brave" && !retainInputNodesV3) {
       const qualified = qualifyInstalledBraveProbeEvidence(
         cases,
         measurementSegments,
@@ -3894,22 +4225,25 @@ async function runPilot(
     setStage("manifest");
     const manifest = {
       schemaVersion: 1,
-      purpose:
-        browserMode === "installed-brave"
+      purpose: retainInputNodesV3
+        ? "Same-document retained-node v3 synthetic method-pilot; diagnostic only."
+        : browserMode === "installed-brave"
           ? INSTALLED_BRAVE_QUALIFICATION
           : "Synthetic Chromium method-discovery pilot; diagnostic only.",
-      status:
-        browserMode === "installed-brave"
+      status: retainInputNodesV3
+        ? "diagnostic-only"
+        : browserMode === "installed-brave"
           ? INSTALLED_BRAVE_QUALIFICATION
           : "synthetic-method-pilot",
-      ...(browserMode === "installed-brave"
+      ...(browserMode === "installed-brave" && !retainInputNodesV3
         ? { qualification: INSTALLED_BRAVE_QUALIFICATION }
         : {}),
       ...(observeInputs
         ? {
             observationEvidence: buildObservationEvidenceDeclaration(
               cases,
-              retainInputNodes,
+              retainInputNodes || retainInputNodesV3,
+              retainInputNodesV3 ? 3 : 2,
             ),
           }
         : {}),
@@ -3968,8 +4302,9 @@ async function runPilot(
     manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
     successText = `${JSON.stringify(
       {
-        status:
-          browserMode === "installed-brave"
+        status: retainInputNodesV3
+          ? "diagnostic-only"
+          : browserMode === "installed-brave"
             ? INSTALLED_BRAVE_QUALIFICATION
             : "synthetic-method-pilot",
         runId,
@@ -3977,7 +4312,7 @@ async function runPilot(
         capturedTraceCount: traces.length,
         resolvedSegmentCount: measurementSegments.length,
         inputToNextPaint: "unproven",
-        ...(browserMode === "installed-brave"
+        ...(browserMode === "installed-brave" && !retainInputNodesV3
           ? {
               browser: "installed-brave",
               qualification: INSTALLED_BRAVE_QUALIFICATION,
@@ -4028,6 +4363,7 @@ if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
       options.browser ?? "playwright-chromium",
       options.observeInputs ?? false,
       options.retainInputNodes ?? false,
+      options.retainInputNodesV3 ?? false,
     ).catch((error) => {
       const allowed = new Set([
         "UNSUPPORTED_HOST",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
@@ -42,6 +42,7 @@ import {
   validateCaptureTimeMetadata,
   verifyTraceArtifact,
 } from "../../scripts/capture-chromium-method-pilot.mjs";
+import { serializeOwnedCleanupReceipt } from "../../scripts/lib/owned-cleanup-receipt.mjs";
 
 function createAppendHarness({ responsePromise, visibleFailure } = {}) {
   const response = {
@@ -1983,6 +1984,94 @@ test("measurement windows use exact monotonic trace markers and never nearest ti
   assert.equal(changedStream.reasonCode, "FRAME_STREAM_AMBIGUOUS");
 });
 
+test("trace PID epoch is accepted only from raw trace ordering before the marker", () => {
+  const markerName = "pilot-100-interactive-open:segment-start";
+  const tracingStarted = {
+    name: "TracingStartedInBrowser",
+    ph: "I",
+    pid: 1,
+    tid: 1,
+    ts: 100,
+    args: {
+      data: {
+        frames: [
+          { frame: "root-frame-1", processId: 71 },
+          { frame: "child-frame-1", processId: 72, parent: "root-frame-1" },
+        ],
+      },
+    },
+  };
+  const marker = {
+    name: "TimeStamp",
+    cat: "blink.user_timing",
+    ph: "I",
+    ts: 50,
+    pid: 71,
+    args: { data: { message: markerName } },
+  };
+  const inspect = runner.inspectTraceEpochBeforeInput;
+  const valid = inspect(
+    Buffer.from(JSON.stringify({ traceEvents: [tracingStarted, marker] })),
+    markerName,
+  );
+  assert.deepEqual(valid, {
+    status: "complete",
+    rootFrameId: "root-frame-1",
+    rendererPid: 71,
+    tracingStartedEventIndex: 0,
+    markerEventIndex: 1,
+  });
+
+  for (const scenario of [
+    {
+      traceEvents: [marker, tracingStarted],
+      reasonCode: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      traceEvents: [tracingStarted, marker, { ...marker }],
+      reasonCode: "TRACE_MARKER_AMBIGUOUS",
+    },
+    {
+      traceEvents: [tracingStarted, { ...marker, pid: 72 }],
+      reasonCode: "TRACE_MARKER_PID_MISMATCH",
+    },
+    {
+      traceEvents: [
+        {
+          ...tracingStarted,
+          args: { data: { frames: [] } },
+        },
+        marker,
+      ],
+      reasonCode: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+    {
+      traceEvents: [
+        {
+          ...tracingStarted,
+          args: {
+            data: {
+              frames: [
+                { frame: "root-frame-1", processId: 71 },
+                { frame: "another-root", processId: 72 },
+              ],
+            },
+          },
+        },
+        marker,
+      ],
+      reasonCode: "TRACE_FRAME_ASSOCIATION_INVALID",
+    },
+  ]) {
+    const result = inspect(
+      Buffer.from(JSON.stringify({ traceEvents: scenario.traceEvents })),
+      markerName,
+    );
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.reasonCode, scenario.reasonCode);
+  }
+});
+
 test("trace evidence reports recognized event shapes while dropping arbitrary arguments", () => {
   const summary = summarizeTraceEvidence(
     [
@@ -2170,6 +2259,74 @@ test("installed Brave mode requires its exact explicit flag pair", () => {
   }
 });
 
+test("v3 runner option is exact and selects only the primary 100-item open", () => {
+  const args = [
+    "--run",
+    "--browser=installed-brave",
+    "--observe-inputs",
+    "--retain-input-nodes-v3",
+  ];
+  assert.deepEqual(parseRunnerArgs(args), {
+    mode: "run",
+    browser: "installed-brave",
+    observeInputs: true,
+    retainInputNodesV3: true,
+  });
+  for (const invalidArgs of [
+    ["--retain-input-nodes-v3"],
+    ["--run", "--retain-input-nodes-v3"],
+    ["--run", "--browser=installed-brave", "--retain-input-nodes-v3"],
+    ["--run", "--observe-inputs", "--retain-input-nodes-v3"],
+    [
+      "--run",
+      "--browser=installed-brave",
+      "--observe-inputs",
+      "--retain-input-nodes-v3",
+      "--retain-input-nodes",
+    ],
+    [
+      "--run",
+      "--browser=installed-brave",
+      "--retain-input-nodes-v3",
+      "--observe-inputs",
+    ],
+    [...args, "--retain-input-nodes-v3"],
+  ]) {
+    assert.throws(
+      () => parseRunnerArgs(invalidArgs),
+      /unsupported capture option/,
+    );
+  }
+  assert.deepEqual(artifactRootsForBrowser("installed-brave", true, true), {
+    artifactRoot: resolve(
+      process.cwd(),
+      ".superpowers/sdd/same-document-retained-node-v3",
+    ),
+    runsRoot: resolve(
+      process.cwd(),
+      ".superpowers/sdd/same-document-retained-node-v3/runs",
+    ),
+  });
+  assert.deepEqual(runner.buildCaptureCases({ retainInputNodesV3: true }), [
+    { workload: "100-interactive", rowCount: 100, action: "open" },
+  ]);
+  assert.equal(buildCaptureCases().length, 14);
+});
+
+test("producer fingerprint inputs are explicit, sorted, and exclude the analyzer", () => {
+  const inputs = runner.producerSourceHashInputs();
+  assert.deepEqual(inputs, [...new Set(inputs)].sort());
+  for (const path of [
+    "scripts/capture-chromium-method-pilot.mjs",
+    "scripts/browser-stimulus-observer.mjs",
+    "scripts/retained-input-node-evidence.mjs",
+    "scripts/lib/owned-cleanup-receipt.mjs",
+  ]) {
+    assert.ok(inputs.includes(path), path);
+  }
+  assert.equal(inputs.includes("scripts/chromium-trace-metrics.mjs"), false);
+});
+
 function createObserverBrowserHarness({ supported = true } = {}) {
   const listeners = new Map();
   const windowListeners = new Map();
@@ -2188,8 +2345,16 @@ function createObserverBrowserHarness({ supported = true } = {}) {
     hasPointerCapture(pointerId) {
       return this.capturedPointerIds.has(pointerId);
     }
+
+    contains(node) {
+      for (let current = node; current; current = current.parentNode) {
+        if (current === this) return true;
+      }
+      return false;
+    }
   }
-  const target = new FakeNode(null);
+  const root = new FakeNode(null);
+  const target = new FakeNode(null, root);
   const document = {
     nodeType: 9,
     addEventListener(type, listener) {
@@ -2199,7 +2364,9 @@ function createObserverBrowserHarness({ supported = true } = {}) {
       if (listeners.get(type) === listener) listeners.delete(type);
     },
   };
+  root.ownerDocument = document;
   target.ownerDocument = document;
+  document.documentElement = root;
   class FakePerformanceObserver {
     static supportedEntryTypes = supported ? ["event"] : [];
 
@@ -2222,6 +2389,10 @@ function createObserverBrowserHarness({ supported = true } = {}) {
 
     disconnect() {
       this.disconnected = true;
+    }
+
+    emit(entries) {
+      this.callback({ getEntries: () => entries });
     }
   }
   const sandbox = {
@@ -2266,6 +2437,7 @@ function createObserverBrowserHarness({ supported = true } = {}) {
     listeners,
     windowListeners,
     observers,
+    root,
     target,
     performanceNow,
     initialize(source, options) {
@@ -2295,11 +2467,809 @@ function createObserverBrowserHarness({ supported = true } = {}) {
       afterWindowCapture?.();
       listeners.get(type)?.(event);
     },
-    createNode(parentNode = null) {
+    createNode(parentNode = root) {
       return new FakeNode(document, parentNode);
+    },
+    emitPerformanceEntries(entries) {
+      for (const observer of observers) observer.emit(entries);
     },
   };
 }
+
+function deferredCapture() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function createV3CaptureHarness({
+  holdRelease = false,
+  delayedLifecycle = false,
+  includeEventTiming = false,
+  includeEventTimingTrace = false,
+  backendNodeId = 42,
+  earlyLifecycleFailure = false,
+  traceGateFailure = false,
+} = {}) {
+  const observerHarness = createObserverBrowserHarness();
+  const releaseStarted = deferredCapture();
+  const releaseAck = deferredCapture();
+  const response = deferredCapture();
+  const state = {
+    log: [],
+    traceEvents: [],
+    traceEventTail: [],
+    observer: null,
+  };
+  if (includeEventTimingTrace) {
+    state.traceEventTail = JSON.parse(
+      readFileSync(
+        new URL(
+          "../fixtures/chromium-traces/event-timing-fallback.trace.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ).traceEvents.map((event) => {
+      const copy = structuredClone(event);
+      copy.pid = 71;
+      if (copy.args?.data?.frame === "frame-A") {
+        copy.args.data.frame = "root-frame-1";
+      }
+      if (copy.args?.event_timing?.frame === "frame-A") {
+        copy.args.event_timing.frame = "root-frame-1";
+      }
+      if (copy.args?.data && Object.hasOwn(copy.args.data, "interactionId")) {
+        copy.args.data.interactionId = 17;
+        copy.args.data.interactionOffset = 18;
+      }
+      if (
+        copy.args?.event_timing &&
+        Object.hasOwn(copy.args.event_timing, "interaction_id")
+      ) {
+        copy.args.event_timing.interaction_id = 17;
+        copy.args.event_timing.interaction_offset = 18;
+      }
+      return copy;
+    });
+  }
+  const browser = new EventEmitter();
+  let runtimeEnabled = false;
+  let page;
+  let pageSession;
+  let browserSession;
+
+  class FakeSession extends EventEmitter {
+    constructor(name, sessionId) {
+      super();
+      this.name = name;
+      this._session = { _sessionId: sessionId };
+      this.requests = [];
+      this.detachCount = 0;
+    }
+
+    async send(method, params = {}) {
+      this.requests.push({ method, params });
+      state.log.push(`${this.name}:${method}`);
+      if (method === "Runtime.enable" && !runtimeEnabled) {
+        runtimeEnabled = true;
+        this.emit("Runtime.executionContextCreated", {
+          context: {
+            id: 1,
+            uniqueId: "unique-context-1",
+            auxData: {
+              isDefault: true,
+              type: "default",
+              frameId: "root-frame-1",
+            },
+          },
+        });
+      }
+      if (method === "Page.getFrameTree") {
+        return {
+          frameTree: {
+            frame: { id: "root-frame-1", loaderId: "root-loader-1" },
+          },
+        };
+      }
+      if (method === "Target.getTargetInfo") {
+        return { targetInfo: { targetId: "selected-target-1", type: "page" } };
+      }
+      if (method === "Target.getTargets") {
+        return {
+          targetInfos: [{ targetId: "selected-target-1", type: "page" }],
+        };
+      }
+      if (method === "Tracing.start") {
+        state.traceEvents = [
+          {
+            name: "TracingStartedInBrowser",
+            ph: "I",
+            pid: 1,
+            tid: 1,
+            ts: 1,
+            args: {
+              data: {
+                frames: [
+                  { frame: "root-frame-1", processId: 71 },
+                  {
+                    frame: "child-frame-1",
+                    processId: 72,
+                    parent: "root-frame-1",
+                  },
+                ],
+              },
+            },
+          },
+        ];
+        return {};
+      }
+      if (method === "Tracing.end") {
+        queueMicrotask(() =>
+          this.emit("Tracing.tracingComplete", {
+            stream: "trace-stream-1",
+            dataLossOccurred: false,
+          }),
+        );
+        return {};
+      }
+      if (method === "IO.read") {
+        return {
+          data: JSON.stringify({ traceEvents: state.traceEvents }),
+          base64Encoded: false,
+          eof: true,
+        };
+      }
+      if (method === "Runtime.evaluate" && params.returnByValue === true) {
+        state.log.push("page-cdp:final-reference-proof");
+        return {
+          result: {
+            type: "object",
+            value: {
+              savedDocumentSame: true,
+              savedRootSame: true,
+              savedTargetSame: true,
+              targetOwnerDocumentMatches: true,
+              rootContainsTarget: true,
+              connected: true,
+            },
+          },
+        };
+      }
+      if (method === "Runtime.evaluate") {
+        return {
+          result: {
+            type: "object",
+            subtype: "node",
+            objectId: "retained-node-object-1",
+          },
+        };
+      }
+      if (method === "DOM.describeNode") {
+        return { node: { backendNodeId } };
+      }
+      if (method === "Runtime.releaseObjectGroup") {
+        releaseStarted.resolve();
+        return holdRelease ? releaseAck.promise : {};
+      }
+      return {};
+    }
+
+    async detach() {
+      this.detachCount += 1;
+      state.log.push(`${this.name}:detach`);
+      this.emit("close");
+    }
+  }
+
+  pageSession = new FakeSession("page-cdp", "selected-session-1");
+  browserSession = new FakeSession("browser-cdp", "browser-session-1");
+
+  class FakeLocator {
+    constructor(name, click = null) {
+      this.name = name;
+      this.clickAction = click;
+    }
+
+    getByRole(role, options = {}) {
+      return new FakeLocator(`${role}:${options.name ?? ""}`);
+    }
+
+    locator(selector) {
+      return new FakeLocator(selector);
+    }
+
+    filter() {
+      return this;
+    }
+
+    async waitFor() {
+      return undefined;
+    }
+
+    async evaluate(_callback, argument) {
+      state.log.push(`locator:register:${argument}:${Boolean(state.observer)}`);
+      state.observer?.registerTarget(observerHarness.target, argument);
+      return true;
+    }
+
+    async click() {
+      if (this.clickAction) return this.clickAction();
+      return undefined;
+    }
+  }
+
+  page = new EventEmitter();
+  page.context = () => context;
+  page.addInitScript = async (initializer, options) => {
+    state.observer = observerHarness.initialize(initializer, options);
+  };
+  page.evaluate = async (callback, argument) => {
+    const source = String(callback);
+    if (source.includes("observer.arm()")) {
+      state.log.push(`observer:arm:${Boolean(state.observer)}`);
+      return state.observer.arm();
+    }
+    if (source.includes("observer.setPhase(nextPhase)")) {
+      return state.observer.setPhase(argument);
+    }
+    if (source.includes("observer.freeze(expected)")) {
+      state.log.push("observer:freeze");
+      return state.observer.freeze(argument);
+    }
+    if (source.includes("observer.clearRetainedNodes()")) {
+      state.log.push("observer:clear-references");
+      return state.observer.clearRetainedNodes();
+    }
+    if (source.includes("observer.close()")) {
+      state.observer.close();
+      return undefined;
+    }
+    if (source.includes("console.timeStamp")) {
+      state.log.push(`marker:${argument}`);
+      state.traceEvents.push({
+        name: "TimeStamp",
+        cat: "blink.user_timing",
+        ph: "I",
+        ts: state.traceEvents.length + 2,
+        pid: 71,
+        args: { data: { message: argument } },
+      });
+      return undefined;
+    }
+    if (source.includes("innerWidth")) {
+      return {
+        innerWidth: 1280,
+        innerHeight: 800,
+        devicePixelRatio: 1,
+        screenWidth: 1280,
+        screenHeight: 800,
+      };
+    }
+    return undefined;
+  };
+  page.goto = async () => undefined;
+  page.route = async (_pattern, handler) => {
+    page.routeHandler = handler;
+  };
+  page.unroute = async () => {
+    page.routeHandler = null;
+  };
+  page.getByRole = (role, options = {}) =>
+    new FakeLocator(
+      `${role}:${options.name ?? ""}`,
+      role === "link" ? () => page.clickPrimary() : null,
+    );
+  page.locator = (selector) => new FakeLocator(selector);
+  page.getByText = (text) => new FakeLocator(text);
+  page.waitForResponse = () => response.promise;
+  page.close = async () => {
+    state.log.push("page:close");
+    page.emit("close");
+  };
+  page.clickPrimary = async () => {
+    state.log.push("page:click-primary");
+    state.log.push(`observer:dispatch:${Boolean(state.observer)}`);
+    observerHarness.dispatch({
+      timeStamp: 12,
+      eventTarget: observerHarness.target,
+    });
+    if (earlyLifecycleFailure) {
+      pageSession.emit("Inspector.targetCrashed", {});
+    }
+    if (includeEventTiming) {
+      observerHarness.emitPerformanceEntries([
+        {
+          name: "click",
+          startTime: 12,
+          processingStart: 13,
+          processingEnd: 17,
+          duration: 20,
+          interactionId: 17,
+          target: null,
+        },
+      ]);
+    }
+    state.traceEvents.push(...state.traceEventTail);
+    if (traceGateFailure) {
+      state.traceEvents = state.traceEvents.filter(
+        (event) => event.name !== "TimeStamp",
+      );
+    }
+    const payload = delayedLifecycle
+      ? {
+          frameId: "root-frame-1",
+          timestamp: 1,
+          url: "https://private.invalid",
+        }
+      : { frameId: "root-frame-1" };
+    pageSession.emit("Page.frameStartedLoading", payload);
+    pageSession.emit("Page.navigatedWithinDocument", {
+      frameId: "root-frame-1",
+      navigationType: "historyApi",
+      timestamp: 2,
+      url: "https://private.invalid/current",
+    });
+    const routeHandler = page.routeHandler;
+    if (routeHandler) {
+      void routeHandler({
+        request: () => ({
+          url: () =>
+            "http://127.0.0.1/api/timelines/timeline-1/overview?projection=chronological",
+        }),
+        continue: async () => response.resolve({ ok: () => true }),
+        abort: async () => undefined,
+      });
+    }
+  };
+
+  const context = {
+    async newPage() {
+      return page;
+    },
+    async newCDPSession(targetPage) {
+      assert.equal(targetPage, page);
+      return pageSession;
+    },
+    browser: () => browser,
+  };
+  browser.newBrowserCDPSession = async () => browserSession;
+
+  return {
+    state,
+    page,
+    pageSession,
+    browserSession,
+    context,
+    releaseStarted: releaseStarted.promise,
+    acknowledgeRelease: () => releaseAck.resolve(),
+  };
+}
+
+async function captureOneV3Case(harness, runDirectory) {
+  return runner.captureCase(
+    harness.context,
+    { workload: "100-interactive", action: "open" },
+    "timeline-1",
+    "http://127.0.0.1/timelines",
+    runDirectory,
+    ["blink.user_timing", "devtools.timeline"],
+    100,
+    true,
+    true,
+    true,
+  );
+}
+
+function sidecarPath(runDirectory) {
+  return join(runDirectory, "100-interactive-open.stimulus.json");
+}
+
+function fileExists(path) {
+  try {
+    readFileSync(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+test("v3 capture preserves references until post-trace proof and cleanup closure", async () => {
+  const harness = createV3CaptureHarness();
+  const runDirectory = mkdtempSync(join(tmpdir(), "ages-v3-producer-"));
+  try {
+    const result = await captureOneV3Case(harness, runDirectory);
+    const bytes = readFileSync(sidecarPath(runDirectory));
+    const sidecar = JSON.parse(bytes.toString("utf8"));
+    const witness = sidecar.observation.sameDocumentLoadingWitness;
+    const index = (entry) => harness.state.log.indexOf(entry);
+
+    assert.equal(
+      sidecar.schemaVersion,
+      3,
+      `${harness.state.log.join(",")} records=${sidecar.observation.records.length} observerReason=${sidecar.observation.retainedNodeEvidence.reasonCode} token=${sidecar.observation.records[0]?.targetToken}`,
+    );
+    assert.equal(sidecar.observation.schemaVersion, 3);
+    assert.equal(witness.status, "complete");
+    assert.equal(witness.sourceOrder, "unknown");
+    assert.equal(witness.retainedTargetProof.sourceRecordIndex, 0);
+    assert.equal(
+      witness.retainedTargetProof.finalProof.stage,
+      "post-trace-before-release",
+    );
+    assert.equal(
+      witness.retainedTargetProof.finalProof.mappedBackendNodeId,
+      witness.retainedTargetProof.finalProof.finalBackendNodeId,
+    );
+    assert.deepEqual(
+      witness.events
+        .filter(({ method }) =>
+          ["Page.frameStartedLoading", "Page.navigatedWithinDocument"].includes(
+            method,
+          ),
+        )
+        .map(({ method, phase }) => ({ method, phase })),
+      [
+        { method: "Page.frameStartedLoading", phase: "primary-action" },
+        { method: "Page.navigatedWithinDocument", phase: "primary-action" },
+      ],
+    );
+    assert.ok(
+      index("marker:pilot-100-interactive-open:segment-start") <
+        index("page:click-primary"),
+    );
+    assert.ok(index("observer:arm:true") < index("page-cdp:Tracing.start"));
+    assert.ok(
+      index("page-cdp:IO.read") < index("page-cdp:final-reference-proof"),
+    );
+    assert.ok(
+      index("page-cdp:final-reference-proof") <
+        index("observer:clear-references"),
+    );
+    assert.ok(
+      index("observer:clear-references") <
+        index("page-cdp:Runtime.releaseObjectGroup"),
+    );
+    assert.equal(result.caseRecord.measurementStatus, "unavailable");
+    assert.equal(result.segment, null);
+    assert.equal(result.caseRecord.rowCount, 100);
+    assert.equal(
+      result.caseRecord.trustedStimulusObservation.sha256,
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    assert.equal(
+      harness.pageSession.listenerCount("Page.frameStartedLoading"),
+      0,
+    );
+    assert.equal(
+      harness.browserSession.listenerCount("Target.targetCrashed"),
+      0,
+    );
+  } finally {
+    rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test("v3 producer output proves retained-node association through manifest-bound CLI analysis", async (t) => {
+  const harness = createV3CaptureHarness({
+    includeEventTiming: true,
+    includeEventTimingTrace: true,
+    backendNodeId: 311,
+  });
+  const runDirectory = mkdtempSync(join(tmpdir(), "ages-v3-cli-composition-"));
+  t.after(() => rmSync(runDirectory, { recursive: true, force: true }));
+  const captured = await captureOneV3Case(harness, runDirectory);
+  const sidecar = JSON.parse(readFileSync(sidecarPath(runDirectory), "utf8"));
+  const proof =
+    sidecar.observation.sameDocumentLoadingWitness.retainedTargetProof;
+  const sourceRecord = sidecar.observation.records[proof.sourceRecordIndex];
+  const tracePath = join(runDirectory, captured.traceRecord.trace);
+  const traceBytes = readFileSync(tracePath);
+  const trace = JSON.parse(traceBytes.toString("utf8"));
+  const markerIndex = trace.traceEvents.findIndex(
+    (event) =>
+      event.name === "TimeStamp" &&
+      event.args?.data?.message === "pilot-100-interactive-open:segment-start",
+  );
+  const eventTimingIndex = trace.traceEvents.findIndex(
+    (event) => event.name === "EventTiming" && event.ph === "b",
+  );
+  assert.equal(captured.caseRecord.actionStatus, "completed");
+  assert.equal(sourceRecord.kind, "dom");
+  assert.equal(sourceRecord.isTrusted, true);
+  assert.equal(
+    sidecar.observation.records.find(({ kind }) => kind === "event-timing")
+      .targetToken,
+    null,
+  );
+  assert.ok(markerIndex >= 0 && markerIndex < eventTimingIndex);
+  assert.equal(trace.traceEvents[eventTimingIndex].args.data.nodeId, 311);
+
+  const manifest = {
+    schemaVersion: 1,
+    status: "diagnostic-only",
+    browser: {
+      product: "Runtime browser observation",
+      version: "155.0.8059.85",
+    },
+    browserIdentity: {
+      bundle: {
+        identifier: "com.brave.Browser",
+        shortVersion: "155.1.97.59",
+        bundleVersion: "197.59",
+        scmRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+      },
+      executableSha256:
+        "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7",
+      runtime: {
+        version: "155.0.8059.85",
+        product: "Chrome/155.0.8059.85",
+        revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+      },
+      chromiumSourceIdentity: "unverified",
+    },
+    sourceHashSha256:
+      "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a",
+    observationEvidence: runner.buildObservationEvidenceDeclaration(
+      [captured.caseRecord],
+      true,
+      3,
+    ),
+    traces: [captured.traceRecord],
+    cases: [captured.caseRecord],
+  };
+  const manifestPath = join(runDirectory, "manifest.json");
+  const manifestBytes = Buffer.from(JSON.stringify(manifest));
+  writeFileSync(manifestPath, manifestBytes, { flag: "wx" });
+  const cleanupReceipt = {
+    schemaVersion: 1,
+    completedAtUtc: "2026-10-22T00:00:00.000Z",
+    manifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+    primaryRunFailure: null,
+    context: { outcome: "closed", errorCode: null },
+    browser: {
+      outcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    ownedServer: {
+      stopHelper: "returned",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "unavailable", memberCount: null },
+      childExitKnown: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    cleanupFailures: [],
+  };
+  writeFileSync(
+    join(runDirectory, "owned-cleanup-receipt.json"),
+    serializeOwnedCleanupReceipt(cleanupReceipt),
+    { flag: "wx" },
+  );
+
+  const analysis = spawnSync(
+    process.execPath,
+    [
+      resolve(process.cwd(), "scripts/analyze-chromium-traces.mjs"),
+      manifestPath,
+    ],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(analysis.status, 0, analysis.stderr);
+  const report = JSON.parse(analysis.stdout);
+  const observed = report.traces[0].observedDiscreteInputs;
+  assert.equal(observed.status, "diagnostic-only");
+  assert.deepEqual(observed.counts, {
+    apiEntries: 1,
+    accepted: 1,
+    rejected: 0,
+  });
+  assert.equal(observed.formalActionStatus, "unavailable");
+  assert.deepEqual(observed.formalActionSamples, []);
+  assert.equal(
+    report.traces[0].discreteEventTimingCrosswalk.methodScope
+      .observedBrowserVersion,
+    "155.0.8059.85",
+  );
+  assert.equal(analysis.stdout.includes(proof.targetToken), false);
+  assert.equal(analysis.stdout.includes("backendNodeId"), false);
+});
+
+test("delayed pre-marker lifecycle delivery remains source-order unknown", async () => {
+  const harness = createV3CaptureHarness({ delayedLifecycle: true });
+  const runDirectory = mkdtempSync(join(tmpdir(), "ages-v3-delayed-callback-"));
+  try {
+    await captureOneV3Case(harness, runDirectory);
+    const sidecar = JSON.parse(readFileSync(sidecarPath(runDirectory), "utf8"));
+    assert.equal(sidecar.schemaVersion, 3);
+    const witness = sidecar.observation.sameDocumentLoadingWitness;
+    const loading = witness.events.find(
+      ({ method }) => method === "Page.frameStartedLoading",
+    );
+
+    assert.equal(witness.status, "complete");
+    assert.equal(witness.orderingBasis, "cdp-receipt");
+    assert.equal(witness.sourceOrder, "unknown");
+    assert.equal(loading.phase, "primary-action");
+    assert.equal(Object.hasOwn(loading, "timestamp"), false);
+    assert.equal(Object.hasOwn(loading, "url"), false);
+  } finally {
+    rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test("late fatal and unknown CDP events after provisional pass make final v3 sidecar unavailable", async (t) => {
+  const lateEvents = [
+    {
+      name: "fatal target crash",
+      eventName: "Inspector.targetCrashed",
+      payload: undefined,
+    },
+    {
+      name: "unknown foreign frame scope",
+      eventName: "Page.frameStartedLoading",
+      payload: { frameId: "foreign-frame-1" },
+    },
+    {
+      name: "page-session Target callback",
+      eventName: "Target.targetDestroyed",
+      payload: { targetId: "selected-target-1" },
+      source: "page",
+    },
+  ];
+
+  for (const scenario of lateEvents) {
+    await t.test(scenario.name, async () => {
+      const harness = createV3CaptureHarness({ holdRelease: true });
+      const runDirectory = mkdtempSync(join(tmpdir(), "ages-v3-late-event-"));
+      const pendingCapture = captureOneV3Case(harness, runDirectory);
+      try {
+        let releaseTimer;
+        try {
+          const releaseStarted = await Promise.race([
+            harness.releaseStarted.then(() => true),
+            new Promise((resolveStarted) => {
+              releaseTimer = setTimeout(() => resolveStarted(false), 1500);
+            }),
+          ]);
+          assert.equal(
+            releaseStarted,
+            true,
+            `cleanup release was not reached: ${harness.state.log.join(",")}`,
+          );
+          assert.ok(
+            harness.state.log.includes("page-cdp:final-reference-proof"),
+          );
+          assert.equal(fileExists(sidecarPath(runDirectory)), false);
+          assert.ok(
+            harness.pageSession.listenerCount(scenario.eventName) > 0,
+            "the collector must still observe cleanup-time lifecycle callbacks",
+          );
+          harness.pageSession.emit(scenario.eventName, scenario.payload);
+        } finally {
+          clearTimeout(releaseTimer);
+        }
+      } finally {
+        harness.acknowledgeRelease();
+        await pendingCapture;
+      }
+
+      const sidecar = JSON.parse(
+        readFileSync(sidecarPath(runDirectory), "utf8"),
+      );
+      assert.equal(
+        sidecar.observation.sameDocumentLoadingWitness.status,
+        "unavailable",
+      );
+      const journalEvent =
+        sidecar.observation.sameDocumentLoadingWitness.events.find(
+          ({ method, source }) =>
+            method === scenario.eventName &&
+            (scenario.source === undefined || source === scenario.source),
+        );
+      assert.ok(
+        journalEvent,
+        "cleanup callback must be retained in the journal",
+      );
+      assert.equal(
+        sidecar.observation.retainedNodeEvidence.status,
+        "unavailable",
+      );
+      assert.equal(
+        sidecar.observation.sameDocumentLoadingWitness.collectorCleanup
+          .objectGroupReleased,
+        true,
+      );
+      assert.equal(
+        sidecar.observation.sameDocumentLoadingWitness.collectorCleanup
+          .cdpListenersRemoved,
+        true,
+      );
+      assert.equal(harness.pageSession.listenerCount(scenario.eventName), 0);
+      rmSync(runDirectory, { recursive: true, force: true });
+    });
+  }
+});
+
+test("v3 serializes source-only proof when an early gate blocks final identity", async (t) => {
+  const scenarios = [
+    {
+      name: "early lifecycle failure",
+      options: { earlyLifecycleFailure: true },
+      invalidationMethod: "Inspector.targetCrashed",
+    },
+    {
+      name: "trace gate failure",
+      options: { traceGateFailure: true },
+      invalidationMethod: null,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const harness = createV3CaptureHarness(scenario.options);
+      const runDirectory = mkdtempSync(
+        join(tmpdir(), "ages-v3-source-only-proof-"),
+      );
+      try {
+        const result = await captureOneV3Case(harness, runDirectory);
+        const serialized = JSON.parse(
+          readFileSync(sidecarPath(runDirectory), "utf8"),
+        );
+        const observation = serialized.observation;
+        const witness = observation.sameDocumentLoadingWitness;
+        const proof = witness.retainedTargetProof;
+        const sourceRecord = observation.records[proof.sourceRecordIndex];
+
+        assert.equal(serialized.schemaVersion, 3);
+        assert.equal(witness.status, "unavailable");
+        assert.ok(sourceRecord);
+        assert.equal(sourceRecord.kind, "dom");
+        assert.equal(sourceRecord.type, "click");
+        assert.equal(sourceRecord.isTrusted, true);
+        assert.equal(sourceRecord.phase, "primary");
+        assert.equal(proof.documentId, sourceRecord.documentId);
+        assert.equal(proof.targetToken, sourceRecord.targetToken);
+        assert.ok(Object.values(proof.sourceCapture).every(Boolean));
+        assert.equal(proof.mappingIndex, null);
+        assert.equal(proof.baselineScope, null);
+        assert.equal(proof.finalProof, null);
+        assert.deepEqual(witness.collectorCleanup, {
+          windowListenersRemoved: true,
+          strongReferencesCleared: true,
+          objectGroupReleased: true,
+          cdpListenersRemoved: true,
+        });
+        assert.notEqual(
+          result.caseRecord.trustedStimulusObservation.reasonCode,
+          "OBSERVATION_SIDECAR_WRITE_FAILED",
+        );
+
+        if (scenario.invalidationMethod) {
+          assert.equal(
+            witness.firstInvalidation.method,
+            scenario.invalidationMethod,
+          );
+          assert.ok(
+            witness.events.some(
+              ({ method }) => method === scenario.invalidationMethod,
+            ),
+          );
+        } else {
+          assert.equal(witness.firstInvalidation, null);
+        }
+      } finally {
+        rmSync(runDirectory, { recursive: true, force: true });
+      }
+    });
+  }
+});
 
 const RETAINED_NODE_PROTOCOL_CATALOG_ID =
   "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99";
@@ -2378,6 +3348,114 @@ function validTrustedStimulusPayload(overrides = {}) {
   };
 }
 
+function validSameDocumentLoadingWitness(overrides = {}) {
+  const documentId = "d-0123456789abcdef01234567";
+  const targetToken = "t-0123456789abcdef01234567";
+  const scope = {
+    frameId: "root-frame-1",
+    loaderId: "root-loader-1",
+    contextUniqueId: "context-1",
+    targetId: "selected-target-1",
+    sessionId: "selected-session-1",
+  };
+  return {
+    status: "complete",
+    reasonCode: null,
+    protocolCatalogId: RETAINED_NODE_PROTOCOL_CATALOG_ID,
+    events: [
+      {
+        sequence: 0,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.frameStartedLoading",
+        frameId: "root-frame-1",
+      },
+      {
+        sequence: 1,
+        phase: "route-ready",
+        source: "page",
+        method: "Page.navigatedWithinDocument",
+        frameId: "root-frame-1",
+        navigationType: "historyApi",
+      },
+    ],
+    droppedCount: 0,
+    overflow: false,
+    loadingCount: 1,
+    historyApiCount: 1,
+    orderingBasis: "cdp-receipt",
+    sourceOrder: "unknown",
+    retainedTargetProof: {
+      sourceRecordIndex: 0,
+      documentId,
+      targetToken,
+      mappingIndex: 0,
+      sourceCapture: {
+        targetIsNode: true,
+        ownerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        composedPathStartsAtTarget: true,
+      },
+      baselineScope: { ...scope },
+      finalProof: {
+        stage: "post-trace-before-release",
+        savedDocumentSame: true,
+        savedRootSame: true,
+        savedTargetSame: true,
+        targetOwnerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        mappedBackendNodeId: 1,
+        finalBackendNodeId: 1,
+        cdpScope: { ...scope },
+      },
+    },
+    firstInvalidation: null,
+    collectorCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+    ...overrides,
+  };
+}
+
+function validVersionThreeTrustedStimulusPayload(overrides = {}) {
+  const documentId = "d-0123456789abcdef01234567";
+  const records = overrides.records ?? [
+    {
+      kind: "dom",
+      documentId,
+      type: "click",
+      timeStamp: 12,
+      isTrusted: true,
+      targetToken: "t-0123456789abcdef01234567",
+      targetLabel: "open-primary",
+      targetResolution: "registered-target",
+      phase: "primary",
+    },
+  ];
+  const {
+    records: _records,
+    sameDocumentLoadingWitness,
+    retainedNodeEvidence,
+    ...payloadOverrides
+  } = overrides;
+  return {
+    ...validTrustedStimulusPayload({
+      ...payloadOverrides,
+      schemaVersion: 3,
+      documentId,
+      records,
+    }),
+    retainedNodeEvidence: retainedNodeEvidence ?? validRetainedNodeEvidence(),
+    sameDocumentLoadingWitness:
+      sameDocumentLoadingWitness ?? validSameDocumentLoadingWitness(),
+  };
+}
+
 function maximumEventTimingRecords(documentId, count) {
   return Array.from({ length: count }, () => ({
     kind: "event-timing",
@@ -2406,6 +3484,571 @@ function maximumEventTimingEntries(target, count) {
     target,
   }));
 }
+
+test("version three observation accepts only the closed loading witness schema", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const payload = validVersionThreeTrustedStimulusPayload();
+  const validated = observerModule.validateTrustedStimulusObservation(
+    payload,
+    payload.documentId,
+  );
+  const witness = validated.sameDocumentLoadingWitness;
+
+  assert.equal(validated.schemaVersion, 3);
+  assert.deepEqual(Object.keys(witness).sort(), [
+    "collectorCleanup",
+    "droppedCount",
+    "events",
+    "firstInvalidation",
+    "historyApiCount",
+    "loadingCount",
+    "orderingBasis",
+    "overflow",
+    "protocolCatalogId",
+    "reasonCode",
+    "retainedTargetProof",
+    "sourceOrder",
+    "status",
+  ]);
+  assert.equal(witness.orderingBasis, "cdp-receipt");
+  assert.equal(witness.sourceOrder, "unknown");
+  assert.deepEqual(witness.events[0], {
+    sequence: 0,
+    phase: "primary-action",
+    source: "page",
+    method: "Page.frameStartedLoading",
+    frameId: "root-frame-1",
+  });
+
+  const invalidWitnesses = [
+    { ...witness, unexpected: "private" },
+    { ...witness, sourceOrder: "cdp-receipt" },
+    {
+      ...witness,
+      events: [{ ...witness.events[0], timestamp: 12 }, witness.events[1]],
+    },
+    {
+      ...witness,
+      collectorCleanup: { ...witness.collectorCleanup, cookies: true },
+    },
+    {
+      ...witness,
+      retainedTargetProof: {
+        ...witness.retainedTargetProof,
+        sourceCapture: {
+          ...witness.retainedTargetProof.sourceCapture,
+          pageText: "private",
+        },
+      },
+    },
+    {
+      ...witness,
+      collectorCleanup: {
+        ...witness.collectorCleanup,
+        strongReferencesCleared: false,
+      },
+    },
+    {
+      ...witness,
+      retainedTargetProof: {
+        ...witness.retainedTargetProof,
+        sourceCapture: {
+          ...witness.retainedTargetProof.sourceCapture,
+          connected: false,
+        },
+      },
+    },
+    {
+      ...witness,
+      retainedTargetProof: {
+        ...witness.retainedTargetProof,
+        baselineScope: null,
+      },
+    },
+    {
+      ...witness,
+      retainedTargetProof: {
+        ...witness.retainedTargetProof,
+        finalProof: null,
+      },
+    },
+    {
+      ...witness,
+      retainedTargetProof: {
+        ...witness.retainedTargetProof,
+        finalProof: {
+          ...witness.retainedTargetProof.finalProof,
+          finalBackendNodeId: 2,
+        },
+      },
+    },
+  ];
+  for (const invalidWitness of invalidWitnesses) {
+    assert.throws(
+      () =>
+        observerModule.validateTrustedStimulusObservation(
+          {
+            ...payload,
+            sameDocumentLoadingWitness: invalidWitness,
+          },
+          payload.documentId,
+        ),
+      { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+    );
+  }
+});
+
+test("version three accepts historyApi during primary action or route readiness only after loading", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const payload = validVersionThreeTrustedStimulusPayload();
+  const baseWitness = payload.sameDocumentLoadingWitness;
+
+  for (const phase of ["primary-action", "route-ready"]) {
+    const witness = {
+      ...baseWitness,
+      events: [baseWitness.events[0], { ...baseWitness.events[1], phase }],
+    };
+    const validated = observerModule.validateTrustedStimulusObservation(
+      { ...payload, sameDocumentLoadingWitness: witness },
+      payload.documentId,
+    );
+    assert.equal(validated.sameDocumentLoadingWitness.status, "complete");
+    assert.equal(validated.sameDocumentLoadingWitness.events[1].phase, phase);
+  }
+
+  for (const phase of [
+    "baseline",
+    "before-input",
+    "post-trace-analysis",
+    "cleanup",
+  ]) {
+    const witness = {
+      ...baseWitness,
+      events: [baseWitness.events[0], { ...baseWitness.events[1], phase }],
+    };
+    assert.throws(
+      () =>
+        observerModule.validateTrustedStimulusObservation(
+          { ...payload, sameDocumentLoadingWitness: witness },
+          payload.documentId,
+        ),
+      { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+    );
+  }
+
+  const reordered = {
+    ...baseWitness,
+    events: [
+      { ...baseWitness.events[1], sequence: 0 },
+      { ...baseWitness.events[0], sequence: 1 },
+    ],
+  };
+  assert.throws(
+    () =>
+      observerModule.validateTrustedStimulusObservation(
+        { ...payload, sameDocumentLoadingWitness: reordered },
+        payload.documentId,
+      ),
+    { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+  );
+});
+
+test("loading witness accepts 128 entries but rejects dropped and overflowed events", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const baseWitness = validSameDocumentLoadingWitness();
+  const events = [
+    ...baseWitness.events,
+    ...Array.from({ length: 126 }, (_, index) => ({
+      sequence: index + 2,
+      phase: "cleanup",
+      source: "browser",
+      method: "Target.targetInfoChanged",
+      targetId: `other-target-${index + 1}`,
+    })),
+  ];
+  const atLimit = {
+    ...baseWitness,
+    events,
+  };
+  const payload = validVersionThreeTrustedStimulusPayload({
+    sameDocumentLoadingWitness: atLimit,
+  });
+  assert.equal(
+    observerModule.validateTrustedStimulusObservation(
+      payload,
+      payload.documentId,
+    ).sameDocumentLoadingWitness.events.length,
+    128,
+  );
+
+  for (const invalidWitness of [
+    { ...atLimit, droppedCount: 1 },
+    { ...atLimit, overflow: true },
+    {
+      ...atLimit,
+      events: [
+        ...events,
+        {
+          sequence: 128,
+          phase: "cleanup",
+          source: "browser",
+          method: "Target.targetInfoChanged",
+          targetId: "other-target-overflow",
+        },
+      ],
+    },
+  ]) {
+    assert.throws(
+      () =>
+        observerModule.validateTrustedStimulusObservation(
+          { ...payload, sameDocumentLoadingWitness: invalidWitness },
+          payload.documentId,
+        ),
+      { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+    );
+  }
+
+  const unavailableOverflow = {
+    ...atLimit,
+    status: "unavailable",
+    reasonCode: "RETAINED_NODE_LIMIT_EXCEEDED",
+    droppedCount: 1,
+    overflow: true,
+    firstInvalidation: {
+      sequence: 128,
+      phase: "cleanup",
+      method: "Target.targetInfoChanged",
+      reasonCode: "RETAINED_NODE_LIMIT_EXCEEDED",
+    },
+  };
+  const preserved = observerModule.validateTrustedStimulusObservation(
+    { ...payload, sameDocumentLoadingWitness: unavailableOverflow },
+    payload.documentId,
+  ).sameDocumentLoadingWitness;
+  assert.equal(preserved.status, "unavailable");
+  assert.equal(preserved.droppedCount, 1);
+  assert.equal(preserved.overflow, true);
+  assert.equal(preserved.firstInvalidation.sequence, 128);
+});
+
+test("trusted DOM source proof binds capture scope to one record index", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const cases = [
+    {
+      name: "non-node target",
+      createTarget: () => ({}),
+      falseFields: [
+        "targetIsNode",
+        "ownerDocumentMatches",
+        "rootContainsTarget",
+        "connected",
+      ],
+    },
+    {
+      name: "foreign-document target",
+      createTarget: (harness) => {
+        const target = harness.createNode();
+        target.ownerDocument = {};
+        return target;
+      },
+      falseFields: ["ownerDocumentMatches"],
+    },
+    {
+      name: "target outside the saved root",
+      createTarget: (harness) => {
+        const target = harness.createNode();
+        target.parentNode = null;
+        return target;
+      },
+      falseFields: ["rootContainsTarget"],
+    },
+    {
+      name: "disconnected target",
+      createTarget: (harness) => {
+        const target = harness.createNode();
+        target.isConnected = false;
+        return target;
+      },
+      falseFields: ["connected"],
+    },
+    {
+      name: "composed path does not start at target",
+      createTarget: (harness) => harness.createNode(),
+      falseFields: ["composedPathStartsAtTarget"],
+      composedPath: (harness) => [harness.createNode()],
+    },
+  ];
+
+  for (const testCase of cases) {
+    const harness = createObserverBrowserHarness();
+    const state = harness.initialize(
+      observerModule.initializeTrustedStimulusObserver,
+      { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+    );
+    const target = testCase.createTarget(harness);
+    state.arm();
+    harness.dispatch({
+      timeStamp: 11,
+      eventTarget: target,
+      composedPath: testCase.composedPath?.(harness) ?? [target],
+      afterWindowCapture: () => {
+        if (testCase.name === "disconnected target") {
+          target.isConnected = false;
+        }
+      },
+    });
+    harness.dispatch({
+      timeStamp: 12,
+      isTrusted: false,
+      eventTarget: harness.createNode(),
+    });
+
+    const payload = await state.freeze(state.documentId);
+    const validated = observerModule.validateTrustedStimulusObservation(
+      payload,
+      payload.documentId,
+    );
+    const proof = validated.sameDocumentLoadingWitness.retainedTargetProof;
+    const expectedCapture = {
+      targetIsNode: true,
+      ownerDocumentMatches: true,
+      rootContainsTarget: true,
+      connected: true,
+      composedPathStartsAtTarget: true,
+    };
+    for (const field of testCase.falseFields) {
+      expectedCapture[field] = false;
+    }
+
+    assert.equal(validated.schemaVersion, 3, testCase.name);
+    assert.equal(validated.records[proof.sourceRecordIndex].isTrusted, true);
+    assert.equal(validated.records[proof.sourceRecordIndex].phase, "primary");
+    assert.equal(
+      validated.records[proof.sourceRecordIndex].targetToken,
+      proof.targetToken,
+    );
+    assert.deepEqual(proof.sourceCapture, expectedCapture, testCase.name);
+    assert.equal(proof.sourceRecordIndex, 0, testCase.name);
+    if (proof.targetToken === null) {
+      assert.equal(proof.mappingIndex, null, testCase.name);
+      assert.equal(proof.finalProof, null, testCase.name);
+    }
+
+    const mismatched = {
+      ...validated,
+      sameDocumentLoadingWitness: {
+        ...validated.sameDocumentLoadingWitness,
+        retainedTargetProof: {
+          ...proof,
+          sourceRecordIndex: 1,
+        },
+      },
+    };
+    assert.throws(
+      () =>
+        observerModule.validateTrustedStimulusObservation(
+          mismatched,
+          payload.documentId,
+        ),
+      { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+      testCase.name,
+    );
+    state.clearRetainedNodes();
+  }
+
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+  );
+  const target = harness.createNode();
+  state.arm();
+  harness.dispatch({
+    timeStamp: 11,
+    eventTarget: target,
+    afterWindowCapture: () => {
+      target.isConnected = false;
+    },
+  });
+  const payload = await state.freeze(state.documentId);
+  const validated = observerModule.validateTrustedStimulusObservation(
+    payload,
+    payload.documentId,
+  );
+  assert.equal(
+    validated.sameDocumentLoadingWitness.retainedTargetProof.sourceCapture
+      .connected,
+    true,
+  );
+  const sourceProof = validated.sameDocumentLoadingWitness.retainedTargetProof;
+  const expression = observerModule.retainedNodeFinalReferenceProofExpression({
+    documentId: sourceProof.documentId,
+    sourceRecordIndex: sourceProof.sourceRecordIndex,
+    targetToken: sourceProof.targetToken,
+  });
+  const finalReference = runInNewContext(expression, harness.sandbox);
+  assert.equal(finalReference.savedDocumentSame, true);
+  assert.equal(finalReference.savedRootSame, true);
+  assert.equal(finalReference.savedTargetSame, true);
+  assert.equal(finalReference.targetOwnerDocumentMatches, true);
+  assert.equal(finalReference.rootContainsTarget, true);
+  assert.equal(finalReference.connected, false);
+  assert.equal(target.isConnected, false);
+  const wrongIndexExpression =
+    observerModule.retainedNodeFinalReferenceProofExpression({
+      documentId: sourceProof.documentId,
+      sourceRecordIndex: sourceProof.sourceRecordIndex + 1,
+      targetToken: sourceProof.targetToken,
+    });
+  assert.equal(runInNewContext(wrongIndexExpression, harness.sandbox), null);
+  assert.throws(
+    () =>
+      observerModule.retainedNodeFinalReferenceProofExpression({
+        documentId: sourceProof.documentId,
+        sourceRecordIndex: sourceProof.sourceRecordIndex,
+        targetToken: `t-${'"; globalThis.compromised = true; //'}`,
+      }),
+    { message: "RETAINED_NODE_EVIDENCE_INVALID" },
+  );
+  state.clearRetainedNodes();
+  assert.equal(runInNewContext(expression, harness.sandbox), null);
+});
+
+test("version-three source reference cannot bypass the retained-node budget", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const harness = createObserverBrowserHarness();
+  const state = harness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+  );
+  state.arm();
+  const retainedNodes = Array.from({ length: 32 }, () => harness.createNode());
+  for (const [index, target] of retainedNodes.entries()) {
+    harness.dispatch({
+      type: "pointermove",
+      timeStamp: 11 + index,
+      eventTarget: target,
+    });
+  }
+  harness.dispatch({
+    timeStamp: 50,
+    eventTarget: harness.createNode(),
+  });
+
+  const payload = await state.freeze(state.documentId);
+  const validated = observerModule.validateTrustedStimulusObservation(
+    payload,
+    payload.documentId,
+  );
+  const proof = validated.sameDocumentLoadingWitness.retainedTargetProof;
+  assert.equal(validated.sameDocumentLoadingWitness.status, "unavailable");
+  assert.equal(
+    validated.sameDocumentLoadingWitness.reasonCode,
+    "RETAINED_NODE_LIMIT_EXCEEDED",
+  );
+  assert.equal(state.retainedInputNodeCount, 32);
+  assert.equal(proof.sourceRecordIndex, 32);
+  assert.equal(proof.targetToken, payload.records[32].targetToken);
+  assert.equal(proof.mappingIndex, null);
+  assert.equal(proof.finalProof, null);
+  assert.equal(state.getRetainedInputNode(proof.targetToken), null);
+  const expression = observerModule.retainedNodeFinalReferenceProofExpression({
+    documentId: proof.documentId,
+    sourceRecordIndex: proof.sourceRecordIndex,
+    targetToken: proof.targetToken,
+  });
+  assert.equal(runInNewContext(expression, harness.sandbox), null);
+  state.clearRetainedNodes();
+});
+
+test("observer releases version-three document and root references on repeated cleanup", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+
+  const versionTwoHarness = createObserverBrowserHarness();
+  const versionTwoDocument = versionTwoHarness.sandbox.document;
+  let versionTwoDocumentReads = 0;
+  Object.defineProperty(versionTwoHarness.sandbox, "document", {
+    configurable: true,
+    get() {
+      versionTwoDocumentReads += 1;
+      return versionTwoDocument;
+    },
+  });
+  versionTwoHarness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true },
+  );
+  assert.equal(versionTwoDocumentReads, 0);
+
+  const versionOneHarness = createObserverBrowserHarness();
+  let versionOneRootReads = 0;
+  Object.defineProperty(versionOneHarness.sandbox.document, "documentElement", {
+    configurable: true,
+    get() {
+      versionOneRootReads += 1;
+      return versionOneHarness.root;
+    },
+  });
+  versionOneHarness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    {},
+  );
+  assert.equal(versionOneRootReads, 0);
+
+  const versionThreeHarness = createObserverBrowserHarness();
+  const versionThree = versionThreeHarness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+  );
+  versionThree.arm();
+  const firstFreeze = await versionThree.freeze(versionThree.documentId);
+  assert.equal(
+    firstFreeze.sameDocumentLoadingWitness.collectorCleanup
+      .strongReferencesCleared,
+    false,
+  );
+
+  versionThree.close();
+  const afterRepeatedClose = await versionThree.freeze(versionThree.documentId);
+  assert.equal(
+    afterRepeatedClose.sameDocumentLoadingWitness.collectorCleanup
+      .strongReferencesCleared,
+    true,
+  );
+  assert.equal(versionThree.clearRetainedNodes().strongReferencesCleared, true);
+
+  const clearHarness = createObserverBrowserHarness();
+  const clearState = clearHarness.initialize(
+    observerModule.initializeTrustedStimulusObserver,
+    { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+  );
+  clearState.arm();
+  const beforeClear = await clearState.freeze(clearState.documentId);
+  assert.equal(
+    beforeClear.sameDocumentLoadingWitness.collectorCleanup
+      .strongReferencesCleared,
+    false,
+  );
+  assert.equal(clearState.clearRetainedNodes().strongReferencesCleared, true);
+  const afterClear = await clearState.freeze(clearState.documentId);
+  assert.equal(
+    afterClear.sameDocumentLoadingWitness.collectorCleanup
+      .strongReferencesCleared,
+    true,
+  );
+});
 
 function inputFrameTreeResponse(
   frameId = "root-frame-1",
@@ -2945,6 +4588,36 @@ test("version-two observation sidecars retain their closed extension and exact b
         payload.documentId,
       ).schemaVersion,
       2,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("version-three sidecars serialize the closed witness as schema version three", async () => {
+  const observerModule = await import(
+    "../../scripts/browser-stimulus-observer.mjs"
+  );
+  const directory = mkdtempSync(join(tmpdir(), "ages-retained-node-v3-"));
+  const payload = validVersionThreeTrustedStimulusPayload();
+  try {
+    const written = observerModule.writeTrustedStimulusSidecar({
+      directory,
+      fixture: "100-interactive-open",
+      payload,
+      frameProvenance: validInputFrameProvenance(),
+    });
+    const bytes = readFileSync(join(directory, written.fileName));
+    const sidecar = JSON.parse(bytes.toString("utf8"));
+    assert.equal(sidecar.schemaVersion, 3);
+    assert.equal(sidecar.observation.schemaVersion, 3);
+    assert.deepEqual(
+      sidecar.observation.sameDocumentLoadingWitness,
+      payload.sameDocumentLoadingWitness,
+    );
+    assert.equal(written.byteCount, bytes.byteLength);
+    assert.ok(
+      bytes.byteLength <= observerModule.OBSERVATION_LIMITS.sidecarBytes,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3886,6 +5559,17 @@ test("version-two manifest declaration pins one closed retained-node policy", ()
     "maxNodes",
     "protocolCatalogId",
   ]);
+  const versionThree = runner.buildObservationEvidenceDeclaration(
+    cases,
+    true,
+    3,
+  );
+  assert.equal(versionThree.schemaVersion, 3);
+  assert.equal(versionThree.recordByteLimit, 140 * 1024);
+  assert.deepEqual(
+    versionThree.retainedNodeEvidence,
+    versionTwo.retainedNodeEvidence,
+  );
   assert.deepEqual(versionOne, {
     evidenceClass: "synthetic-Playwright-stimulus-discovery",
     instrumented: true,
