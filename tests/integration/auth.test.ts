@@ -4,6 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app";
 import { hashToken, pkceChallenge } from "../../src/auth/crypto";
+import { exchangeGoogleCode } from "../../src/auth/google";
 import { cleanupAuth } from "../../src/auth/session";
 import type { Bindings } from "../../src/bindings";
 
@@ -521,6 +522,55 @@ describe("Google OAuth browser flow", () => {
       expect((await callback(attempt)).status).toBe(400);
       expect(JSON.stringify(logs.mock.calls)).not.toMatch(
         /synthetic-secret|provider-private|stolen/,
+      );
+    },
+  );
+});
+
+describe("OAuth exchange failure diagnostics", () => {
+  it.each([
+    { kind: "transport", stage: "fetch", status: null, format: "unavailable" },
+    { kind: "timeout", stage: "fetch", status: null, format: "unavailable" },
+    { kind: "html", stage: "decode", status: 403, format: "other" },
+    { kind: "upstream", stage: "response", status: 503, format: "json" },
+  ])(
+    "identifies $kind failures without exposing provider or credential data",
+    async ({ kind, stage, status, format }) => {
+      logs.mockClear();
+      vi.mocked(fetch).mockImplementationOnce(async () => {
+        if (kind === "transport")
+          throw new Error("synthetic-secret private-code person@example.test");
+        if (kind === "timeout")
+          throw new DOMException("private-code", "TimeoutError");
+        if (kind === "html")
+          return new Response("private-code person@example.test", {
+            status: 403,
+            headers: { "Content-Type": "text/html; private-code" },
+          });
+        return Response.json(
+          { error: "provider-private-detail" },
+          { status: 503 },
+        );
+      });
+      await expect(
+        exchangeGoogleCode(
+          bindings,
+          "private-code",
+          "private-verifier",
+          "private-nonce",
+        ),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      const events = logs.mock.calls.map(([message]) => JSON.parse(message));
+      expect(events).toEqual([
+        {
+          event: "oauth_token_exchange_failed",
+          stage,
+          provider_status: status,
+          response_format: format,
+        },
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /synthetic-secret|private-code|private-verifier|private-nonce|provider-private|person@example/,
       );
     },
   );
