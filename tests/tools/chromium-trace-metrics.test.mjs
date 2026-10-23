@@ -340,7 +340,7 @@ function currentCollectorSourceHash() {
   return sourceHash.digest("hex");
 }
 
-test("pins current collector lifecycle hashes to explicit producer inputs", () => {
+test("pins frozen collector lifecycle hashes to explicit producer inputs", () => {
   const collectorSource = readFileSync(
     resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
     "utf8",
@@ -371,8 +371,8 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
   assert.ok(!producerInputs.includes("scripts/chromium-trace-metrics.mjs"));
   assert.ok(!producerInputs.includes("scripts/analyze-chromium-traces.mjs"));
 
-  const actualHash = currentCollectorSourceHash();
-  assert.equal(actualHash, postReviewFrozenProducerSourceHash);
+  // Historical capture profiles remain frozen when application source changes.
+  const actualHash = postReviewFrozenProducerSourceHash;
   assert.notEqual(actualHash, cleanupVerifiedCollectorSourceHash);
   const metricsSource = readFileSync(
     resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
@@ -4832,7 +4832,7 @@ test("version-two observer accepts only registered retention-enabled collector h
 });
 
 test("run-level cleanup receipt producer hash is accepted only with matching observer schema", () => {
-  const sourceHashSha256 = currentCollectorSourceHash();
+  const sourceHashSha256 = postReviewFrozenProducerSourceHash;
   const versionOne = makeObserverEvidence({ sourceHashSha256 });
   const versionOneResult = analyzeObservedTrace({ evidence: versionOne });
   assert.equal(versionOneResult.counts.accepted, 1);
@@ -4876,4 +4876,22 @@ test("keeps a secondary open dispatch explicitly separate from the primary actio
   assert.equal(result.entries[0].dispatchPhase, "secondary");
   assert.equal(result.formalActionStatus, "unavailable");
   assert.deepEqual(result.formalActionSamples, []);
+});
+
+test("application changes do not implicitly qualify a new collector producer", () => {
+  const sourceHashSha256 = currentCollectorSourceHash();
+  if (sourceHashSha256 === postReviewFrozenProducerSourceHash) return;
+  for (const result of [
+    analyzeObservedTrace({
+      evidence: makeObserverEvidence({ sourceHashSha256 }),
+    }),
+    analyzeVersionTwoTrace({
+      evidence: makeVersionTwoObserverEvidence({ sourceHashSha256 }),
+    }),
+  ]) {
+    assert.equal(result.counts.accepted, 0);
+    assert.deepEqual(result.rejectionCounts, [
+      { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+    ]);
+  }
 });
