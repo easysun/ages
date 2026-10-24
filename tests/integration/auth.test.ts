@@ -528,6 +528,44 @@ describe("Google OAuth browser flow", () => {
 });
 
 describe("OAuth exchange failure diagnostics", () => {
+  it("constructs a Workers-compatible request without forwarding credentials on redirects", async () => {
+    vi.mocked(fetch).mockImplementationOnce(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.redirect).toBe("manual");
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    });
+    await expect(
+      exchangeGoogleCode(
+        bindings,
+        "private-code",
+        "private-verifier",
+        "private-nonce",
+      ),
+    ).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+  });
+
+  it.each([301, 302, 303, 307, 308])(
+    "rejects provider redirect %s without following it",
+    async (status) => {
+      vi.mocked(fetch).mockResolvedValueOnce(
+        new Response("", {
+          status,
+          headers: { Location: "https://untrusted.example.test/token" },
+        }),
+      );
+      await expect(
+        exchangeGoogleCode(
+          bindings,
+          "private-code",
+          "private-verifier",
+          "private-nonce",
+        ),
+      ).rejects.toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(fetch).mock.calls[0]?.[1]?.redirect).toBe("manual");
+    },
+  );
+
   it.each([
     { kind: "transport", stage: "fetch", status: null, format: "unavailable" },
     { kind: "timeout", stage: "fetch", status: null, format: "unavailable" },

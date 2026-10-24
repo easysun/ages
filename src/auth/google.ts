@@ -34,7 +34,7 @@ export async function exchangeGoogleCode(
   try {
     response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(10_000),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -56,6 +56,8 @@ export async function exchangeGoogleCode(
         .toLowerCase() === "application/json"
         ? "json"
         : "other";
+    if (response.status >= 300 && response.status < 400)
+      throw new Error("Provider redirect rejected");
     if (response.status >= 500) throw new Error("Provider unavailable");
     stage = "decode";
     payload = await response.json();
