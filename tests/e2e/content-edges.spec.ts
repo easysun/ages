@@ -710,6 +710,18 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
     "unlisted",
   );
   await createEdge(sourceContext, source.id, target.id);
+  const reviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reviewPage.edges).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: expect.objectContaining({ id: source.id, title: source.title }),
+      }),
+    ]),
+  );
 
   let release!: () => void;
   let started!: () => void;
@@ -722,10 +734,9 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
   await page.route(
     `**/api/content-nodes/${target.id}/incoming-review*`,
     async (route) => {
-      const response = await route.fetch();
       started();
       await pending;
-      await route.fulfill({ response }).catch(() => undefined);
+      await route.fulfill({ status: 200, json: reviewPage });
     },
   );
   try {
