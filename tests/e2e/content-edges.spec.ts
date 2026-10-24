@@ -728,18 +728,28 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
       await route.fulfill({ response }).catch(() => undefined);
     },
   );
-  await page.goto(`${e2eOrigin}/content`);
-  await hit;
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  release();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  await expect(page.locator("body")).not.toContainText(source.title);
-  await sourceContext.close();
+  try {
+    await page.goto(`${e2eOrigin}/content`);
+    await hit;
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    release();
+    // Observe the UI only after every intercepted response has settled.
+    await page.unrouteAll({ behavior: "wait" });
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(source.title);
+  } finally {
+    release();
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+    } finally {
+      await sourceContext.close();
+    }
+  }
 });
 
 test("late_acceptance_after_node_switch_is_discarded", async ({
