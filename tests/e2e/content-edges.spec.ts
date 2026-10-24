@@ -164,6 +164,14 @@ function artifactPath(name: string, project: string) {
   return join(directory, `${name}-${project}.png`);
 }
 
+function incomingReferenceArtifactPath(project: string) {
+  const directory = resolve(
+    ".superpowers/sdd/2026-10-24-incoming-reference-empty-state/task-1-artifacts",
+  );
+  mkdirSync(directory, { recursive: true });
+  return join(directory, `same-owner-incoming-reference-${project}.png`);
+}
+
 async function noHorizontalOverflow(page: Page) {
   const dimensions = await page.evaluate(() => ({
     document: document.documentElement.scrollWidth,
@@ -264,6 +272,83 @@ test("public_relation_appears_as_a_backlink_from_a_typed_owner_edge", async ({
     fullPage: true,
   });
   await sourceContext.close();
+});
+
+test("same_owner_incoming_reference_has_no_empty_state", async ({
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const source = await createExternal(
+    context,
+    "Private incoming source",
+    "private",
+  );
+  const target = await createExternal(
+    context,
+    "Private incoming target",
+    "private",
+  );
+
+  await page.goto(`${e2eOrigin}/content`);
+  const targetChoice = page.getByRole("button", {
+    name: `Edit ${target.title}`,
+  });
+  await expect(targetChoice).toBeVisible();
+  await targetChoice.click();
+
+  const incoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  const emptyMessage = incoming.getByText("No incoming relationships.", {
+    exact: true,
+  });
+  await expect(emptyMessage).toBeVisible();
+
+  await createEdge(context, source.id, target.id);
+  const reviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reviewPage.edges).toEqual([]);
+
+  await page.getByRole("button", { name: "Refresh relationships" }).click();
+  const visibleIncoming = incoming.getByRole("list").first();
+  await expect(
+    visibleIncoming.getByText(source.title, { exact: true }),
+  ).toBeVisible();
+  await expect(emptyMessage).toHaveCount(0);
+
+  await page.reload();
+  const reloadedTargetChoice = page.getByRole("button", {
+    name: `Edit ${target.title}`,
+  });
+  await expect(reloadedTargetChoice).toBeVisible();
+  await reloadedTargetChoice.click();
+
+  const reloadedIncoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  await expect(
+    reloadedIncoming
+      .getByRole("list")
+      .first()
+      .getByText(source.title, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    reloadedIncoming.getByText("No incoming relationships.", { exact: true }),
+  ).toHaveCount(0);
+  const reloadedReviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reloadedReviewPage.edges).toEqual([]);
+  await page.screenshot({
+    path: incomingReferenceArtifactPath(test.info().project.name),
+    fullPage: true,
+  });
 });
 
 test("pending_unlisted_relation_is_owner_review_only_and_controls_do_not_endorse", async ({
