@@ -710,6 +710,18 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
     "unlisted",
   );
   await createEdge(sourceContext, source.id, target.id);
+  const reviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reviewPage.edges).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: expect.objectContaining({ id: source.id, title: source.title }),
+      }),
+    ]),
+  );
 
   let release!: () => void;
   let started!: () => void;
@@ -722,24 +734,33 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
   await page.route(
     `**/api/content-nodes/${target.id}/incoming-review*`,
     async (route) => {
-      const response = await route.fetch();
       started();
       await pending;
-      await route.fulfill({ response }).catch(() => undefined);
+      await route.fulfill({ status: 200, json: reviewPage });
     },
   );
-  await page.goto(`${e2eOrigin}/content`);
-  await hit;
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  release();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  await expect(page.locator("body")).not.toContainText(source.title);
-  await sourceContext.close();
+  try {
+    await page.goto(`${e2eOrigin}/content`);
+    await hit;
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    release();
+    // Observe the UI only after every intercepted response has settled.
+    await page.unrouteAll({ behavior: "wait" });
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(source.title);
+  } finally {
+    release();
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+    } finally {
+      await sourceContext.close();
+    }
+  }
 });
 
 test("late_acceptance_after_node_switch_is_discarded", async ({
