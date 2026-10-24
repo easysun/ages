@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import * as recoveryTools from "../../scripts/recovery-drill.mjs";
 import {
   allocateRunDirectory,
   buildLocalArgs,
@@ -34,6 +35,22 @@ const png = Buffer.from(
 );
 const expectedHash =
   "d3c936ebdd73f46e6422d5946044c99d524554082272019ab738800318b04892";
+const schemaExportBytes = Buffer.from("-- synthetic schema export\n", "utf8");
+const dataExportBytes = Buffer.from("-- synthetic data export\n", "utf8");
+const syntheticTriggers = [
+  {
+    name: 'audit"guard',
+    sql: 'CREATE TRIGGER "audit""guard" BEFORE INSERT ON audit BEGIN SELECT 1; END',
+  },
+  {
+    name: "distribution_links_reserve_slug",
+    sql: "CREATE TRIGGER distribution_links_reserve_slug BEFORE INSERT ON distribution_links BEGIN SELECT 1; END",
+  },
+  {
+    name: "legacy_reports_no_insert",
+    sql: "CREATE TRIGGER legacy_reports_no_insert BEFORE INSERT ON content_reports BEGIN SELECT 1; END",
+  },
+];
 
 function temporaryRepo(t) {
   const root = mkdtempSync(join(tmpdir(), "ages-recovery-drill-test-"));
@@ -78,9 +95,71 @@ function sampleSnapshot(ids = {}) {
   };
 }
 
-function queryResult(args) {
+function queryResult(
+  args,
+  {
+    quickCheckRows = [{ quick_check: "ok" }],
+    foreignKeyRows = [],
+    foreignKeyResponse,
+  } = {},
+) {
   const fileIndex = args.indexOf("--file");
   const query = readFileSync(args[fileIndex + 1], "utf8");
+  if (
+    query.includes("FROM sqlite_schema") &&
+    query.includes("type = 'trigger'")
+  )
+    return JSON.stringify([{ results: syntheticTriggers }]);
+  if (query.includes("PRAGMA quick_check"))
+    return JSON.stringify([{ results: quickCheckRows }]);
+  if (query.includes("PRAGMA foreign_key_check"))
+    return JSON.stringify(
+      foreignKeyResponse ?? [{ success: true, results: foreignKeyRows }],
+    );
+  if (query.includes("probe_slug_reservation_count"))
+    return JSON.stringify([
+      {
+        results: [
+          {
+            distribution_link_count: 2,
+            reserved_slug_count: 3,
+            probe_link_count: 1,
+            probe_slug_reservation_count: 1,
+            deleted_slug_reservation_count: 1,
+            deleted_link_row_count: 0,
+          },
+        ],
+      },
+    ]);
+  if (query.includes("live_link_id")) {
+    const linkId = query.match(/WHERE live_link\.id = '([^']+)'/)?.[1];
+    const userId = query.match(/AND live_link\.owner_id = '([^']+)'/)?.[1];
+    assert.ok(linkId && userId);
+    return JSON.stringify([
+      {
+        results: [
+          {
+            distribution_link_count: 1,
+            reserved_slug_count: 2,
+            live_link_id: linkId,
+            live_link_owner_id: userId,
+            live_link_slug: "synthetic-recovery-live",
+            live_link_target_kind: "url",
+            live_link_target_url: "https://example.invalid/synthetic-recovery",
+            live_link_timeline_id: null,
+            live_link_asset_id: null,
+            live_link_active: 1,
+            live_link_expires_at: null,
+            live_link_created_at: "2026-10-14T00:00:00.000Z",
+            live_link_updated_at: "2026-10-14T00:00:00.000Z",
+            live_slug_reservation_count: 1,
+            deleted_slug_reservation_count: 1,
+            deleted_link_row_count: 0,
+          },
+        ],
+      },
+    ]);
+  }
   const userId = query.match(/WHERE u\.id = '([^']+)'/)?.[1];
   const assetId = query.match(/AND a\.id = '([^']+)'/)?.[1];
   const timelineId = query.match(/AND t\.id = '([^']+)'/)?.[1];
@@ -93,7 +172,17 @@ function queryResult(args) {
   ]);
 }
 
-function successfulExecutor(calls) {
+function successfulExecutor(
+  calls,
+  {
+    capturedTriggers = syntheticTriggers,
+    verifiedTriggers = capturedTriggers,
+    quickCheckRows,
+    foreignKeyRows,
+    foreignKeyResponse,
+  } = {},
+) {
+  let triggerCaptures = 0;
   return (_file, args, options) => {
     calls.push({ args, options });
     const wranglerArgs = args.slice(1);
@@ -101,13 +190,44 @@ function successfulExecutor(calls) {
       wranglerArgs[0] === "d1" &&
       wranglerArgs[1] === "execute" &&
       wranglerArgs.includes("--json")
-    )
-      return queryResult(wranglerArgs);
+    ) {
+      const fileIndex = wranglerArgs.indexOf("--file");
+      const query = readFileSync(wranglerArgs[fileIndex + 1], "utf8");
+      if (
+        query.includes("FROM sqlite_schema") &&
+        query.includes("type = 'trigger'")
+      ) {
+        const rows =
+          triggerCaptures++ === 0 ? capturedTriggers : verifiedTriggers;
+        return JSON.stringify([{ results: rows }]);
+      }
+      return queryResult(wranglerArgs, {
+        quickCheckRows,
+        foreignKeyRows,
+        foreignKeyResponse,
+      });
+    }
+    if (
+      wranglerArgs[0] === "d1" &&
+      wranglerArgs[1] === "execute" &&
+      wranglerArgs.includes("--file")
+    ) {
+      const fileIndex = wranglerArgs.indexOf("--file");
+      const sql = readFileSync(wranglerArgs[fileIndex + 1], "utf8");
+      if (sql.includes("reuse-tombstoned-link-probe"))
+        throw Object.assign(new Error("synthetic slug reservation conflict"), {
+          status: 1,
+          stderr: Buffer.from(
+            "UNIQUE constraint failed: reserved_link_slugs.slug: SQLITE_CONSTRAINT",
+          ),
+        });
+    }
     if (wranglerArgs[0] === "d1" && wranglerArgs[1] === "export") {
       const outputIndex = wranglerArgs.indexOf("--output");
-      writeFileSync(wranglerArgs[outputIndex + 1], "-- synthetic export\n", {
-        flag: "wx",
-      });
+      const contents = wranglerArgs.includes("--no-data")
+        ? schemaExportBytes
+        : dataExportBytes;
+      writeFileSync(wranglerArgs[outputIndex + 1], contents, { flag: "wx" });
       return "exported synthetic SQL";
     }
     if (wranglerArgs[0] === "r2" && wranglerArgs[2] === "get") {
@@ -338,8 +458,65 @@ test("uses_generated_scratch_configs_not_ancestor_configs", async (t) => {
     restoredPut[restoredPut.indexOf("--content-type") + 1],
     "image/png",
   );
+
+  const commandRecords = readFileSync(result.paths.log, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+    .filter((record) => record.event === "command");
+  const labels = commandRecords.map((record) => record.label);
+  const replaySteps = [
+    "Restore source D1 schema into the fresh synthetic database",
+    "Capture restored D1 triggers before row replay",
+    "Drop restored D1 triggers for row replay",
+    "Restore source D1 rows after schema and indexes",
+    "Reinstall the captured D1 triggers",
+    "Verify restored D1 trigger definitions",
+  ].map((label) => labels.indexOf(label));
+  assert.ok(replaySteps.every((index) => index >= 0));
+  assert.deepEqual(
+    replaySteps,
+    [...replaySteps].sort((a, b) => a - b),
+  );
+
+  assert.deepEqual(
+    readFileSync(join(result.paths.backup, "d1-schema.sql")),
+    schemaExportBytes,
+  );
+  assert.deepEqual(
+    readFileSync(join(result.paths.backup, "d1-data.sql")),
+    dataExportBytes,
+  );
+  const seed = readFileSync(join(result.paths.source, "seed.sql"), "utf8");
+  assert.match(seed, /INSERT INTO distribution_links/);
+  assert.match(seed, /'synthetic-recovery-live', 'url'/);
+  assert.match(seed, /'synthetic-recovery-deleted', 'url'/);
+  assert.match(seed, /DELETE FROM distribution_links/);
+  const replayFiles = commandRecords
+    .filter((record) =>
+      [
+        "Drop restored D1 triggers for row replay",
+        "Reinstall the captured D1 triggers",
+      ].includes(record.label),
+    )
+    .map((record) => record.argv[record.argv.indexOf("--file") + 1]);
+  const dropSql = readFileSync(replayFiles[0], "utf8");
+  const createSql = readFileSync(replayFiles[1], "utf8");
+  for (const trigger of syntheticTriggers) {
+    assert.ok(dropSql.includes(trigger.name.replaceAll('"', '""')));
+    assert.ok(createSql.includes(trigger.sql));
+  }
+  assert.doesNotMatch(dropSql, /synthetic (?:schema|data) export/);
+  assert.doesNotMatch(createSql, /synthetic (?:schema|data) export/);
+
   assert.deepEqual(result.mismatches, []);
   assert.deepEqual(result.comparisons, {
+    triggers_restored_exactly: true,
+    distribution_link_count_is_one: true,
+    reserved_slug_count_is_two: true,
+    live_url_link_preserved: true,
+    deleted_slug_reservation_preserved: true,
+    link_snapshot_preserved: true,
     quota_used_is_69_bytes: true,
     quota_usage_matches_asset_size: true,
     captured_at_preserved: true,
@@ -350,7 +527,263 @@ test("uses_generated_scratch_configs_not_ancestor_configs", async (t) => {
     timeline_item_asset_relationship: true,
     original_backup_restored_size: true,
     original_backup_restored_sha256: true,
+    probe_link_reserves_slug: true,
+    tombstoned_slug_reuse_rejected: true,
+    quick_check_ok: true,
+    foreign_key_check_clear: true,
   });
+});
+
+test("builds_deterministic_trigger_replay_sql_with_quoted_identifiers", () => {
+  const replay = recoveryTools.buildTriggerReplaySql(syntheticTriggers);
+
+  assert.equal(
+    replay.dropSql,
+    'DROP TRIGGER "audit""guard";\n' +
+      'DROP TRIGGER "distribution_links_reserve_slug";\n' +
+      'DROP TRIGGER "legacy_reports_no_insert";\n',
+  );
+  assert.equal(
+    replay.createSql,
+    `${syntheticTriggers.map(({ sql }) => `${sql};`).join("\n")}\n`,
+  );
+});
+
+test("rejects_empty_or_malformed_trigger_captures", () => {
+  assert.equal(typeof recoveryTools.buildTriggerReplaySql, "function");
+  const malformedCaptures = [
+    null,
+    [],
+    [
+      {
+        name: "",
+        sql: "CREATE TRIGGER guard BEFORE INSERT ON t BEGIN SELECT 1; END",
+      },
+    ],
+    [{ name: "guard", sql: "SELECT 1" }],
+    [syntheticTriggers[0], syntheticTriggers[0]],
+  ];
+
+  for (const capture of malformedCaptures)
+    assert.throws(
+      () => recoveryTools.buildTriggerReplaySql(capture),
+      /trigger/i,
+    );
+});
+
+test("compares_restored_trigger_names_and_ddl_exactly", () => {
+  assert.deepEqual(
+    recoveryTools.compareTriggerCaptures(syntheticTriggers, syntheticTriggers),
+    [],
+  );
+  assert.deepEqual(
+    recoveryTools.compareTriggerCaptures(syntheticTriggers, [
+      syntheticTriggers[1],
+      syntheticTriggers[2],
+    ]),
+    ['trigger.missing.audit"guard'],
+  );
+  const replaced = syntheticTriggers.map((trigger) => ({ ...trigger }));
+  replaced[0].sql = `${replaced[0].sql} SELECT 2;`;
+  assert.deepEqual(
+    recoveryTools.compareTriggerCaptures(syntheticTriggers, replaced),
+    ['trigger.sql_mismatch.audit"guard'],
+  );
+});
+
+test("fails_if_the_restored_trigger_set_differs_after_reinstall", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const calls = [];
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: successfulExecutor(calls, {
+      verifiedTriggers: syntheticTriggers.slice(1),
+    }),
+  });
+
+  assert.equal(result.status, "FAIL");
+  assert.ok(result.mismatches.includes('trigger.missing.audit"guard'));
+  assert.doesNotMatch(readFileSync(result.paths.report, "utf8"), /PASS/);
+  const restoredConfig = join(result.paths.restored, "wrangler.jsonc");
+  assert.equal(
+    calls.some(({ args }) => {
+      const wranglerArgs = args.slice(1);
+      return (
+        wranglerArgs[0] === "r2" &&
+        wranglerArgs[2] === "put" &&
+        wranglerArgs[wranglerArgs.indexOf("--config") + 1] === restoredConfig
+      );
+    }),
+    false,
+  );
+});
+
+test("halts_when_captured_triggers_cannot_be_reinstalled", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const calls = [];
+  const executor = successfulExecutor(calls);
+  const failureExecutor = (file, args, options) => {
+    const wranglerArgs = args.slice(1);
+    const fileIndex = wranglerArgs.indexOf("--file");
+    if (
+      wranglerArgs[0] === "d1" &&
+      wranglerArgs[1] === "execute" &&
+      fileIndex !== -1 &&
+      wranglerArgs[fileIndex + 1].endsWith("/create-triggers.sql")
+    ) {
+      calls.push({ args, options });
+      throw Object.assign(new Error("synthetic reinstall failure"), {
+        status: 19,
+      });
+    }
+    return executor(file, args, options);
+  };
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: failureExecutor,
+  });
+
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.commandFailure.exitCode, 19);
+  assert.doesNotMatch(readFileSync(result.paths.report, "utf8"), /PASS/);
+  const restoredConfig = join(result.paths.restored, "wrangler.jsonc");
+  assert.equal(
+    calls.some(({ args }) => {
+      const wranglerArgs = args.slice(1);
+      return (
+        wranglerArgs[0] === "r2" &&
+        wranglerArgs[2] === "put" &&
+        wranglerArgs[wranglerArgs.indexOf("--config") + 1] === restoredConfig
+      );
+    }),
+    false,
+  );
+});
+
+test("does_not_accept_an_unrelated_failure_as_tombstone_enforcement", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const calls = [];
+  const executor = successfulExecutor(calls);
+  const failureExecutor = (file, args, options) => {
+    const wranglerArgs = args.slice(1);
+    const fileIndex = wranglerArgs.indexOf("--file");
+    if (
+      wranglerArgs[0] === "d1" &&
+      wranglerArgs[1] === "execute" &&
+      fileIndex !== -1 &&
+      readFileSync(wranglerArgs[fileIndex + 1], "utf8").includes(
+        "reuse-tombstoned-link-probe",
+      )
+    ) {
+      calls.push({ args, options });
+      throw Object.assign(new Error("synthetic local command error"), {
+        status: 23,
+        stderr: Buffer.from("A different local D1 failure"),
+      });
+    }
+    return executor(file, args, options);
+  };
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: failureExecutor,
+  });
+
+  assert.equal(result.status, "FAIL");
+  assert.equal(result.commandFailure.exitCode, 23);
+  assert.match(
+    readFileSync(result.paths.report, "utf8"),
+    /Status: \*\*FAIL\*\*/,
+  );
+  assert.doesNotMatch(
+    readFileSync(result.paths.report, "utf8"),
+    /Status: \*\*PASS\*\*/,
+  );
+  assert.equal(
+    calls.some(({ args }) => {
+      const wranglerArgs = args.slice(1);
+      return (
+        wranglerArgs[0] === "d1" &&
+        wranglerArgs[1] === "execute" &&
+        wranglerArgs.includes("--json") &&
+        readFileSync(
+          wranglerArgs[wranglerArgs.indexOf("--file") + 1],
+          "utf8",
+        ).includes("probe_slug_reservation_count")
+      );
+    }),
+    false,
+  );
+});
+
+test("fails_closed_when_quick_check_is_not_ok", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: successfulExecutor([], {
+      quickCheckRows: [{ quick_check: "database disk image is malformed" }],
+    }),
+  });
+
+  assert.equal(result.status, "FAIL");
+  assert.ok(result.mismatches.includes("restored.quick_check"));
+  assert.match(
+    readFileSync(result.paths.report, "utf8"),
+    /Status: \*\*FAIL\*\*/,
+  );
+});
+
+test("fails_closed_when_foreign_key_check_returns_rows", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: successfulExecutor([], {
+      foreignKeyRows: [{ table: "synthetic_table", rowid: 1 }],
+    }),
+  });
+
+  assert.equal(result.status, "FAIL");
+  assert.ok(result.mismatches.includes("restored.foreign_key_check"));
+  assert.match(
+    readFileSync(result.paths.report, "utf8"),
+    /Status: \*\*FAIL\*\*/,
+  );
+});
+
+test("fails_closed_when_foreign_key_check_envelope_is_malformed", async (t) => {
+  const malformedResponses = [
+    ["empty statement list", []],
+    ["missing results", [{}]],
+    ["missing success state", [{ results: [] }]],
+    ["non-array results", [{ success: true, results: null }]],
+    [
+      "multiple statements",
+      [
+        { success: true, results: [] },
+        { success: true, results: [] },
+      ],
+    ],
+  ];
+
+  for (const [name, foreignKeyResponse] of malformedResponses)
+    await t.test(name, async (t) => {
+      const root = temporaryRepo(t);
+      mkdirSync(join(root, "migrations"));
+      const result = await runRecoveryDrill({
+        repoRoot: root,
+        execute: successfulExecutor([], { foreignKeyResponse }),
+      });
+
+      assert.equal(result.status, "FAIL");
+      assert.match(
+        readFileSync(result.paths.report, "utf8"),
+        /Status: \*\*FAIL\*\*/,
+      );
+    });
 });
 
 test("halts_on_command_failure_without_false_pass", async (t) => {
@@ -521,6 +954,21 @@ test("detects_each_recovery_snapshot_mismatch", () => {
     changed.object[key] = value;
     assert.deepEqual(compareSnapshots(source, changed), [field], field);
   }
+});
+
+test("seeds_a_live_url_link_and_a_deleted_slug_reservation", async (t) => {
+  const root = temporaryRepo(t);
+  mkdirSync(join(root, "migrations"));
+  const result = await runRecoveryDrill({
+    repoRoot: root,
+    execute: successfulExecutor([]),
+  });
+  const seed = readFileSync(join(result.paths.source, "seed.sql"), "utf8");
+
+  assert.match(seed, /INSERT INTO distribution_links/);
+  assert.match(seed, /'synthetic-recovery-live', 'url'/);
+  assert.match(seed, /'synthetic-recovery-deleted', 'url'/);
+  assert.match(seed, /DELETE FROM distribution_links/);
 });
 
 test("rejects_unknown_cli_arguments_before_allocating_a_run", () => {
