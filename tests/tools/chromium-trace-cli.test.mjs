@@ -551,6 +551,43 @@ function applyBrave15585Identity(manifest) {
   manifest.status = "installed-brave-schema-probe";
 }
 
+function applyAndroidBrave15585Identity(manifest) {
+  manifest.browser = {
+    product: "Runtime Android browser observation",
+    version: "155.0.8059.85",
+  };
+  manifest.browserIdentity = {
+    platform: { os: "Android", version: "16", apiLevel: 36 },
+    package: {
+      identifier: "com.brave.browser",
+      versionName: "1.97.59",
+      versionCode: 429705904,
+      minSdk: 32,
+      targetSdk: 37,
+      artifacts: {
+        "base.apk":
+          "b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33",
+        "split_chrome.apk":
+          "055ae12ddb53aac8c7b6d9064d725111f6ab3e7a390f0b04ce01245697fb39d8",
+        "split_config.zh.apk":
+          "d151e31a957eadb09d11b85d117d8574f334de045cf1e52d7b61c26e407b6f68",
+        "split_on_demand.apk":
+          "4c4d15e114b1e5689f6d48734aa4de960c53b8918d0698b2f632534fcd1cc893",
+      },
+    },
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  manifest.qualification = "installed-android-brave-schema-probe";
+  manifest.status = "installed-android-brave-schema-probe";
+}
+
 function rewriteObservedSidecar(input, sidecar) {
   const json =
     sidecar.schemaVersion === 2
@@ -1955,6 +1992,66 @@ test("analyzes the exact Brave 155.0.8059.85 tuple against the preserved version
   );
   assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
   assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+});
+
+test("forwards the exact Android Brave observation into a redacted diagnostic CLI crosswalk", (t) => {
+  const input = makeFixture(t, {
+    traceText: observedTraceText(),
+    traceName: "android-brave15585-synthetic.trace.json",
+  });
+  applyAndroidBrave15585Identity(input.manifest);
+  input.manifest.privateCapturePath = "/Users/private/android/base.apk";
+  writeObservedManifest(input);
+
+  const result = runCli([input.manifestPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const crosswalk = JSON.parse(result.stdout).traces[0]
+    .discreteEventTimingCrosswalk;
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    platform: "Android",
+    observedPackageIdentifier: "com.brave.browser",
+    observedPackageVersion: "1.97.59",
+    observedRuntimeRevision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId:
+        "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99",
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-android-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes(
+      "INSTALLED_ANDROID_BRAVE_SCHEMA_PROBE_ONLY",
+    ),
+  );
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal("pinnedSourceRevision" in crosswalk.methodScope, false);
+  assert.equal("observedBundleRevision" in crosswalk.methodScope, false);
+  for (const privateValue of [
+    privateMarker,
+    "/Users/private/android/base.apk",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false, privateValue);
+  }
 });
 
 test("v3 CLI requires the actual manifest-bound run cleanup receipt before analysis", async (t) => {
