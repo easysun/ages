@@ -203,6 +203,43 @@ const knownBrave15585Observations = {
   qualification: "installed-brave-schema-probe",
   status: "installed-brave-schema-probe",
 };
+
+const knownAndroidBrave15585Observations = {
+  browser: {
+    product: "Runtime Android browser observation",
+    version: "155.0.8059.85",
+  },
+  browserIdentity: {
+    platform: { os: "Android", version: "16", apiLevel: 36 },
+    package: {
+      identifier: "com.brave.browser",
+      versionName: "1.97.59",
+      versionCode: 429705904,
+      minSdk: 32,
+      targetSdk: 37,
+      artifacts: {
+        "base.apk":
+          "b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33",
+        "split_chrome.apk":
+          "055ae12ddb53aac8c7b6d9064d725111f6ab3e7a390f0b04ce01245697fb39d8",
+        "split_config.zh.apk":
+          "d151e31a957eadb09d11b85d117d8574f334de045cf1e52d7b61c26e407b6f68",
+        "split_on_demand.apk":
+          "4c4d15e114b1e5689f6d48734aa4de960c53b8918d0698b2f632534fcd1cc893",
+      },
+    },
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-android-brave-schema-probe",
+  status: "installed-android-brave-schema-probe",
+};
 const knownBrave15585VersionThreeObservations = {
   browser: structuredClone(knownBrave15585Observations.browser),
   browserIdentity: structuredClone(knownBrave15585Observations.browserIdentity),
@@ -267,6 +304,33 @@ function brave15585Crosswalk(
   ).discreteEventTimingCrosswalk;
 }
 
+function androidBrave15585Analysis(
+  trace = makeBrave155Trace(),
+  observations = knownAndroidBrave15585Observations,
+  traceRecord = {
+    trace: "android-brave15585-synthetic.trace.json",
+    dataLossOccurred: false,
+  },
+  observerEvidence,
+) {
+  return analyzeTrace(trace, traceRecord, [], observations, observerEvidence);
+}
+
+function androidBrave15585Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownAndroidBrave15585Observations,
+  traceRecord,
+) {
+  return androidBrave15585Analysis(
+    trace,
+    observations,
+    traceRecord ?? {
+      trace: "android-brave15585-synthetic.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
+}
+
 function assertUnsupportedBrave155(crosswalk) {
   assert.equal(crosswalk.status, "unavailable");
   assert.deepEqual(crosswalk.candidates, []);
@@ -301,6 +365,21 @@ function assertUnsupportedBrave15585(crosswalk) {
     "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
   ]);
   assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+function assertUnsupportedAndroidBrave15585(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /TRACE_PRIVATE_|\/Users\/private/,
+  );
 }
 
 const observedSourceHash =
@@ -1579,6 +1658,421 @@ test("accepts only the exact Brave 155.0.8059.85 tuple with diagnostic source co
     mutate(observations);
     assertUnsupportedBrave15585(brave15585Crosswalk(undefined, observations));
   }
+});
+
+test("accepts the exact Android Brave tuple as a diagnostic-only crosswalk with closed formal gates", () => {
+  const traceRecord = {
+    trace: "TRACE_PRIVATE_/Users/private/android/base.apk",
+    dataLossOccurred: false,
+  };
+  const crosswalk = androidBrave15585Crosswalk(
+    makeBrave155Trace(),
+    knownAndroidBrave15585Observations,
+    traceRecord,
+  );
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    platform: "Android",
+    observedPackageIdentifier: "com.brave.browser",
+    observedPackageVersion: "1.97.59",
+    observedRuntimeRevision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId:
+        "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99",
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-android-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  for (const reason of [
+    "ACTION_ATTRIBUTION_UNPROVEN",
+    "INTERACTION_AGGREGATION_UNPROVEN",
+    "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+    "MODALITY_EQUIVALENCE_UNPROVEN",
+    "INSTALLED_ANDROID_BRAVE_SCHEMA_PROBE_ONLY",
+    "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+  ]) {
+    assert.ok(crosswalk.gateReasonCodes.includes(reason), reason);
+  }
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal("pinnedSourceRevision" in crosswalk.methodScope, false);
+  assert.equal("observedBundleRevision" in crosswalk.methodScope, false);
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /TRACE_PRIVATE_|\/Users\/private/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33/,
+  );
+
+  function reverseKeys(value) {
+    if (Array.isArray(value)) return value.map(reverseKeys);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .reverse()
+        .map(([key, nested]) => [key, reverseKeys(nested)]),
+    );
+  }
+  const reordered = androidBrave15585Crosswalk(
+    makeBrave155Trace(),
+    reverseKeys(knownAndroidBrave15585Observations),
+  );
+  assert.equal(reordered.status, "diagnostic-only");
+  assert.equal(reordered.candidates.length, 1);
+});
+
+test("rejects missing, mistyped, changed, and unknown Android Brave observation fields", () => {
+  const leafPaths = [
+    ["browser", "product"],
+    ["browser", "version"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+    ["browserIdentity", "platform", "os"],
+    ["browserIdentity", "platform", "version"],
+    ["browserIdentity", "platform", "apiLevel"],
+    ["browserIdentity", "package", "identifier"],
+    ["browserIdentity", "package", "versionName"],
+    ["browserIdentity", "package", "versionCode"],
+    ["browserIdentity", "package", "minSdk"],
+    ["browserIdentity", "package", "targetSdk"],
+    ["browserIdentity", "package", "artifacts", "base.apk"],
+    ["browserIdentity", "package", "artifacts", "split_chrome.apk"],
+    ["browserIdentity", "package", "artifacts", "split_config.zh.apk"],
+    ["browserIdentity", "package", "artifacts", "split_on_demand.apk"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["qualification"],
+    ["status"],
+  ];
+  const objectPaths = [
+    ["browser"],
+    ["browserIdentity"],
+    ["browserIdentity", "platform"],
+    ["browserIdentity", "package"],
+    ["browserIdentity", "package", "artifacts"],
+    ["browserIdentity", "runtime"],
+  ];
+  const readPath = (value, path) =>
+    path.reduce((parent, key) => parent[key], value);
+  const writePath = (value, path, replacement) => {
+    const parent = readPath(value, path.slice(0, -1));
+    parent[path.at(-1)] = replacement;
+  };
+  const deletePath = (value, path) => {
+    const parent = readPath(value, path.slice(0, -1));
+    delete parent[path.at(-1)];
+  };
+
+  for (const path of leafPaths) {
+    const value = readPath(knownAndroidBrave15585Observations, path);
+    const missing = structuredClone(knownAndroidBrave15585Observations);
+    deletePath(missing, path);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, missing),
+    );
+
+    const mistyped = structuredClone(knownAndroidBrave15585Observations);
+    writePath(
+      mistyped,
+      path,
+      typeof value === "string" ? 1 : "TRACE_PRIVATE_WRONG_TYPE",
+    );
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, mistyped),
+    );
+
+    const changed = structuredClone(knownAndroidBrave15585Observations);
+    writePath(
+      changed,
+      path,
+      typeof value === "string" ? `${value}-changed` : value + 1,
+    );
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, changed),
+    );
+  }
+
+  for (const path of objectPaths) {
+    const missing = structuredClone(knownAndroidBrave15585Observations);
+    deletePath(missing, path);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, missing),
+    );
+
+    const mistyped = structuredClone(knownAndroidBrave15585Observations);
+    writePath(mistyped, path, null);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, mistyped),
+    );
+
+    const withUnknownField = structuredClone(
+      knownAndroidBrave15585Observations,
+    );
+    const parent = readPath(withUnknownField, path);
+    parent.unexpectedField = "TRACE_PRIVATE_UNKNOWN_FIELD";
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, withUnknownField),
+    );
+  }
+
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, null),
+  );
+  const rootWithUnknownField = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  rootWithUnknownField.unexpectedField = "TRACE_PRIVATE_UNKNOWN_ROOT_FIELD";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, rootWithUnknownField),
+  );
+
+  const desktopSubstitution = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  desktopSubstitution.browserIdentity = structuredClone(
+    knownBrave15585Observations.browserIdentity,
+  );
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, desktopSubstitution),
+  );
+
+  const mobileUserAgentConflict = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  mobileUserAgentConflict.browserIdentity.runtime.userAgent =
+    "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, mobileUserAgentConflict),
+  );
+
+  const desktopUserAgent = structuredClone(knownAndroidBrave15585Observations);
+  desktopUserAgent.browserIdentity.runtime.userAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, desktopUserAgent),
+  );
+
+  const osVersionMismatch = structuredClone(knownAndroidBrave15585Observations);
+  osVersionMismatch.browserIdentity.platform.version = "15";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, osVersionMismatch),
+  );
+
+  const artifactPath = structuredClone(knownAndroidBrave15585Observations);
+  artifactPath.browserIdentity.package.artifacts["base.apk"] =
+    "/Users/private/base.apk";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, artifactPath),
+  );
+
+  const extraArtifact = structuredClone(knownAndroidBrave15585Observations);
+  extraArtifact.browserIdentity.package.artifacts["split_extra.apk"] =
+    "TRACE_PRIVATE_EXTRA_ARTIFACT";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, extraArtifact),
+  );
+
+  const artifactsArray = structuredClone(knownAndroidBrave15585Observations);
+  artifactsArray.browserIdentity.package.artifacts = [
+    ...Object.values(artifactsArray.browserIdentity.package.artifacts),
+  ];
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, artifactsArray),
+  );
+});
+
+test("keeps Android Brave outside observer attribution and rejects version-three profile selection", () => {
+  const versionTwo = makeVersionTwoObserverEvidence();
+  const versionTwoAnalysis = androidBrave15585Analysis(
+    makeVersionTwoTrace(),
+    knownAndroidBrave15585Observations,
+    versionTwo.traceRecord,
+    {
+      declaration: versionTwo.declaration,
+      sidecar: versionTwo.sidecar,
+      capture: versionTwo.capture,
+    },
+  );
+  assert.equal(
+    versionTwoAnalysis.discreteEventTimingCrosswalk.status,
+    "diagnostic-only",
+  );
+  assert.equal(
+    versionTwoAnalysis.discreteEventTimingCrosswalk.candidates.length,
+    1,
+  );
+  assert.equal(versionTwoAnalysis.observedDiscreteInputs.status, "unavailable");
+  assert.equal(versionTwoAnalysis.observedDiscreteInputs.counts.accepted, 0);
+  assert.ok(
+    versionTwoAnalysis.observedDiscreteInputs.rejectionCounts.some(
+      ({ code }) => code === "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+    ),
+  );
+  assert.deepEqual(
+    versionTwoAnalysis.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+
+  const versionThree = makeVersionThreeObserverEvidence();
+  const versionThreeAnalysis = analyzeTrace(
+    makeVersionThreeTrace(),
+    versionThree.traceRecord,
+    [],
+    knownAndroidBrave15585Observations,
+    {
+      declaration: versionThree.declaration,
+      sidecar: versionThree.sidecar,
+      capture: versionThree.capture,
+    },
+  );
+  assertUnsupportedAndroidBrave15585(
+    versionThreeAnalysis.discreteEventTimingCrosswalk,
+  );
+  assert.equal(
+    versionThreeAnalysis.observedDiscreteInputs.status,
+    "unavailable",
+  );
+  assert.ok(
+    versionThreeAnalysis.observedDiscreteInputs.rejectionCounts.some(
+      ({ code }) => code === "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+    ),
+  );
+  assert.deepEqual(
+    versionThreeAnalysis.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+});
+
+test("bounds all Android Brave legacy and modern interaction IDs and offsets to signed int32", () => {
+  const fields = [
+    {
+      owner: "legacy",
+      key: "interactionId",
+      peerOwner: "modern",
+      peerKey: "interaction_id",
+    },
+    {
+      owner: "legacy",
+      key: "interactionOffset",
+      peerOwner: "modern",
+      peerKey: "interaction_offset",
+    },
+    {
+      owner: "modern",
+      key: "interaction_id",
+      peerOwner: "legacy",
+      peerKey: "interactionId",
+    },
+    {
+      owner: "modern",
+      key: "interaction_offset",
+      peerOwner: "legacy",
+      peerKey: "interactionOffset",
+    },
+  ];
+  const boundaries = [
+    ["zero", 0n, true],
+    ["signed maximum", 2147483647n, true],
+    ["negative one", -1n, false],
+    ["signed maximum plus one", 2147483648n, false],
+  ];
+
+  for (const field of fields) {
+    for (const [label, value, supported] of boundaries) {
+      const trace = makeBrave155Trace();
+      const legacy = trace.traceEvents[0].args.data;
+      const modern = trace.traceEvents[1].args.event_timing;
+      const target = field.owner === "legacy" ? legacy : modern;
+      target[field.key] = value;
+      if (supported) {
+        const peer = field.peerOwner === "legacy" ? legacy : modern;
+        peer[field.peerKey] = value;
+      }
+
+      const crosswalk = androidBrave15585Crosswalk(trace);
+      if (supported) {
+        assert.equal(
+          crosswalk.status,
+          "diagnostic-only",
+          `${field.owner}.${field.key}: ${label}`,
+        );
+        assert.equal(
+          crosswalk.candidates.length,
+          1,
+          `${field.owner}.${field.key}: ${label}`,
+        );
+      } else {
+        assert.deepEqual(
+          crosswalk.candidates,
+          [],
+          `${field.owner}.${field.key}: ${label}`,
+        );
+        assert.ok(
+          crosswalk.rejectionCounts.some(
+            ({ code, count }) =>
+              code === "BRAVE_SIGNED_IDENTITY_OVERFLOW_UNVERIFIED" &&
+              count === 1,
+          ),
+          `${field.owner}.${field.key}: ${label}`,
+        );
+      }
+    }
+  }
+});
+
+test("preserves Android Brave processing endpoint and fallback evidence gates", () => {
+  const endpointMismatch = makeBrave155TraceFromRaw((events) => {
+    events[2].ts = 10006;
+  });
+  const endpointCrosswalk = androidBrave15585Crosswalk(endpointMismatch);
+  assert.deepEqual(endpointCrosswalk.candidates, []);
+  assert.ok(
+    endpointCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "PROCESSING_ENDPOINT_MISMATCH",
+    ),
+  );
+
+  const wrongFallbackReason = makeBrave155Trace();
+  wrongFallbackReason.traceEvents[1].args.fallback_reason = "unknown";
+  const wrongReasonCrosswalk = androidBrave15585Crosswalk(wrongFallbackReason);
+  assert.deepEqual(wrongReasonCrosswalk.candidates, []);
+  assert.ok(
+    wrongReasonCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
+
+  const nonzeroFallbackEndpoint = makeBrave155Trace();
+  nonzeroFallbackEndpoint.traceEvents[1].args.fallback_time = 1n;
+  const fallbackTimeCrosswalk = androidBrave15585Crosswalk(
+    nonzeroFallbackEndpoint,
+  );
+  assert.deepEqual(fallbackTimeCrosswalk.candidates, []);
+  assert.ok(
+    fallbackTimeCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
 });
 
 test("accepts the preserved .80 retained-node protocol catalog for exact Brave .85 as a diagnostic compatibility input", () => {

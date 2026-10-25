@@ -295,6 +295,20 @@ const BRAVE15585_METHOD_SCOPE = {
   navigationDocumentIdentity: "not-inferred",
   originScope: "capture-case + renderer PID + frame",
 };
+const ANDROID_BRAVE15585_METHOD_SCOPE = {
+  observedBrowserVersion: "155.0.8059.85",
+  platform: "Android",
+  observedPackageIdentifier: "com.brave.browser",
+  observedPackageVersion: "1.97.59",
+  observedRuntimeRevision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+  chromiumSourceIdentity: "unverified",
+  protocolCatalogCompatibility:
+    BRAVE15585_METHOD_SCOPE.protocolCatalogCompatibility,
+  evidenceClass: "installed-android-brave-schema-probe",
+  vendorPatchIdentity: "unverified",
+  navigationDocumentIdentity: "not-inferred",
+  originScope: "capture-case + renderer PID + frame",
+};
 const BRAVE155_GATE_REASONS = [
   "ACTION_ATTRIBUTION_UNPROVEN",
   "INTERACTION_AGGREGATION_UNPROVEN",
@@ -304,11 +318,22 @@ const BRAVE155_GATE_REASONS = [
   "VENDOR_PATCH_IDENTITY_UNVERIFIED",
   "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
 ];
+const ANDROID_BRAVE155_GATE_REASONS = [
+  "ACTION_ATTRIBUTION_UNPROVEN",
+  "INTERACTION_AGGREGATION_UNPROVEN",
+  "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+  "MODALITY_EQUIVALENCE_UNPROVEN",
+  "INSTALLED_ANDROID_BRAVE_SCHEMA_PROBE_ONLY",
+  "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+  "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+];
 
 const BROWSER_SOURCE_PROFILE_UNSUPPORTED = "BROWSER_SOURCE_PROFILE_UNSUPPORTED";
 const PLAYWRIGHT_CHROMIUM_PRODUCT = "Playwright Chromium";
 const PLAYWRIGHT_RUNTIME_PRODUCT = `Chrome/${CROSSWALK_METHOD_SCOPE.observedBrowserVersion}`;
 const BRAVE155_BROWSER_PRODUCT = "Runtime browser observation";
+const ANDROID_BRAVE15585_BROWSER_PRODUCT =
+  "Runtime Android browser observation";
 const BRAVE155_RUNTIME_PRODUCT = "Chrome/155.0.8059.40";
 const BRAVE155_USER_AGENT_PRODUCT_VERSION = "155.0.0.0";
 const BRAVE155_BUNDLE_REVISION = "b01cdf43be4b4d5559bf7e58229e666e24454f50";
@@ -1666,7 +1691,8 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
   if (
     (profile === "brave155" ||
       profile === "brave15580" ||
-      profile === "brave15585") &&
+      profile === "brave15585" ||
+      profile === "android-brave15585") &&
     !withinBrave155SignedInteractionBounds(
       [data.interactionId, data.interactionOffset],
       rejections,
@@ -1803,7 +1829,8 @@ function modernCrosswalkEntry(span, rejections, profile) {
   if (
     (profile === "brave155" ||
       profile === "brave15580" ||
-      profile === "brave15585") &&
+      profile === "brave15585" ||
+      profile === "android-brave15585") &&
     !withinBrave155SignedInteractionBounds(
       [timing.interaction_id, timing.interaction_offset],
       rejections,
@@ -2215,6 +2242,81 @@ function supportsBrave15585Profile(observations) {
   );
 }
 
+function supportsAndroidBrave15585Profile(observations) {
+  if (
+    !hasExactFields(observations, [
+      "browser",
+      "browserIdentity",
+      "qualification",
+      "status",
+    ]) ||
+    observations.qualification !== "installed-android-brave-schema-probe" ||
+    observations.status !== "installed-android-brave-schema-probe" ||
+    !hasExactFields(observations.browser, ["product", "version"]) ||
+    observations.browser.product !== ANDROID_BRAVE15585_BROWSER_PRODUCT ||
+    observations.browser.version !== "155.0.8059.85"
+  ) {
+    return false;
+  }
+
+  const identity = observations.browserIdentity;
+  if (
+    !hasExactFields(identity, [
+      "platform",
+      "package",
+      "runtime",
+      "chromiumSourceIdentity",
+    ]) ||
+    identity.chromiumSourceIdentity !== "unverified" ||
+    !hasExactFields(identity.platform, ["os", "version", "apiLevel"]) ||
+    identity.platform.os !== "Android" ||
+    identity.platform.version !== "16" ||
+    identity.platform.apiLevel !== 36 ||
+    !hasExactFields(identity.package, [
+      "identifier",
+      "versionName",
+      "versionCode",
+      "minSdk",
+      "targetSdk",
+      "artifacts",
+    ]) ||
+    identity.package.identifier !== "com.brave.browser" ||
+    identity.package.versionName !== "1.97.59" ||
+    identity.package.versionCode !== 429705904 ||
+    identity.package.minSdk !== 32 ||
+    identity.package.targetSdk !== 37 ||
+    !hasExactFields(identity.package.artifacts, [
+      "base.apk",
+      "split_chrome.apk",
+      "split_config.zh.apk",
+      "split_on_demand.apk",
+    ]) ||
+    identity.package.artifacts["base.apk"] !==
+      "b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33" ||
+    identity.package.artifacts["split_chrome.apk"] !==
+      "055ae12ddb53aac8c7b6d9064d725111f6ab3e7a390f0b04ce01245697fb39d8" ||
+    identity.package.artifacts["split_config.zh.apk"] !==
+      "d151e31a957eadb09d11b85d117d8574f334de045cf1e52d7b61c26e407b6f68" ||
+    identity.package.artifacts["split_on_demand.apk"] !==
+      "4c4d15e114b1e5689f6d48734aa4de960c53b8918d0698b2f632534fcd1cc893" ||
+    !hasExactFields(identity.runtime, [
+      "version",
+      "product",
+      "revision",
+      "userAgent",
+    ]) ||
+    identity.runtime.version !== "155.0.8059.85" ||
+    identity.runtime.product !== "Chrome/155.0.8059.85" ||
+    identity.runtime.revision !== "@c7357bfd2a76c2467ba1ae62593a81ae92c0520" ||
+    identity.runtime.userAgent !==
+      "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function supportsBrave15585VersionThreeProfile(observations) {
   return (
     isRecord(observations) &&
@@ -2267,6 +2369,16 @@ function selectEventTimingCrosswalkProfile(
         : null;
     }
     return supportsBrave15585Profile(observations) ? "brave15585" : null;
+  }
+  if (
+    observations.browser.product === ANDROID_BRAVE15585_BROWSER_PRODUCT &&
+    observations.browser.version === "155.0.8059.85"
+  ) {
+    return allowVersionThreeDiagnostic
+      ? null
+      : supportsAndroidBrave15585Profile(observations)
+        ? "android-brave15585"
+        : null;
   }
   return null;
 }
@@ -4085,13 +4197,15 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
       ),
       rejectionCounts: diagnosticList(rejectionCounts),
       methodScope: {
-        ...(profile === "brave15585"
-          ? BRAVE15585_METHOD_SCOPE
-          : profile === "brave15580"
-            ? BRAVE15580_METHOD_SCOPE
-            : profile === "brave155"
-              ? BRAVE155_METHOD_SCOPE
-              : CROSSWALK_METHOD_SCOPE),
+        ...(profile === "android-brave15585"
+          ? ANDROID_BRAVE15585_METHOD_SCOPE
+          : profile === "brave15585"
+            ? BRAVE15585_METHOD_SCOPE
+            : profile === "brave15580"
+              ? BRAVE15580_METHOD_SCOPE
+              : profile === "brave155"
+                ? BRAVE155_METHOD_SCOPE
+                : CROSSWALK_METHOD_SCOPE),
       },
       formalActionStatus: "unavailable",
       formalActionSamples: [],
@@ -4100,7 +4214,9 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
         profile === "brave15580" ||
         profile === "brave15585"
           ? BRAVE155_GATE_REASONS
-          : CROSSWALK_GATE_REASONS,
+          : profile === "android-brave15585"
+            ? ANDROID_BRAVE155_GATE_REASONS
+            : CROSSWALK_GATE_REASONS,
     },
     candidateByBeginIndex,
   };
