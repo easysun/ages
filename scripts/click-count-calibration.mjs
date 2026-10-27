@@ -54,15 +54,15 @@ export function createClickCountCalibration(target, documentId) {
   try {
     performance = window.performance;
     eventCounts = performance?.eventCounts;
+    if (
+      !performance ||
+      !eventCounts ||
+      typeof performance.now !== "function" ||
+      typeof eventCounts.entries !== "function"
+    ) {
+      throw new Error();
+    }
   } catch {
-    throw new Error("CALIBRATION_COUNTER_UNAVAILABLE");
-  }
-  if (
-    !performance ||
-    !eventCounts ||
-    typeof performance.now !== "function" ||
-    typeof eventCounts.entries !== "function"
-  ) {
     throw new Error("CALIBRATION_COUNTER_UNAVAILABLE");
   }
 
@@ -333,11 +333,9 @@ export function createClickCountCalibration(target, documentId) {
           if (!countersAreValid) {
             invalidReasons.add("COUNTER_INVALID");
           }
-          if (clockIsMonotonic && countersAreValid) {
+          if (timeOriginMatches && clockIsMonotonic && countersAreValid) {
             after = snapshot;
-            if (timeOriginMatches) {
-              clickDelta = after.counters.click - before.counters.click;
-            }
+            clickDelta = after.counters.click - before.counters.click;
           }
         }
       }

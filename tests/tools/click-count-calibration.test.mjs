@@ -372,6 +372,46 @@ test("constructor rejects unsafe, missing, throwing, oversized, and malformed co
     assert.equal(fixture.listenerCount(), 0);
   });
 
+  await t.test(
+    "throwing API getter probes return sanitized unavailable errors",
+    async (t) => {
+      const cases = [
+        [
+          "performance.now getter",
+          (fixture) => {
+            Object.defineProperty(fixture.performance, "now", {
+              get() {
+                throw new Error("private performance detail");
+              },
+            });
+          },
+        ],
+        [
+          "eventCounts.entries getter",
+          (fixture) => {
+            Object.defineProperty(fixture.counters.source, "entries", {
+              get() {
+                throw new Error("private counter detail");
+              },
+            });
+          },
+        ],
+      ];
+
+      for (const [name, replaceGetter] of cases) {
+        await t.test(name, () => {
+          const fixture = createFixture();
+          replaceGetter(fixture);
+          assert.throws(
+            () => createClickCountCalibration(fixture.target, "doc-8b"),
+            { message: "CALIBRATION_COUNTER_UNAVAILABLE" },
+          );
+          assert.equal(fixture.listenerCount(), 0);
+        });
+      }
+    },
+  );
+
   await t.test("duplicate counter key", () => {
     const fixture = createFixture();
     fixture.counters.source.entries = () =>
@@ -584,6 +624,7 @@ test("clock boundaries allow equality and reject inversions without latency infe
     const result = collector.close();
     assert.equal(result.status, "invalid");
     assert.ok(reasonCodes(result).includes("DOCUMENT_CHANGED"));
+    assert.equal(result.after, null);
     assert.equal(result.clickDelta, null);
     assert.equal(fixture.listenerCount(), 0);
   });
