@@ -1757,7 +1757,7 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
     "timeStamp",
     rejectRelative,
   );
-  const processingStartUs = recoverRelativeMicroseconds(
+  const documentProcessingStartUs = recoverRelativeMicroseconds(
     data,
     "processingStart",
     rejectRelative,
@@ -1769,7 +1769,7 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
   );
   if (
     timeStampUs === null ||
-    processingStartUs === null ||
+    documentProcessingStartUs === null ||
     processingEndUs === null
   ) {
     return null;
@@ -1780,7 +1780,7 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
   }
 
   const originUs = span.beginTimestampUs - timeStampUs;
-  const absoluteProcessingStartUs = originUs + processingStartUs;
+  const absoluteProcessingStartUs = originUs + documentProcessingStartUs;
   const absoluteProcessingEndUs = originUs + processingEndUs;
   if (
     absoluteProcessingStartUs < span.beginTimestampUs ||
@@ -1813,6 +1813,7 @@ function legacyCrosswalkEntry(span, captureCase, rejections, profile) {
     interactionOffset,
     originUs,
     processingStartUs: absoluteProcessingStartUs,
+    documentProcessingStartUs,
     processingEndUs: absoluteProcessingEndUs,
     beginTimestampUs: span.beginTimestampUs,
     endTimestampUs: span.endTimestampUs,
@@ -4470,8 +4471,20 @@ function compareIntegerToRational(integer, rational) {
   return difference < 0n ? -1 : difference > 0n ? 1 : 0;
 }
 
-function classifyInteractionWindow(processingStartUs, before, after) {
-  if (typeof processingStartUs !== "bigint") return "uncertain";
+function classifyInteractionWindow(documentProcessingStartUs, before, after) {
+  if (
+    typeof documentProcessingStartUs !== "bigint" ||
+    !isRecord(before) ||
+    !isRecord(after) ||
+    typeof before.observedAt !== "number" ||
+    !Number.isFinite(before.observedAt) ||
+    before.observedAt < 0 ||
+    typeof after.observedAt !== "number" ||
+    !Number.isFinite(after.observedAt) ||
+    after.observedAt < before.observedAt
+  ) {
+    return "uncertain";
+  }
   const beforeUs = binary64MillisecondsToMicroseconds(before.observedAt);
   const afterUs = binary64MillisecondsToMicroseconds(after.observedAt);
   const expandedBefore = shiftedRational(beforeUs, -11000);
@@ -4479,14 +4492,14 @@ function classifyInteractionWindow(processingStartUs, before, after) {
   const contractedAfter = shiftedRational(afterUs, -11000);
   const expandedAfter = shiftedRational(afterUs, 11000);
   if (
-    compareIntegerToRational(processingStartUs, expandedBefore) < 0 ||
-    compareIntegerToRational(processingStartUs, expandedAfter) > 0
+    compareIntegerToRational(documentProcessingStartUs, expandedBefore) < 0 ||
+    compareIntegerToRational(documentProcessingStartUs, expandedAfter) > 0
   ) {
     return "outside";
   }
   if (
-    compareIntegerToRational(processingStartUs, contractedBefore) > 0 &&
-    compareIntegerToRational(processingStartUs, contractedAfter) < 0
+    compareIntegerToRational(documentProcessingStartUs, contractedBefore) > 0 &&
+    compareIntegerToRational(documentProcessingStartUs, contractedAfter) < 0
   ) {
     return "inside";
   }
@@ -4639,21 +4652,11 @@ function partialInteractionEntry(item, traceRecord) {
       data.interactionId,
       rejections,
     );
-    const timestampUs = absoluteTraceMicroseconds(event);
-    const timeStampUs = recoverRelativeMicroseconds(
-      data,
-      "timeStamp",
-      () => {},
-    );
-    const processingStartUs = recoverRelativeMicroseconds(
+    const documentProcessingStartUs = recoverRelativeMicroseconds(
       data,
       "processingStart",
       () => {},
     );
-    const originUs =
-      timestampUs !== null && timeStampUs !== null
-        ? timestampUs - timeStampUs
-        : null;
     return {
       pid: event.pid,
       frame: data.frame,
@@ -4661,10 +4664,7 @@ function partialInteractionEntry(item, traceRecord) {
       interactionId,
       nodeId: exactInteger(data.nodeId),
       legacyType: data.type,
-      processingStartUs:
-        originUs !== null && processingStartUs !== null
-          ? originUs + processingStartUs
-          : null,
+      documentProcessingStartUs,
       beginIndex: item.index,
       captureCase: traceRecord.trace,
     };
@@ -4683,7 +4683,7 @@ function partialInteractionEntry(item, traceRecord) {
     interactionId,
     nodeId: exactInteger(timing.node_id),
     legacyType: MODERN_TO_LEGACY_EVENT_TYPES.get(timing.type) ?? null,
-    processingStartUs: absoluteTraceMicroseconds(event),
+    documentProcessingStartUs: null,
     beginIndex: item.index,
     captureCase: traceRecord.trace,
   };
@@ -4765,7 +4765,7 @@ function countClosureForInteractionGroup({
         pair.legacy.legacyType === eventType &&
         calibration.valid &&
         classifyInteractionWindow(
-          pair.legacy.processingStartUs,
+          pair.legacy.documentProcessingStartUs,
           calibration.before,
           calibration.after,
         ) === "inside",
@@ -4812,7 +4812,7 @@ function countClosureForInteractionGroup({
   for (const pair of groupPairs) {
     if (hasWindow) {
       const position = classifyInteractionWindow(
-        pair.legacy.processingStartUs,
+        pair.legacy.documentProcessingStartUs,
         calibration.before,
         calibration.after,
       );
@@ -4846,18 +4846,17 @@ function countClosureForInteractionGroup({
     }
     const position = hasWindow
       ? classifyInteractionWindow(
-          entry.processingStartUs,
+          entry.documentProcessingStartUs,
           calibration.before,
           calibration.after,
         )
       : null;
-    reasonCodes.add(
-      position === "outside"
-        ? "INTERACTION_MEMBER_OUTSIDE_WINDOW"
-        : position === "uncertain"
-          ? "INTERACTION_MEMBER_BOUNDARY_UNCERTAIN"
-          : reason,
-    );
+    if (position === "outside") {
+      reasonCodes.add("INTERACTION_MEMBER_OUTSIDE_WINDOW");
+    } else if (position === "uncertain") {
+      reasonCodes.add("INTERACTION_MEMBER_BOUNDARY_UNCERTAIN");
+    }
+    reasonCodes.add(reason);
     hasOpenCondition = true;
   }
   if (calibration.navigationEnabled) {
@@ -4946,9 +4945,9 @@ function analyzeChrome155InteractionGroups(
         pair.legacy.legacyType === "click" &&
         pair.legacy.nodeId === binding.targetNodeId &&
         classifyInteractionWindow(
-          pair.legacy.processingStartUs,
-          calibration.before ?? { observedAt: 0 },
-          calibration.after ?? { observedAt: 0 },
+          pair.legacy.documentProcessingStartUs,
+          calibration.before,
+          calibration.after,
         ) !== "outside",
     ),
     ...[
@@ -4965,9 +4964,9 @@ function analyzeChrome155InteractionGroups(
         entry.nodeId === binding.targetNodeId &&
         entry.legacyType === "click" &&
         classifyInteractionWindow(
-          entry.processingStartUs,
-          calibration.before ?? { observedAt: 0 },
-          calibration.after ?? { observedAt: 0 },
+          entry.documentProcessingStartUs,
+          calibration.before,
+          calibration.after,
         ) !== "outside",
     ),
   ];

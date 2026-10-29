@@ -5529,6 +5529,7 @@ function makeCalibratedInteraction({
   ],
   beforeObservedAt = 100,
   afterObservedAt = 300,
+  originUs = 9000,
   counterDeltas = {},
   navigationKeys = "absent",
   sidecarChanges = {},
@@ -5576,9 +5577,9 @@ function makeCalibratedInteraction({
       nodeId: member.nodeId ?? 311,
       interactionId: member.interactionId ?? 17,
       interactionOffset: member.interactionOffset ?? 18,
-      timeStamp: (begin - 9000) / 1000,
-      processingStart: (processStart - 9000) / 1000,
-      processingEnd: (processEnd - 9000) / 1000,
+      timeStamp: (begin - originUs) / 1000,
+      processingStart: (processStart - originUs) / 1000,
+      processingEnd: (processEnd - originUs) / 1000,
     });
     const modernArgs = modernBegin.args;
     const modernTiming = modernArgs.event_timing;
@@ -5598,7 +5599,7 @@ function makeCalibratedInteraction({
     if (member.endpoint === "fallback") {
       modernArgs.fallback_reason = "DoesNotNeedNextPaint";
       modernArgs.fallback_time = member.fallbackTime ?? end;
-      modernTiming.fallback_time_us = member.fallbackTimeUs ?? end - 9000;
+      modernTiming.fallback_time_us = member.fallbackTimeUs ?? end - originUs;
     } else if (member.endpoint === "unknown") {
       modernArgs.fallback_reason = "UnknownEndpointReason";
       modernArgs.fallback_time = end;
@@ -5691,7 +5692,7 @@ function makeCalibratedInteraction({
 
 function makeMalformedCalibratedSlice(
   name,
-  { beginUs, durationUs = 1000 } = {},
+  { beginUs, durationUs = 1000, originUs = 9000 } = {},
 ) {
   const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
   const begin = structuredClone(
@@ -5713,9 +5714,9 @@ function makeMalformedCalibratedSlice(
       nodeId: 311,
       interactionId: 17,
       interactionOffset: 19,
-      timeStamp: (beginUs - 9000) / 1000,
-      processingStart: (beginUs + 100 - 9000) / 1000,
-      processingEnd: (beginUs + 200 - 9000) / 1000,
+      timeStamp: (beginUs - originUs) / 1000,
+      processingStart: (beginUs + 100 - originUs) / 1000,
+      processingEnd: (beginUs + 200 - originUs) / 1000,
       unsupported_legacy_field: "synthetic malformed marker",
     });
   } else {
@@ -5771,6 +5772,48 @@ test("scope-identifiable parser-rejected legacy records prevent count closure", 
   assert.equal(group.countClosure.status, "open");
   assert.equal(group.status, "diagnostic-only");
   assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+});
+
+test("parser-rejected legacy records use document-relative window coordinates", () => {
+  const input = makeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 200000,
+      },
+      {
+        type: "pointerup",
+        durationUs: 2083,
+        endpoint: "fallback",
+        beginUs: 220000,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+    extraEvents: makeMalformedCalibratedSlice("EventTiming", {
+      beginUs: 129900,
+      originUs: 80000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
 });
 
 test("parser-rejected relevant records near a calibration boundary keep closure open", () => {
@@ -5901,7 +5944,7 @@ test("the contracted 11 ms window admits strict interior starts and leaves bound
         type: "pointerdown",
         durationUs: 25338,
         endpoint: "fallback",
-        beginUs: 110901,
+        beginUs: 119901,
       },
       { type: "click", durationUs: 79668, endpoint: "presentation" },
     ],
@@ -5912,7 +5955,7 @@ test("the contracted 11 ms window admits strict interior starts and leaves bound
         type: "pointerdown",
         durationUs: 25338,
         endpoint: "fallback",
-        beginUs: 110900,
+        beginUs: 119900,
       },
       { type: "click", durationUs: 79668, endpoint: "presentation" },
     ],
@@ -5924,7 +5967,7 @@ test("the contracted 11 ms window admits strict interior starts and leaves bound
         type: "click",
         durationUs: 79668,
         endpoint: "presentation",
-        beginUs: 288900,
+        beginUs: 297900,
       },
     ],
   }).interactionGroups[0];
@@ -5942,7 +5985,7 @@ test("the contracted window compares binary64 snapshot times as exact rationals"
         type: "pointerdown",
         durationUs: 25338,
         endpoint: "fallback",
-        beginUs: 11200,
+        beginUs: 20201,
       },
       { type: "click", durationUs: 79668, endpoint: "presentation" },
     ],
@@ -6009,6 +6052,79 @@ test("a paired record outside the contracted window cannot satisfy an in-window 
 
   assert.equal(group.countClosure.status, "open");
   assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("a nonzero trace origin cannot close an out-of-window selected member", () => {
+  const [group] = analyzeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 129900,
+        counted: false,
+      },
+      {
+        type: "pointerdown",
+        durationUs: 10000,
+        endpoint: "fallback",
+        beginUs: 200000,
+        interactionId: 99,
+        nodeId: 900,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(
+    group.countClosure.byType.some(
+      ({ eventType, C, R }) =>
+        eventType === "pointerdown" && C === 1 && R === 0,
+    ),
+  );
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("a nonzero trace origin does not broaden click candidates", () => {
+  const groups = analyzeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 129900,
+        interactionId: 99,
+        counted: false,
+      },
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 200000,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+  }).interactionGroups;
+  const selectedGroup = groups.find(({ members }) =>
+    members.some(({ eventType }) => eventType === "pointerdown"),
+  );
+
+  assert.ok(selectedGroup);
+  assert.equal(selectedGroup.countClosure.status, "closed");
+  assert.equal(selectedGroup.status, "bounded-calibration-verified");
 });
 
 test("keyboard counters close on exact members while input surplus stays open", () => {
