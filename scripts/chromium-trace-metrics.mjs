@@ -27,6 +27,7 @@ const EXACT_INTEGER_FIELDS = new Set([
   "interactionOffset",
   "interaction_offset",
   "fallback_time",
+  "fallback_time_us",
   "pointer_id",
   "key_code",
 ]);
@@ -104,6 +105,24 @@ const UNSIGNED_INT32_MAX = (1n << 32n) - 1n;
 const RELATIVE_MICROSECOND_LIMIT = 1n << 40n;
 const MAX_SAFE_MICROSECONDS = BigInt(Number.MAX_SAFE_INTEGER);
 const MAX_OBSERVED_API_ENTRIES = 512;
+const CHROME155_INTERACTION_GROUP_REVISION =
+  "5869fe313571d75152b77813cf0a4ee26a4e6df0";
+const INTERACTION_GROUP_COUNTER_TYPES = Object.freeze([
+  "click",
+  "pointerdown",
+  "pointerup",
+  "keydown",
+  "keypress",
+  "keyup",
+  "input",
+]);
+const INTERACTION_GROUP_NAVIGATION_TYPES = Object.freeze([
+  "navigate",
+  "popstate",
+  "hashchange",
+]);
+const INTERACTION_GROUP_SCOPE_LABEL =
+  "Chrome 155 source semantics conditional on declared capture and document binding";
 const OBSERVER_SOURCE_HASH_LIFECYCLE = Object.freeze({
   originalVersionOne: Object.freeze({
     schemaVersion: 1,
@@ -1502,6 +1521,7 @@ function typedTrack(event) {
 function pairTypedSlices(traceEvents, name, expectedCategory, rejections) {
   const groups = new Map();
   const counts = { beginCount: 0, endCount: 0, markerCount: 0 };
+  const incompleteBegins = [];
 
   for (const [index, event] of traceEvents.entries()) {
     if (!isRecord(event) || event.name !== name) continue;
@@ -1579,10 +1599,11 @@ function pairTypedSlices(traceEvents, name, expectedCategory, rejections) {
     }
     if (pending.length > 0) {
       addDiagnostic(rejections, "UNTERMINATED_TYPED_SLICE", pending.length);
+      incompleteBegins.push(...pending);
     }
   }
 
-  return { spans, ...counts };
+  return { spans, incompleteBegins, ...counts };
 }
 
 function rejectEntry(rejections, code) {
@@ -1891,6 +1912,9 @@ function modernCrosswalkEntry(span, rejections, profile) {
   const fallbackTime = Object.hasOwn(args, "fallback_time")
     ? exactInteger(args.fallback_time)
     : null;
+  const fallbackTimeUs = Object.hasOwn(timing, "fallback_time_us")
+    ? exactInteger(timing.fallback_time_us)
+    : null;
   const fallbackProven =
     args.fallback_reason === "None" &&
     fallbackTime === 0n &&
@@ -1909,6 +1933,11 @@ function modernCrosswalkEntry(span, rejections, profile) {
     interactionOffset,
     processingStartUs: span.beginTimestampUs,
     processingEndUs: span.endTimestampUs,
+    fallbackReason: args.fallback_reason,
+    fallbackTime,
+    fallbackTimeUs,
+    hasFallbackTime: Object.hasOwn(args, "fallback_time"),
+    hasFallbackTimeUs: Object.hasOwn(timing, "fallback_time_us"),
     fallbackProven,
   };
 }
@@ -4003,6 +4032,37 @@ function unsupportedEventTimingCrosswalk() {
   };
 }
 
+function interactionEndpointClass(legacy, modern) {
+  if (
+    modern.fallbackReason === "None" &&
+    modern.hasFallbackTime &&
+    modern.fallbackTime === 0n &&
+    !modern.hasFallbackTimeUs
+  ) {
+    return "presentation";
+  }
+  if (
+    modern.fallbackReason === "DoesNotNeedNextPaint" &&
+    modern.hasFallbackTime &&
+    modern.hasFallbackTimeUs &&
+    modern.fallbackTime !== null &&
+    modern.fallbackTime > 0n &&
+    modern.fallbackTimeUs !== null &&
+    modern.fallbackTimeUs > 0n &&
+    modern.fallbackTime === legacy.endTimestampUs &&
+    legacy.originUs + modern.fallbackTimeUs === legacy.endTimestampUs
+  ) {
+    return "recognized-fallback";
+  }
+  return "unknown";
+}
+
+function sourceRoundedDurationMilliseconds(durationUs) {
+  if (!Number.isSafeInteger(durationUs) || durationUs < 0) return null;
+  const rounded = Math.round(Number(durationUs) / 1000 / 8) * 8;
+  return Number.isSafeInteger(rounded) ? rounded : null;
+}
+
 function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
   const rejectionCounts = new Map();
   const legacyPairs = pairTypedSlices(
@@ -4067,12 +4127,16 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
   for (const span of modernPairs.spans) {
     const entry = modernCrosswalkEntry(span, rejectionCounts, profile);
     if (entry !== null && entry.legacyType !== null) {
+      entry.captureCase = captureCase;
       addToGroups(modernGroups, entry);
       addToGroups(modernIdentityGroups, entry, crosswalkBaseIdentityKey);
     }
   }
 
   const candidates = [];
+  const exactPairs = [];
+  const ambiguousEntries = [];
+  const unmatchedEntries = [];
   const pairedLegacyEntries = new Set();
   const pairedModernEntries = new Set();
   let exactIdentityGroupCount = 0;
@@ -4093,6 +4157,7 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
       );
       for (const entry of legacyEntries) pairedLegacyEntries.add(entry);
       for (const entry of modernEntries) pairedModernEntries.add(entry);
+      ambiguousEntries.push(...legacyEntries, ...modernEntries);
       continue;
     }
 
@@ -4105,23 +4170,40 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
       legacy.processingEndUs !== modern.processingEndUs
     ) {
       rejectEntry(rejectionCounts, "PROCESSING_ENDPOINT_MISMATCH");
+      unmatchedEntries.push(legacy, modern);
       continue;
     }
     exactMatchedIdentityCount += 1;
+    const rawTraceSpan = legacy.endTimestampUs - legacy.beginTimestampUs;
+    const rawTraceSpanUs = toSafeMicroseconds(rawTraceSpan);
+    const endpointClass = interactionEndpointClass(legacy, modern);
+    const durationUs =
+      endpointClass === "unknown" || rawTraceSpan < 0n ? null : rawTraceSpanUs;
+    exactPairs.push({
+      beginIndex: legacy.beginIndex,
+      legacy,
+      modern,
+      rawTraceSpanUs,
+      durationUs,
+      endpointClass,
+      sourceRoundedDurationMs:
+        durationUs === null
+          ? null
+          : sourceRoundedDurationMilliseconds(durationUs),
+    });
     if (!modern.fallbackProven) {
       rejectEntry(rejectionCounts, "FALLBACK_UNPROVEN");
       continue;
     }
 
-    const durationUs = legacy.endTimestampUs - legacy.beginTimestampUs;
     const processingEndToPresentationUs =
       legacy.endTimestampUs - legacy.processingEndUs;
-    const safeDurationUs = toSafeMicroseconds(durationUs);
+    const safeDurationUs = toSafeMicroseconds(rawTraceSpan);
     const safeProcessingTailUs = toSafeMicroseconds(
       processingEndToPresentationUs,
     );
     if (
-      durationUs < 0n ||
+      rawTraceSpan < 0n ||
       processingEndToPresentationUs < 0n ||
       safeDurationUs === null ||
       safeProcessingTailUs === null
@@ -4159,8 +4241,10 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
           unmatchedModern[0].processingEndUs)
     ) {
       rejectEntry(rejectionCounts, "PROCESSING_ENDPOINT_MISMATCH");
+      unmatchedEntries.push(...unmatchedLegacy, ...unmatchedModern);
       continue;
     }
+    unmatchedEntries.push(...unmatchedLegacy, ...unmatchedModern);
     addDiagnostic(
       rejectionCounts,
       "NO_EXACT_CROSSWALK_MATCH",
@@ -4219,7 +4303,671 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
             : CROSSWALK_GATE_REASONS,
     },
     candidateByBeginIndex,
+    exactPairs,
+    ambiguousEntries,
+    unmatchedEntries,
+    incompleteBegins: [
+      ...legacyPairs.incompleteBegins.map((item) => ({
+        event: item.event,
+        index: item.index,
+        name: "EventTiming",
+      })),
+      ...modernPairs.incompleteBegins.map((item) => ({
+        event: item.event,
+        index: item.index,
+        name: "EventProcessing",
+      })),
+    ],
   };
+}
+
+function supportsChrome155InteractionGroupSource(observations) {
+  return (
+    hasExactFields(observations, ["browser", "status", "sourceRevision"]) &&
+    hasExactFields(observations.browser, ["product", "version"]) &&
+    observations.browser.product === "Google Chrome" &&
+    observations.browser.version === "155.0.8059.84" &&
+    observations.status === "bounded-click-calibration" &&
+    observations.sourceRevision === CHROME155_INTERACTION_GROUP_REVISION
+  );
+}
+
+function safeCalibrationLabel(value, maximumLength = 128) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maximumLength &&
+    !Array.from(value).some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && (codePoint < 32 || codePoint === 127);
+    })
+  );
+}
+
+function validInteractionGroupBinding(binding) {
+  if (
+    !hasExactFields(binding, [
+      "documentId",
+      "frame",
+      "rendererPid",
+      "targetNodeId",
+      "traceSha256",
+      "sourceRevision",
+    ]) ||
+    !safeCalibrationLabel(binding.documentId) ||
+    !safeCalibrationLabel(binding.frame) ||
+    !Number.isSafeInteger(binding.rendererPid) ||
+    binding.rendererPid <= 0 ||
+    typeof binding.targetNodeId !== "string" ||
+    !/^[1-9][0-9]*$/.test(binding.targetNodeId) ||
+    binding.targetNodeId.length > 128 ||
+    typeof binding.traceSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(binding.traceSha256) ||
+    binding.sourceRevision !== CHROME155_INTERACTION_GROUP_REVISION
+  ) {
+    return null;
+  }
+  return {
+    documentId: binding.documentId,
+    frame: binding.frame,
+    rendererPid: binding.rendererPid,
+    targetNodeId: BigInt(binding.targetNodeId),
+    traceSha256: binding.traceSha256,
+    sourceRevision: binding.sourceRevision,
+  };
+}
+
+function binary64MillisecondsToMicroseconds(value) {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, value, false);
+  const bits = view.getBigUint64(0, false);
+  const exponentBits = Number((bits >> 52n) & 0x7ffn);
+  const fractionBits = bits & ((1n << 52n) - 1n);
+  const coefficient =
+    exponentBits === 0 ? fractionBits : (1n << 52n) + fractionBits;
+  const exponent = exponentBits === 0 ? -1074 : exponentBits - 1023 - 52;
+  let numerator = coefficient * 1000n;
+  let denominator = 1n;
+  if (exponent >= 0) numerator <<= BigInt(exponent);
+  else denominator <<= BigInt(-exponent);
+  if (bits >> 63n !== 0n) numerator = -numerator;
+  return { numerator, denominator };
+}
+
+function shiftedRational(value, microseconds) {
+  return {
+    numerator: value.numerator + BigInt(microseconds) * value.denominator,
+    denominator: value.denominator,
+  };
+}
+
+function compareIntegerToRational(integer, rational) {
+  const difference =
+    BigInt(integer) * rational.denominator - rational.numerator;
+  return difference < 0n ? -1 : difference > 0n ? 1 : 0;
+}
+
+function classifyInteractionWindow(processingStartUs, before, after) {
+  if (typeof processingStartUs !== "bigint") return "uncertain";
+  const beforeUs = binary64MillisecondsToMicroseconds(before.observedAt);
+  const afterUs = binary64MillisecondsToMicroseconds(after.observedAt);
+  const expandedBefore = shiftedRational(beforeUs, -11000);
+  const contractedBefore = shiftedRational(beforeUs, 11000);
+  const contractedAfter = shiftedRational(afterUs, -11000);
+  const expandedAfter = shiftedRational(afterUs, 11000);
+  if (
+    compareIntegerToRational(processingStartUs, expandedBefore) < 0 ||
+    compareIntegerToRational(processingStartUs, expandedAfter) > 0
+  ) {
+    return "outside";
+  }
+  if (
+    compareIntegerToRational(processingStartUs, contractedBefore) > 0 &&
+    compareIntegerToRational(processingStartUs, contractedAfter) < 0
+  ) {
+    return "inside";
+  }
+  return "uncertain";
+}
+
+function validCalibrationSnapshot(sidecar, binding, traceRecord) {
+  const fail = (code, details = {}) => ({
+    valid: false,
+    reasonCodes: [code],
+    ...details,
+  });
+  if (
+    !hasExactFields(sidecar, [
+      "schemaVersion",
+      "evidenceClass",
+      "documentId",
+      "diagnosticOnly",
+      "formalStatus",
+      "status",
+      "reasons",
+      "before",
+      "after",
+      "clickDelta",
+      "clicks",
+      "overflow",
+    ]) ||
+    sidecar.schemaVersion !== 1 ||
+    sidecar.evidenceClass !== "same-document-click-count-calibration" ||
+    sidecar.diagnosticOnly !== true ||
+    sidecar.formalStatus !== "unavailable" ||
+    !Array.isArray(sidecar.reasons) ||
+    !Array.isArray(sidecar.clicks) ||
+    !hasExactFields(sidecar.before, ["timeOrigin", "observedAt", "counters"]) ||
+    !hasExactFields(sidecar.after, ["timeOrigin", "observedAt", "counters"])
+  ) {
+    return fail("CALIBRATION_SNAPSHOT_INVALID");
+  }
+  if (sidecar.documentId !== binding.documentId) {
+    return fail("CALIBRATION_DOCUMENT_MISMATCH");
+  }
+  if (traceRecord?.dataLossOccurred !== false) {
+    return fail("TRACE_DATA_LOSS");
+  }
+
+  const isSafeCounter = (value) => Number.isSafeInteger(value) && value >= 0;
+  const isSafeClock = (value) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const readCounters = (snapshot) => {
+    if (!isRecord(snapshot.counters)) return null;
+    const keys = Object.keys(snapshot.counters);
+    if (keys.length > 64) return null;
+    for (const key of keys) {
+      if (
+        !/^[a-z][a-z0-9_-]{0,31}$/.test(key) ||
+        !isSafeCounter(snapshot.counters[key])
+      ) {
+        return null;
+      }
+    }
+    return snapshot.counters;
+  };
+  const beforeCounters = readCounters(sidecar.before);
+  const afterCounters = readCounters(sidecar.after);
+  if (
+    !isSafeClock(sidecar.before.timeOrigin) ||
+    !isSafeClock(sidecar.after.timeOrigin) ||
+    !isSafeClock(sidecar.before.observedAt) ||
+    !isSafeClock(sidecar.after.observedAt) ||
+    beforeCounters === null ||
+    afterCounters === null
+  ) {
+    return fail("CALIBRATION_SNAPSHOT_INVALID");
+  }
+  const beforeKeys = Object.keys(beforeCounters).sort();
+  const afterKeys = Object.keys(afterCounters).sort();
+  if (
+    beforeKeys.length !== afterKeys.length ||
+    beforeKeys.some((key, index) => key !== afterKeys[index]) ||
+    beforeKeys.some((key) => afterCounters[key] < beforeCounters[key]) ||
+    sidecar.before.timeOrigin !== sidecar.after.timeOrigin ||
+    sidecar.after.observedAt < sidecar.before.observedAt
+  ) {
+    return fail("CALIBRATION_SNAPSHOT_INVALID");
+  }
+
+  const navigationCount = INTERACTION_GROUP_NAVIGATION_TYPES.filter((type) =>
+    Object.hasOwn(beforeCounters, type),
+  ).length;
+  if (navigationCount !== 0 && navigationCount !== 3) {
+    return fail("CALIBRATION_COUNTER_KEYS_MALFORMED");
+  }
+  const counterDeltas = Object.fromEntries(
+    beforeKeys.map((key) => [key, afterCounters[key] - beforeCounters[key]]),
+  );
+  const clicks = sidecar.clicks;
+  const clickRowsValid =
+    clicks.length === 1 &&
+    hasExactFields(clicks[0], [
+      "type",
+      "isTrusted",
+      "targetMatched",
+      "timeStamp",
+      "observedAt",
+    ]) &&
+    clicks[0].type === "click" &&
+    clicks[0].isTrusted === true &&
+    clicks[0].targetMatched === true &&
+    isSafeClock(clicks[0].timeStamp) &&
+    isSafeClock(clicks[0].observedAt) &&
+    clicks[0].observedAt >= sidecar.before.observedAt &&
+    clicks[0].observedAt <= sidecar.after.observedAt;
+  if (
+    sidecar.status !== "collected" ||
+    sidecar.reasons.length !== 0 ||
+    sidecar.overflow !== false ||
+    !clickRowsValid ||
+    !Object.hasOwn(counterDeltas, "click") ||
+    counterDeltas.click !== clicks.length ||
+    sidecar.clickDelta !== counterDeltas.click
+  ) {
+    return fail("CALIBRATION_DECLARATION_MISMATCH", {
+      counterDeltas,
+      navigationEnabled: navigationCount === 3,
+      snapshotsUsable: true,
+      before: sidecar.before,
+      after: sidecar.after,
+    });
+  }
+  return {
+    valid: true,
+    reasonCodes: [],
+    counterDeltas,
+    navigationEnabled: navigationCount === 3,
+    snapshotsUsable: true,
+    before: sidecar.before,
+    after: sidecar.after,
+  };
+}
+
+function partialInteractionEntry(item, traceRecord) {
+  const event = item.event;
+  if (!isRecord(event) || !Number.isSafeInteger(event.pid)) return null;
+  if (item.name === "EventTiming") {
+    const data = event.args?.data;
+    if (!isRecord(data)) return null;
+    const rejections = new Map();
+    const frameKey = frameIdentityValue(data.frame);
+    const interactionId = normalizeLegacyInteraction(
+      data.interactionId,
+      rejections,
+    );
+    const timestampUs = absoluteTraceMicroseconds(event);
+    const timeStampUs = recoverRelativeMicroseconds(
+      data,
+      "timeStamp",
+      () => {},
+    );
+    const processingStartUs = recoverRelativeMicroseconds(
+      data,
+      "processingStart",
+      () => {},
+    );
+    const originUs =
+      timestampUs !== null && timeStampUs !== null
+        ? timestampUs - timeStampUs
+        : null;
+    return {
+      pid: event.pid,
+      frame: data.frame,
+      frameKey,
+      interactionId,
+      nodeId: exactInteger(data.nodeId),
+      legacyType: data.type,
+      processingStartUs:
+        originUs !== null && processingStartUs !== null
+          ? originUs + processingStartUs
+          : null,
+      beginIndex: item.index,
+      captureCase: traceRecord.trace,
+    };
+  }
+  const timing = event.args?.event_timing;
+  if (!isRecord(timing)) return null;
+  const rejections = new Map();
+  const interactionId = readModernInteraction(
+    timing.interaction_id,
+    rejections,
+  );
+  return {
+    pid: event.pid,
+    frame: timing.frame,
+    frameKey: frameIdentityValue(timing.frame),
+    interactionId,
+    nodeId: exactInteger(timing.node_id),
+    legacyType: MODERN_TO_LEGACY_EVENT_TYPES.get(timing.type) ?? null,
+    processingStartUs: absoluteTraceMicroseconds(event),
+    beginIndex: item.index,
+    captureCase: traceRecord.trace,
+  };
+}
+
+function interactionGroupKey(entry, binding, traceName) {
+  if (
+    entry?.captureCase !== traceName ||
+    entry?.pid !== binding.rendererPid ||
+    entry?.frame !== binding.frame ||
+    entry?.interactionId === null ||
+    entry?.interactionId === undefined ||
+    entry.interactionId <= 0n
+  ) {
+    return null;
+  }
+  return JSON.stringify([
+    traceName,
+    binding.documentId,
+    binding.rendererPid,
+    binding.frame,
+    entry.interactionId.toString(),
+  ]);
+}
+
+function makeInteractionMaximum(members) {
+  if (
+    members.length === 0 ||
+    members.some(
+      (member) =>
+        member.rawTraceSpanUs === null ||
+        member.durationUs === null ||
+        member.sourceRoundedDurationMs === null,
+    )
+  ) {
+    return null;
+  }
+  let rawDurationUs = -1;
+  let sourceRoundedDurationMs = -1;
+  for (const member of members) {
+    rawDurationUs = Math.max(rawDurationUs, member.durationUs);
+    sourceRoundedDurationMs = Math.max(
+      sourceRoundedDurationMs,
+      member.sourceRoundedDurationMs,
+    );
+  }
+  const rawMembers = members
+    .filter((member) => member.durationUs === rawDurationUs)
+    .map((member) => member.member);
+  const roundedMembers = members
+    .filter(
+      (member) => member.sourceRoundedDurationMs === sourceRoundedDurationMs,
+    )
+    .map((member) => member.member);
+  return {
+    rawDurationUs,
+    rawMembers,
+    sourceRoundedDurationMs,
+    roundedMembers,
+    presentationClaimEligible: members
+      .filter((member) => roundedMembers.includes(member.member))
+      .every((member) => member.endpointClass === "presentation"),
+  };
+}
+
+function countClosureForInteractionGroup({
+  groupPairs,
+  selected,
+  calibration,
+  pairDetails,
+  binding,
+  traceRecord,
+}) {
+  const reasonCodes = new Set(calibration.reasonCodes);
+  const countRows = INTERACTION_GROUP_COUNTER_TYPES.map((eventType) => {
+    const C = calibration.counterDeltas?.[eventType] ?? null;
+    const R = groupPairs.filter(
+      (pair) =>
+        pair.legacy.legacyType === eventType &&
+        calibration.valid &&
+        classifyInteractionWindow(
+          pair.legacy.processingStartUs,
+          calibration.before,
+          calibration.after,
+        ) === "inside",
+    ).length;
+    const closes = C !== null && C === R;
+    return {
+      eventType,
+      C,
+      R,
+      N: closes ? R : null,
+      D: closes ? 0 : null,
+    };
+  });
+
+  let hasOpenCondition = false;
+  if (!selected) {
+    reasonCodes.add("CLICK_GROUP_CANDIDATE_NOT_UNIQUE");
+  }
+  const relatedRows = [
+    ...pairDetails.unmatchedEntries.map((entry) => ({
+      entry,
+      reason: "UNMATCHED_RELEVANT_ENTRY",
+    })),
+    ...pairDetails.ambiguousEntries.map((entry) => ({
+      entry,
+      reason: "AMBIGUOUS_RELEVANT_ENTRY",
+    })),
+    ...pairDetails.incompleteBegins
+      .map((item) => partialInteractionEntry(item, traceRecord))
+      .filter((entry) => entry !== null)
+      .map((entry) => ({ entry, reason: "INCOMPLETE_RELEVANT_ENTRY" })),
+  ];
+  const hasWindow =
+    calibration.snapshotsUsable === true &&
+    calibration.before !== undefined &&
+    calibration.after !== undefined;
+  if (!hasWindow && groupPairs.length > 0) {
+    reasonCodes.add("CALIBRATION_WINDOW_UNAVAILABLE");
+  }
+  for (const pair of groupPairs) {
+    if (hasWindow) {
+      const position = classifyInteractionWindow(
+        pair.legacy.processingStartUs,
+        calibration.before,
+        calibration.after,
+      );
+      if (position === "outside") {
+        reasonCodes.add("INTERACTION_MEMBER_OUTSIDE_WINDOW");
+        hasOpenCondition = true;
+      } else if (position === "uncertain") {
+        reasonCodes.add("INTERACTION_MEMBER_BOUNDARY_UNCERTAIN");
+        hasOpenCondition = true;
+      }
+    }
+    if (pair.endpointClass === "unknown") {
+      reasonCodes.add("UNKNOWN_ENDPOINT");
+      hasOpenCondition = true;
+    }
+    if (
+      pair.rawTraceSpanUs === null ||
+      pair.durationUs === null ||
+      pair.sourceRoundedDurationMs === null
+    ) {
+      reasonCodes.add("MEMBER_DURATION_INVALID");
+      hasOpenCondition = true;
+    }
+  }
+  for (const { entry, reason } of relatedRows) {
+    if (
+      interactionGroupKey(entry, binding, traceRecord.trace) !==
+      interactionGroupKey(groupPairs[0]?.legacy, binding, traceRecord.trace)
+    ) {
+      continue;
+    }
+    const position = hasWindow
+      ? classifyInteractionWindow(
+          entry.processingStartUs,
+          calibration.before,
+          calibration.after,
+        )
+      : null;
+    reasonCodes.add(
+      position === "outside"
+        ? "INTERACTION_MEMBER_OUTSIDE_WINDOW"
+        : position === "uncertain"
+          ? "INTERACTION_MEMBER_BOUNDARY_UNCERTAIN"
+          : reason,
+    );
+    hasOpenCondition = true;
+  }
+  if (calibration.navigationEnabled) {
+    reasonCodes.add("NAVIGATION_MAPPING_UNAVAILABLE");
+    hasOpenCondition = true;
+  }
+  if (
+    INTERACTION_GROUP_COUNTER_TYPES.some(
+      (eventType) => !Object.hasOwn(calibration.counterDeltas ?? {}, eventType),
+    )
+  ) {
+    reasonCodes.add("REQUIRED_COUNTER_MISSING");
+  }
+  if (countRows.some(({ C, R }) => C === null || C !== R)) {
+    reasonCodes.add("COUNT_CLOSURE_MISMATCH");
+    hasOpenCondition = true;
+  }
+
+  const closureUnavailable =
+    !calibration.valid ||
+    !selected ||
+    traceRecord.dataLossOccurred !== false ||
+    reasonCodes.has("REQUIRED_COUNTER_MISSING");
+  const status = closureUnavailable
+    ? "unavailable"
+    : hasOpenCondition
+      ? "open"
+      : "closed";
+  return {
+    status,
+    byType: countRows,
+    unsupportedApiTypes: [...INTERACTION_GROUP_NAVIGATION_TYPES],
+    reasonCodes: [...reasonCodes].sort(),
+  };
+}
+
+function analyzeChrome155InteractionGroups(
+  trace,
+  traceRecord,
+  interactionGroupCalibration,
+) {
+  if (!hasExactFields(interactionGroupCalibration, ["sidecar", "binding"])) {
+    return [];
+  }
+  const binding = validInteractionGroupBinding(
+    interactionGroupCalibration.binding,
+  );
+  if (binding === null || typeof traceRecord.trace !== "string") return [];
+
+  const calibration = validCalibrationSnapshot(
+    interactionGroupCalibration.sidecar,
+    binding,
+    traceRecord,
+  );
+  const pairDetails = discreteEventTimingCrosswalk(
+    trace,
+    traceRecord,
+    "chrome155-interaction-group",
+  );
+  const scopedPairs = pairDetails.exactPairs.filter(
+    (pair) =>
+      pair.legacy.pid === binding.rendererPid &&
+      pair.legacy.frame === binding.frame &&
+      pair.legacy.interactionId > 0n,
+  );
+  const groups = new Map();
+  for (const pair of scopedPairs) {
+    const key = interactionGroupKey(pair.legacy, binding, traceRecord.trace);
+    if (key === null) continue;
+    const group = groups.get(key) ?? {
+      key,
+      pairs: [],
+      earliestIndex: Infinity,
+    };
+    group.pairs.push(pair);
+    group.earliestIndex = Math.min(group.earliestIndex, pair.beginIndex);
+    groups.set(key, group);
+  }
+  const orderedGroups = [...groups.values()].sort(
+    (left, right) => left.earliestIndex - right.earliestIndex,
+  );
+
+  const clickContenders = [
+    ...scopedPairs.filter(
+      (pair) =>
+        pair.legacy.legacyType === "click" &&
+        pair.legacy.nodeId === binding.targetNodeId &&
+        classifyInteractionWindow(
+          pair.legacy.processingStartUs,
+          calibration.before ?? { observedAt: 0 },
+          calibration.after ?? { observedAt: 0 },
+        ) !== "outside",
+    ),
+    ...[
+      ...pairDetails.unmatchedEntries,
+      ...pairDetails.ambiguousEntries,
+      ...pairDetails.incompleteBegins
+        .map((item) => partialInteractionEntry(item, traceRecord))
+        .filter((entry) => entry !== null),
+    ].filter(
+      (entry) =>
+        entry.pid === binding.rendererPid &&
+        entry.frame === binding.frame &&
+        entry.nodeId === binding.targetNodeId &&
+        entry.legacyType === "click" &&
+        classifyInteractionWindow(
+          entry.processingStartUs,
+          calibration.before ?? { observedAt: 0 },
+          calibration.after ?? { observedAt: 0 },
+        ) !== "outside",
+    ),
+  ];
+  const selected = calibration.valid && clickContenders.length === 1;
+  const selectedKey = selected
+    ? interactionGroupKey(
+        clickContenders[0].legacy ?? clickContenders[0],
+        binding,
+        traceRecord.trace,
+      )
+    : null;
+
+  return orderedGroups.map((group, index) => {
+    const orderedPairs = [...group.pairs].sort(
+      (left, right) => left.beginIndex - right.beginIndex,
+    );
+    const members = orderedPairs.map((pair, memberIndex) => ({
+      member: `member-${memberIndex + 1}`,
+      eventType: pair.legacy.legacyType,
+      rawTraceSpanUs: pair.rawTraceSpanUs,
+      durationUs: pair.durationUs,
+      endpointClass: pair.endpointClass,
+      sourceRoundedDurationMs: pair.sourceRoundedDurationMs,
+    }));
+    const groupSelected = selected && selectedKey === group.key;
+    const countClosure = groupSelected
+      ? countClosureForInteractionGroup({
+          groupPairs: orderedPairs,
+          selected: true,
+          calibration,
+          pairDetails,
+          binding,
+          traceRecord,
+        })
+      : {
+          status: "unavailable",
+          byType: [],
+          unsupportedApiTypes: [...INTERACTION_GROUP_NAVIGATION_TYPES],
+          reasonCodes: [
+            ...new Set([
+              ...calibration.reasonCodes,
+              "CALIBRATION_NOT_BOUND_TO_GROUP",
+            ]),
+          ].sort(),
+        };
+    const reasonCodes = new Set(countClosure.reasonCodes);
+    const observedMaximum = makeInteractionMaximum(members);
+    const status =
+      groupSelected &&
+      countClosure.status === "closed" &&
+      observedMaximum !== null
+        ? "bounded-calibration-verified"
+        : "diagnostic-only";
+    return {
+      group: `group-${index + 1}`,
+      status,
+      formalStatus: "unavailable",
+      scope: INTERACTION_GROUP_SCOPE_LABEL,
+      members,
+      observedMaximum,
+      countClosure: {
+        status: countClosure.status,
+        byType: countClosure.byType,
+        unsupportedApiTypes: countClosure.unsupportedApiTypes,
+      },
+      reasonCodes: [...reasonCodes].sort(),
+    };
+  });
 }
 
 export function analyzeTrace(
@@ -4228,6 +4976,7 @@ export function analyzeTrace(
   segments = [],
   sourceObservations,
   observerEvidence = undefined,
+  interactionGroupCalibration = undefined,
 ) {
   if (
     !isRecord(trace) ||
@@ -4285,6 +5034,15 @@ export function analyzeTrace(
           observerEvidence,
           crosswalk.candidateByBeginIndex,
         );
+  const interactionGroups = supportsChrome155InteractionGroupSource(
+    sourceObservations,
+  )
+    ? analyzeChrome155InteractionGroups(
+        trace,
+        traceRecord,
+        interactionGroupCalibration,
+      )
+    : undefined;
 
   return {
     counts: {
@@ -4300,5 +5058,6 @@ export function analyzeTrace(
     frameIntervals,
     discreteEventTimingCrosswalk: crosswalk.result,
     ...(observerEvidence === undefined ? {} : { observedDiscreteInputs }),
+    ...(interactionGroups === undefined ? {} : { interactionGroups }),
   };
 }

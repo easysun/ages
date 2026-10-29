@@ -628,6 +628,169 @@ function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+function makeInteractionGroupCliFixture(
+  t,
+  { sidecarName = "capture-calibration.json" } = {},
+) {
+  const source = JSON.parse(readFileSync(eventTimingFixturePath, "utf8"));
+  const events = [];
+  const members = [
+    {
+      type: "pointerdown",
+      modernType: "POINTER_DOWN_EVENT",
+      begin: 150000,
+      duration: 25338,
+      fallback: true,
+    },
+    {
+      type: "pointerup",
+      modernType: "POINTER_UP_EVENT",
+      begin: 160000,
+      duration: 2083,
+      fallback: true,
+    },
+    {
+      type: "click",
+      modernType: "CLICK_EVENT",
+      begin: 170000,
+      duration: 79668,
+      fallback: false,
+    },
+  ];
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(source.traceEvents[0]);
+    const modernBegin = structuredClone(source.traceEvents[1]);
+    const modernEnd = structuredClone(source.traceEvents[2]);
+    const legacyEnd = structuredClone(source.traceEvents[3]);
+    const end = member.begin + member.duration;
+    const processingStart = member.begin + 100;
+    const processingEnd = member.begin + 200;
+    legacyBegin.id = legacyEnd.id = `0x${index + 10}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${index + 20}`;
+    for (const event of [legacyBegin, legacyEnd, modernBegin, modernEnd]) {
+      event.pid = 101;
+      event.tid = 7;
+    }
+    legacyBegin.ts = member.begin;
+    legacyEnd.ts = end;
+    modernBegin.ts = processingStart;
+    modernEnd.ts = processingEnd;
+    Object.assign(legacyBegin.args.data, {
+      type: member.type,
+      frame: "frame-A",
+      nodeId: 311,
+      interactionId: 17,
+      interactionOffset: 18,
+      timeStamp: (member.begin - 9000) / 1000,
+      processingStart: (processingStart - 9000) / 1000,
+      processingEnd: (processingEnd - 9000) / 1000,
+    });
+    Object.assign(modernBegin.args.event_timing, {
+      type: member.modernType,
+      frame: "frame-A",
+      node_id: 311,
+      interaction_id: 17,
+      interaction_offset: 18,
+    });
+    if (member.fallback) {
+      modernBegin.args.fallback_reason = "DoesNotNeedNextPaint";
+      modernBegin.args.fallback_time = end;
+      modernBegin.args.event_timing.fallback_time_us = end - 9000;
+    } else {
+      modernBegin.args.fallback_reason = "None";
+      modernBegin.args.fallback_time = 0;
+    }
+    events.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+  }
+
+  const input = makeFixture(t, {
+    traceText: JSON.stringify({ traceEvents: events }),
+  });
+  const traceRecord = input.manifest.traces[0];
+  Object.assign(traceRecord, {
+    byteCount: input.traceBytes.byteLength,
+    sha256: sha256(input.traceBytes),
+    dataLossOccurred: false,
+  });
+  input.manifest.browser = {
+    product: "Google Chrome",
+    version: "155.0.8059.84",
+  };
+  input.manifest.status = "bounded-click-calibration";
+  input.sidecarPath = join(input.directory, sidecarName);
+  input.sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: {
+      timeOrigin: 1000,
+      observedAt: 100,
+      counters: {
+        click: 0,
+        pointerdown: 0,
+        pointerup: 0,
+        keydown: 0,
+        keypress: 0,
+        keyup: 0,
+        input: 0,
+      },
+    },
+    after: {
+      timeOrigin: 1000,
+      observedAt: 300,
+      counters: {
+        click: 1,
+        pointerdown: 1,
+        pointerup: 1,
+        keydown: 0,
+        keypress: 0,
+        keyup: 0,
+        input: 0,
+      },
+    },
+    clickDelta: 1,
+    clicks: [
+      {
+        type: "click",
+        isTrusted: true,
+        targetMatched: true,
+        timeStamp: 171,
+        observedAt: 171.2,
+      },
+    ],
+    overflow: false,
+  };
+  refreshInteractionGroupCalibration(input, sidecarName);
+  return input;
+}
+
+function refreshInteractionGroupCalibration(
+  input,
+  sidecarName = "capture-calibration.json",
+) {
+  const sidecarBytes = Buffer.from(
+    `${JSON.stringify(input.sidecar, null, 2)}\n`,
+  );
+  writeFileSync(input.sidecarPath, sidecarBytes, { flag: "w" });
+  const traceRecord = input.manifest.traces[0];
+  traceRecord.interactionGroupCalibration = {
+    sidecar: sidecarName,
+    sidecarByteCount: sidecarBytes.byteLength,
+    sidecarSha256: sha256(sidecarBytes),
+    documentId: "synthetic-document",
+    frame: "frame-A",
+    rendererPid: 101,
+    targetNodeId: "311",
+    traceSha256: traceRecord.sha256,
+    sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
+}
+
 function presentedReporterEvents({ endpoint, surfaceId, displayId, localId }) {
   const common = {
     name: "PipelineReporter",
@@ -703,6 +866,109 @@ test("prints a sanitized diagnostic summary without changing trace bytes", (t) =
     input.traceBytes.toString("utf8"),
   );
   assert.equal(sha256(readFileSync(input.tracePath)), beforeHash);
+});
+
+test("loads a trace-bound calibration and emits only sanitized interaction groups", (t) => {
+  const input = makeInteractionGroupCliFixture(t);
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const traceReport = JSON.parse(result.stdout).traces[0];
+  const [group] = traceReport.interactionGroups;
+  assert.equal(group.countClosure.status, "closed");
+  assert.equal(group.observedMaximum.rawDurationUs, 79668);
+  assert.equal(group.observedMaximum.sourceRoundedDurationMs, 80);
+  assert.equal(group.formalStatus, "unavailable");
+  for (const privateValue of [
+    "synthetic-document",
+    "frame-A",
+    "311",
+    "101",
+    "capture-calibration.json",
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false, privateValue);
+  }
+});
+
+test("rejects calibration sidecar and trace digest mismatches without a report", (t) => {
+  for (const field of ["sidecarSha256", "traceSha256"]) {
+    const input = makeInteractionGroupCliFixture(t);
+    input.manifest.traces[0].interactionGroupCalibration[field] = "b".repeat(
+      64,
+    );
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0, field);
+    assert.equal(result.stdout, "", field);
+    assert.match(result.stderr, /interaction.group calibration/i, field);
+  }
+});
+
+test("rejects calibration sidecar traversal and symlink references", (t) => {
+  const traversal = makeInteractionGroupCliFixture(t);
+  traversal.manifest.traces[0].interactionGroupCalibration.sidecar =
+    "../outside.json";
+  writeObservedManifest(traversal);
+  const traversalResult = runCli([traversal.manifestPath]);
+  assert.notEqual(traversalResult.status, 0);
+  assert.equal(traversalResult.stdout, "");
+
+  const linked = makeInteractionGroupCliFixture(t);
+  const targetPath = join(linked.directory, "target.json");
+  writeFileSync(targetPath, readFileSync(linked.sidecarPath));
+  rmSync(linked.sidecarPath);
+  symlinkSync(targetPath, linked.sidecarPath);
+  const symlinkResult = runCli([linked.manifestPath]);
+  assert.notEqual(symlinkResult.status, 0);
+  assert.equal(symlinkResult.stdout, "");
+});
+
+test("rejects calibration document and source-revision mismatches", (t) => {
+  const cases = [
+    {
+      name: "document mismatch",
+      change(input) {
+        input.sidecar.documentId = "TRACE_PRIVATE_WRONG_DOCUMENT";
+        refreshInteractionGroupCalibration(input);
+      },
+    },
+    {
+      name: "wrong source pin",
+      change(input) {
+        input.manifest.traces[0].interactionGroupCalibration.sourceRevision =
+          "wrong-revision";
+        writeObservedManifest(input);
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const input = makeInteractionGroupCliFixture(t);
+    entry.change(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0, entry.name);
+    assert.equal(result.stdout, "", entry.name);
+    assert.doesNotMatch(result.stderr, /TRACE_PRIVATE_WRONG_DOCUMENT/);
+  }
+});
+
+test("recomputes click counts instead of trusting sidecar status or clickDelta", (t) => {
+  const input = makeInteractionGroupCliFixture(t);
+  input.sidecar.status = "invalid";
+  input.sidecar.clickDelta = 99;
+  refreshInteractionGroupCalibration(input);
+
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const [group] = JSON.parse(result.stdout).traces[0].interactionGroups;
+  assert.equal(group.status, "diagnostic-only");
+  assert.equal(group.countClosure.status, "unavailable");
+  assert.equal(group.formalStatus, "unavailable");
+  assert.equal(result.stdout.includes("synthetic-document"), false);
 });
 
 test("reports sanitized exact discrete candidates without promoting formal action samples", (t) => {

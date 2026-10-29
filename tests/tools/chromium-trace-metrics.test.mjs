@@ -5389,3 +5389,613 @@ test("application changes do not implicitly qualify a new collector producer", (
     ]);
   }
 });
+
+test("reconstructs a bounded pointer interaction including nonmax fallback endpoints", () => {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const members = [
+    {
+      type: "pointerdown",
+      modern: "POINTER_DOWN_EVENT",
+      begin: 100000,
+      duration: 25338,
+    },
+    {
+      type: "pointerup",
+      modern: "POINTER_UP_EVENT",
+      begin: 140000,
+      duration: 2083,
+    },
+    { type: "click", modern: "CLICK_EVENT", begin: 150000, duration: 79668 },
+  ];
+  const events = [];
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(template.traceEvents[0]);
+    const modernBegin = structuredClone(template.traceEvents[1]);
+    const modernEnd = structuredClone(template.traceEvents[2]);
+    const legacyEnd = structuredClone(template.traceEvents[3]);
+    const end = member.begin + member.duration;
+    legacyBegin.id = legacyEnd.id = `0x${index + 10}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${index + 20}`;
+    legacyBegin.ts = member.begin;
+    legacyEnd.ts = end;
+    Object.assign(legacyBegin.args.data, {
+      type: member.type,
+      timeStamp: (member.begin - 9000) / 1000,
+      processingStart: (member.begin + 100 - 9000) / 1000,
+      processingEnd: (member.begin + 200 - 9000) / 1000,
+    });
+    modernBegin.ts = member.begin + 100;
+    modernEnd.ts = member.begin + 200;
+    modernBegin.args.event_timing.type = member.modern;
+    if (member.type !== "click") {
+      modernBegin.args.fallback_reason = "DoesNotNeedNextPaint";
+      modernBegin.args.fallback_time = end;
+      modernBegin.args.event_timing.fallback_time_us = end - 9000;
+    }
+    events.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+  }
+  const counters = {
+    pointerdown: 0,
+    pointerup: 0,
+    click: 0,
+    keydown: 0,
+    keypress: 0,
+    keyup: 0,
+    input: 0,
+  };
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: { timeOrigin: 1000, observedAt: 0, counters },
+    after: {
+      timeOrigin: 1000,
+      observedAt: 1000,
+      counters: { ...counters, pointerdown: 1, pointerup: 1, click: 1 },
+    },
+    clickDelta: 1,
+    clicks: [
+      {
+        type: "click",
+        isTrusted: true,
+        targetMatched: true,
+        timeStamp: 141,
+        observedAt: 141.2,
+      },
+    ],
+    overflow: false,
+  };
+  const observations = {
+    browser: { product: "Google Chrome", version: "155.0.8059.84" },
+    status: "bounded-click-calibration",
+    sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+  };
+  const binding = {
+    documentId: "synthetic-document",
+    frame: "frame-A",
+    rendererPid: 101,
+    targetNodeId: "311",
+    traceSha256: "a".repeat(64),
+    sourceRevision: observations.sourceRevision,
+  };
+  const result = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "synthetic.json", dataLossOccurred: false },
+    [],
+    observations,
+    undefined,
+    { sidecar, binding },
+  );
+  assert.equal(result.interactionGroups.length, 1);
+  const [group] = result.interactionGroups;
+  assert.equal(group.countClosure.status, "closed");
+  assert.equal(group.status, "bounded-calibration-verified");
+  assert.equal(group.formalStatus, "unavailable");
+  assert.equal(group.observedMaximum.rawDurationUs, 79668);
+  assert.equal(group.observedMaximum.sourceRoundedDurationMs, 80);
+  assert.equal(group.observedMaximum.presentationClaimEligible, true);
+  assert.deepEqual(
+    group.members.map(
+      ({ eventType, durationUs, endpointClass, sourceRoundedDurationMs }) => [
+        eventType,
+        durationUs,
+        endpointClass,
+        sourceRoundedDurationMs,
+      ],
+    ),
+    [
+      ["pointerdown", 25338, "recognized-fallback", 24],
+      ["pointerup", 2083, "recognized-fallback", 0],
+      ["click", 79668, "presentation", 80],
+    ],
+  );
+});
+
+const calibratedChrome155Observations = {
+  browser: { product: "Google Chrome", version: "155.0.8059.84" },
+  status: "bounded-click-calibration",
+  sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+};
+
+function makeCalibratedInteraction({
+  members = [
+    { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+    { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+    { type: "click", durationUs: 79668, endpoint: "presentation" },
+  ],
+  beforeObservedAt = 100,
+  afterObservedAt = 300,
+  counterDeltas = {},
+  navigationKeys = "absent",
+  sidecarChanges = {},
+  bindingChanges = {},
+  traceDataLoss = false,
+} = {}) {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const events = [];
+  const counts = {
+    click: 0,
+    pointerdown: 0,
+    pointerup: 0,
+    keydown: 0,
+    keypress: 0,
+    keyup: 0,
+    input: 0,
+  };
+
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(template.traceEvents[0]);
+    const modernBegin = structuredClone(template.traceEvents[1]);
+    const modernEnd = structuredClone(template.traceEvents[2]);
+    const legacyEnd = structuredClone(template.traceEvents[3]);
+    const begin = member.beginUs ?? 150000 + index * 20000;
+    const end = begin + member.durationUs;
+    const processStart = begin + 100;
+    const processEnd = begin + 200;
+    const legacyId = member.asyncId ?? index + 10;
+    const modernId = member.modernAsyncId ?? index + 20;
+    legacyBegin.id = legacyEnd.id = `0x${legacyId.toString(16)}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${modernId.toString(16)}`;
+    legacyBegin.pid = legacyEnd.pid = 101;
+    modernBegin.pid = modernEnd.pid = 101;
+    legacyBegin.tid = legacyEnd.tid = 7;
+    modernBegin.tid = modernEnd.tid = 7;
+    legacyBegin.ts = begin;
+    legacyEnd.ts = end;
+    modernBegin.ts = processStart;
+    modernEnd.ts = processEnd;
+    const legacyData = legacyBegin.args.data;
+    Object.assign(legacyData, {
+      type: member.type,
+      frame: member.frame ?? "frame-A",
+      nodeId: member.nodeId ?? 311,
+      interactionId: member.interactionId ?? 17,
+      interactionOffset: member.interactionOffset ?? 18,
+      timeStamp: (begin - 9000) / 1000,
+      processingStart: (processStart - 9000) / 1000,
+      processingEnd: (processEnd - 9000) / 1000,
+    });
+    const modernArgs = modernBegin.args;
+    const modernTiming = modernArgs.event_timing;
+    Object.assign(modernTiming, {
+      type: {
+        click: "CLICK_EVENT",
+        pointerdown: "POINTER_DOWN_EVENT",
+        pointerup: "POINTER_UP_EVENT",
+        keydown: "KEY_DOWN_EVENT",
+        keyup: "KEY_UP_EVENT",
+      }[member.type],
+      frame: member.frame ?? "frame-A",
+      node_id: member.nodeId ?? 311,
+      interaction_id: member.interactionId ?? 17,
+      interaction_offset: member.interactionOffset ?? 18,
+    });
+    if (member.endpoint === "fallback") {
+      modernArgs.fallback_reason = "DoesNotNeedNextPaint";
+      modernArgs.fallback_time = member.fallbackTime ?? end;
+      modernTiming.fallback_time_us = member.fallbackTimeUs ?? end - 9000;
+    } else if (member.endpoint === "unknown") {
+      modernArgs.fallback_reason = "UnknownEndpointReason";
+      modernArgs.fallback_time = end;
+      modernTiming.fallback_time_us = end - 9000;
+    } else {
+      modernArgs.fallback_reason = "None";
+      modernArgs.fallback_time = 0;
+    }
+    events.push(legacyBegin, modernBegin);
+    if (member.incomplete !== "modern") events.push(modernEnd);
+    if (member.incomplete !== "legacy") events.push(legacyEnd);
+    if (member.counted !== false && Object.hasOwn(counts, member.type)) {
+      counts[member.type] += 1;
+    }
+  }
+
+  for (const [type, count] of Object.entries(counterDeltas)) {
+    counts[type] = count;
+  }
+  const beforeCounters = Object.fromEntries(
+    Object.keys(counts).map((type) => [type, 0]),
+  );
+  const afterCounters = { ...counts, ...counterDeltas };
+
+  const withNavigation = (counters) => {
+    if (navigationKeys === "present") {
+      Object.assign(counters, { navigate: 0, popstate: 0, hashchange: 0 });
+    } else if (navigationKeys === "partial") {
+      counters.navigate = 0;
+    }
+    return counters;
+  };
+  const click = members.find((member) => member.type === "click");
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: {
+      timeOrigin: 1000,
+      observedAt: beforeObservedAt,
+      counters: withNavigation(beforeCounters),
+    },
+    after: {
+      timeOrigin: 1000,
+      observedAt: afterObservedAt,
+      counters: withNavigation(afterCounters),
+    },
+    clickDelta: 1,
+    clicks: click
+      ? [
+          {
+            type: "click",
+            isTrusted: true,
+            targetMatched: true,
+            timeStamp: 151,
+            observedAt: 151.2,
+          },
+        ]
+      : [],
+    overflow: false,
+  };
+  Object.assign(sidecar, sidecarChanges);
+
+  return {
+    trace: parseTrace(JSON.stringify({ traceEvents: events })),
+    traceRecord: {
+      trace: "calibrated-synthetic.trace.json",
+      dataLossOccurred: traceDataLoss,
+    },
+    observations: calibratedChrome155Observations,
+    calibration: {
+      sidecar,
+      binding: {
+        documentId: "synthetic-document",
+        frame: "frame-A",
+        rendererPid: 101,
+        targetNodeId: "311",
+        traceSha256: "a".repeat(64),
+        sourceRevision: calibratedChrome155Observations.sourceRevision,
+        ...bindingChanges,
+      },
+    },
+  };
+}
+
+function analyzeCalibratedInteraction(options) {
+  const input = makeCalibratedInteraction(options);
+  return analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  );
+}
+
+test("retains raw and source-rounded maximum ties without a false presentation claim", () => {
+  const analysis = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 79668, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 78500, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  });
+  const [group] = analysis.interactionGroups;
+
+  assert.equal(group.countClosure.status, "closed");
+  assert.deepEqual(group.observedMaximum.rawMembers, ["member-1", "member-3"]);
+  assert.deepEqual(group.observedMaximum.roundedMembers, [
+    "member-1",
+    "member-2",
+    "member-3",
+  ]);
+  assert.equal(group.observedMaximum.presentationClaimEligible, false);
+});
+
+test("a recognized fallback maximum remains in the maximum calculation", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 90000, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.observedMaximum.rawDurationUs, 90000);
+  assert.deepEqual(group.observedMaximum.rawMembers, ["member-1"]);
+  assert.equal(group.observedMaximum.presentationClaimEligible, false);
+});
+
+test("source rounding uses half-up 8 ms boundaries in integer microseconds", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 3999, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 4000, endpoint: "fallback" },
+      { type: "keydown", durationUs: 11999, endpoint: "fallback" },
+      { type: "click", durationUs: 12000, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.deepEqual(
+    group.members.map(({ durationUs, sourceRoundedDurationMs }) => [
+      durationUs,
+      sourceRoundedDurationMs,
+    ]),
+    [
+      [3999, 0],
+      [4000, 8],
+      [11999, 8],
+      [12000, 16],
+    ],
+  );
+});
+
+test("unknown or contradictory fallback endpoints keep the maximum unavailable", () => {
+  const unknown = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 2083, endpoint: "unknown" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const contradictory = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        fallbackTimeUs: 25339,
+      },
+      { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(unknown.members[1].endpointClass, "unknown");
+  assert.equal(unknown.members[1].durationUs, null);
+  assert.equal(unknown.observedMaximum, null);
+  assert.equal(contradictory.members[0].endpointClass, "unknown");
+  assert.equal(contradictory.observedMaximum, null);
+  assert.equal(unknown.status, "diagnostic-only");
+});
+
+test("the contracted 11 ms window admits strict interior starts and leaves boundaries open", () => {
+  const inside = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 110901,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const atLeadingBoundary = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 110900,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const atTrailingBoundary = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 288900,
+      },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(inside.countClosure.status, "closed");
+  assert.equal(atLeadingBoundary.countClosure.status, "open");
+  assert.equal(atTrailingBoundary.countClosure.status, "open");
+});
+
+test("the contracted window compares binary64 snapshot times as exact rationals", () => {
+  const [group] = analyzeCalibratedInteraction({
+    beforeObservedAt: 0.3,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 11200,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "closed");
+});
+
+test("unmatched counters, ambiguous exact pairs, and incomplete records keep closure open", () => {
+  const missing = analyzeCalibratedInteraction({
+    members: [{ type: "click", durationUs: 79668, endpoint: "presentation" }],
+    counterDeltas: { pointerdown: 1 },
+  }).interactionGroups[0];
+  const ambiguous = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 150000,
+        asyncId: 90,
+        modernAsyncId: 91,
+        counted: false,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const incomplete = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        incomplete: "modern",
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(missing.countClosure.status, "open");
+  assert.ok(
+    missing.countClosure.byType.some(
+      ({ eventType, C, R }) =>
+        eventType === "pointerdown" && C === 1 && R === 0,
+    ),
+  );
+  assert.equal(ambiguous.countClosure.status, "open");
+  assert.equal(incomplete.countClosure.status, "open");
+});
+
+test("a paired record outside the contracted window cannot satisfy an in-window counter", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 88000,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("keyboard counters close on exact members while input surplus stays open", () => {
+  const keydown = analyzeCalibratedInteraction({
+    members: [
+      { type: "keydown", durationUs: 25338, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const inputSurplus = analyzeCalibratedInteraction({
+    members: [{ type: "click", durationUs: 79668, endpoint: "presentation" }],
+    counterDeltas: { input: 1 },
+  }).interactionGroups[0];
+
+  assert.equal(keydown.countClosure.status, "closed");
+  assert.ok(
+    keydown.countClosure.byType.some(
+      ({ eventType, C, R, N, D }) =>
+        eventType === "keydown" && C === 1 && R === 1 && N === 1 && D === 0,
+    ),
+  );
+  assert.equal(inputSurplus.countClosure.status, "open");
+});
+
+test("navigation keys are absent when disabled and require a complete accepted map when present", () => {
+  const absent = analyzeCalibratedInteraction().interactionGroups[0];
+  const present = analyzeCalibratedInteraction({ navigationKeys: "present" })
+    .interactionGroups[0];
+  const partial = analyzeCalibratedInteraction({ navigationKeys: "partial" })
+    .interactionGroups[0];
+
+  assert.equal(absent.countClosure.status, "closed");
+  assert.deepEqual(absent.countClosure.unsupportedApiTypes, [
+    "navigate",
+    "popstate",
+    "hashchange",
+  ]);
+  assert.equal(present.countClosure.status, "open");
+  assert.equal(partial.countClosure.status, "unavailable");
+});
+
+test("calibration declarations are recomputed and private capture identifiers stay out of output", () => {
+  const input = makeCalibratedInteraction({
+    sidecarChanges: {
+      status: "invalid",
+      clickDelta: 999,
+      documentId: "TRACE_PRIVATE_DOCUMENT_MARKER",
+    },
+    bindingChanges: {
+      frame: "frame-A",
+      rendererPid: 101,
+      documentId: "TRACE_PRIVATE_DOCUMENT_MARKER",
+    },
+  });
+  const analysis = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  );
+  const serialized = JSON.stringify(analysis.interactionGroups);
+
+  assert.equal(
+    analysis.interactionGroups[0].countClosure.status,
+    "unavailable",
+  );
+  assert.equal(analysis.interactionGroups[0].formalStatus, "unavailable");
+  assert.doesNotMatch(
+    serialized,
+    /TRACE_PRIVATE_|101|frame-A|synthetic-document|calibrated-synthetic\.trace\.json/,
+  );
+});
+
+test("trace data loss prevents bounded calibration closure", () => {
+  const [group] = analyzeCalibratedInteraction({
+    traceDataLoss: true,
+  }).interactionGroups;
+
+  assert.equal(group.status, "diagnostic-only");
+  assert.equal(group.countClosure.status, "unavailable");
+  assert.ok(group.reasonCodes.includes("TRACE_DATA_LOSS"));
+});
+
+test("unsupported source descriptors do not activate calibrated groups", () => {
+  const input = makeCalibratedInteraction();
+  const analysis = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    { ...input.observations, extra: "not-exact" },
+    undefined,
+    input.calibration,
+  );
+
+  assert.equal(Object.hasOwn(analysis, "interactionGroups"), false);
+});
