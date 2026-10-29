@@ -5534,6 +5534,7 @@ function makeCalibratedInteraction({
   sidecarChanges = {},
   bindingChanges = {},
   traceDataLoss = false,
+  extraEvents = [],
 } = {}) {
   const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
   const events = [];
@@ -5613,6 +5614,7 @@ function makeCalibratedInteraction({
       counts[member.type] += 1;
     }
   }
+  events.push(...extraEvents);
 
   for (const [type, count] of Object.entries(counterDeltas)) {
     counts[type] = count;
@@ -5686,6 +5688,112 @@ function makeCalibratedInteraction({
     },
   };
 }
+
+function makeMalformedCalibratedSlice(
+  name,
+  { beginUs, durationUs = 1000 } = {},
+) {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const begin = structuredClone(
+    name === "EventTiming" ? template.traceEvents[0] : template.traceEvents[1],
+  );
+  const end = structuredClone(
+    name === "EventTiming" ? template.traceEvents[3] : template.traceEvents[2],
+  );
+
+  begin.pid = end.pid = 101;
+  begin.tid = end.tid = 7;
+  begin.ts = beginUs;
+  end.ts = beginUs + durationUs;
+  if (name === "EventTiming") {
+    begin.id = end.id = "0xfeed";
+    Object.assign(begin.args.data, {
+      type: "pointerdown",
+      frame: "frame-A",
+      nodeId: 311,
+      interactionId: 17,
+      interactionOffset: 19,
+      timeStamp: (beginUs - 9000) / 1000,
+      processingStart: (beginUs + 100 - 9000) / 1000,
+      processingEnd: (beginUs + 200 - 9000) / 1000,
+      unsupported_legacy_field: "synthetic malformed marker",
+    });
+  } else {
+    begin.id2.local = end.id2.local = "0xbeef";
+    Object.assign(begin.args.event_timing, {
+      type: "POINTER_DOWN_EVENT",
+      frame: "frame-A",
+      node_id: 311,
+      interaction_id: 17,
+      interaction_offset: 19,
+    });
+    begin.args.event_timing.unsupported_event_timing_field =
+      "synthetic malformed marker";
+  }
+  return [begin, end];
+}
+
+test("scope-identifiable parser-rejected modern records prevent count closure", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventProcessing", {
+      beginUs: 160000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+});
+
+test("scope-identifiable parser-rejected legacy records prevent count closure", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventTiming", {
+      beginUs: 160000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+});
+
+test("parser-rejected relevant records near a calibration boundary keep closure open", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventProcessing", {
+      beginUs: 110950,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(
+    group.reasonCodes.includes("INTERACTION_MEMBER_BOUNDARY_UNCERTAIN"),
+  );
+});
 
 function analyzeCalibratedInteraction(options) {
   const input = makeCalibratedInteraction(options);

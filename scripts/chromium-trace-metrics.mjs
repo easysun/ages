@@ -4081,11 +4081,31 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
     typeof traceRecord?.trace === "string" && traceRecord.trace.length > 0
       ? traceRecord.trace
       : null;
-  const parsedLegacy = legacyPairs.spans
-    .map((span) =>
-      legacyCrosswalkEntry(span, captureCase, rejectionCounts, profile),
-    )
-    .filter((entry) => entry !== null);
+  const parsedLegacy = [];
+  const rejectedEntries = [];
+  const parsedBeginIndexes = new Set();
+  const rejectedBeginIndexes = new Set();
+  for (const span of legacyPairs.spans) {
+    const entry = legacyCrosswalkEntry(
+      span,
+      captureCase,
+      rejectionCounts,
+      profile,
+    );
+    if (entry !== null) {
+      parsedLegacy.push(entry);
+      parsedBeginIndexes.add(span.beginIndex);
+      continue;
+    }
+    const partial = partialInteractionEntry(
+      { event: span.begin, index: span.beginIndex, name: "EventTiming" },
+      traceRecord,
+    );
+    if (partial !== null) {
+      rejectedEntries.push(partial);
+      rejectedBeginIndexes.add(span.beginIndex);
+    }
+  }
 
   const originsByScope = new Map();
   for (const entry of parsedLegacy) {
@@ -4126,10 +4146,52 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
   const modernIdentityGroups = new Map();
   for (const span of modernPairs.spans) {
     const entry = modernCrosswalkEntry(span, rejectionCounts, profile);
-    if (entry !== null && entry.legacyType !== null) {
+    if (entry === null) {
+      const partial = partialInteractionEntry(
+        { event: span.begin, index: span.beginIndex, name: "EventProcessing" },
+        traceRecord,
+      );
+      if (partial !== null) {
+        rejectedEntries.push(partial);
+        rejectedBeginIndexes.add(span.beginIndex);
+      }
+      continue;
+    }
+    parsedBeginIndexes.add(span.beginIndex);
+    if (entry.legacyType !== null) {
       entry.captureCase = captureCase;
       addToGroups(modernGroups, entry);
       addToGroups(modernIdentityGroups, entry, crosswalkBaseIdentityKey);
+    }
+  }
+
+  const incompleteBeginIndexes = new Set([
+    ...legacyPairs.incompleteBegins.map(({ index }) => index),
+    ...modernPairs.incompleteBegins.map(({ index }) => index),
+  ]);
+  for (const [index, event] of trace.traceEvents.entries()) {
+    if (
+      !isRecord(event) ||
+      (event.name !== "EventTiming" && event.name !== "EventProcessing") ||
+      event.ph === "e" ||
+      event.ph === "n" ||
+      parsedBeginIndexes.has(index) ||
+      incompleteBeginIndexes.has(index) ||
+      rejectedBeginIndexes.has(index)
+    ) {
+      continue;
+    }
+    const partial = partialInteractionEntry(
+      {
+        event,
+        index,
+        name: event.name,
+      },
+      traceRecord,
+    );
+    if (partial !== null) {
+      rejectedEntries.push(partial);
+      rejectedBeginIndexes.add(index);
     }
   }
 
@@ -4306,6 +4368,7 @@ function discreteEventTimingCrosswalk(trace, traceRecord, profile) {
     exactPairs,
     ambiguousEntries,
     unmatchedEntries,
+    rejectedEntries,
     incompleteBegins: [
       ...legacyPairs.incompleteBegins.map((item) => ({
         event: item.event,
@@ -4730,6 +4793,10 @@ function countClosureForInteractionGroup({
       entry,
       reason: "AMBIGUOUS_RELEVANT_ENTRY",
     })),
+    ...pairDetails.rejectedEntries.map((entry) => ({
+      entry,
+      reason: "MALFORMED_RELEVANT_ENTRY",
+    })),
     ...pairDetails.incompleteBegins
       .map((item) => partialInteractionEntry(item, traceRecord))
       .filter((entry) => entry !== null)
@@ -4887,6 +4954,7 @@ function analyzeChrome155InteractionGroups(
     ...[
       ...pairDetails.unmatchedEntries,
       ...pairDetails.ambiguousEntries,
+      ...pairDetails.rejectedEntries,
       ...pairDetails.incompleteBegins
         .map((item) => partialInteractionEntry(item, traceRecord))
         .filter((entry) => entry !== null),
