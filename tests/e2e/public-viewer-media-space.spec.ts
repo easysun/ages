@@ -34,6 +34,8 @@ test("public viewer reserves cover and story image space until delayed bytes dec
   page,
   context,
 }) => {
+  // Fixture setup and three image-decoding scenarios share this test's budget.
+  test.setTimeout(60_000);
   const { owner, ids } = await seedLibrary(context);
   const landscape = ids[0];
   if (!landscape) throw new Error("Missing seeded image IDs.");
