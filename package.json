@@ -19,7 +19,7 @@
     "test:integration": "vitest run tests/integration",
     "test:watch": "vitest",
     "test:recovery-drill": "node --test tests/tools/recovery-drill.test.mjs",
-    "test:trace-metrics": "node --test tests/tools/chromium-trace-metrics.test.mjs tests/tools/chromium-trace-cli.test.mjs tests/tools/chromium-method-pilot.test.mjs tests/tools/retained-input-node-evidence.test.mjs tests/tools/click-count-calibration.test.mjs",
+    "test:trace-metrics": "node --test tests/tools/chromium-trace-metrics.test.mjs tests/tools/chromium-trace-cli.test.mjs tests/tools/chromium-method-pilot.test.mjs tests/tools/retained-input-node-evidence.test.mjs tests/tools/click-count-calibration.test.mjs tests/tools/manual-timeline-open-observer.test.mjs",
     "check": "npm run build:client && npm run lint && npm run typecheck && npm run test && npm run test:recovery-drill && npm run test:trace-metrics && npm run build:worker && npm run build:tracking-worker && playwright test",
     "build:client": "vite build",
     "build:worker": "wrangler deploy --env \"\" --dry-run --outdir dist/worker",
