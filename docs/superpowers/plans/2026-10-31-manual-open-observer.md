@@ -24,7 +24,7 @@
 - Replacement of the `main` element during SPA navigation must not detach the observer; test stable `#root` observation and cleanup.
 - Keyboard-generated trusted click and separately recorded physical modality must not be conflated; test allowed unmodified click while never reporting modality.
 - Mutation bursts, detached root, changed time origin and visibility loss must not leak listeners or yield completion; test each outcome.
-- A failed marker call, exception from accessors, frame cancellation or stale group after the first frame must fail closed without exposing thrown data.
+- A failed marker call leaves its marker flag false while projection readiness remains DOM-only. Evidence consumers must reject runs with missing required marker flags or marker trace events during later trace verification. Exceptions from accessors, frame cancellation or stale groups after the first frame must fail closed without exposing thrown data.
 - Adjacent groups with equal total but missing/overlapping ordinals must be rejected, as must malformed or oversized inputs.
 
 ### Task 1: Add a bounded manual open observer

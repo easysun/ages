@@ -50,10 +50,14 @@ function fixtureHtml() {
       </div>
       <button id="extra" type="button">Extra activation</button>
       <script>
+        window.initialRoot = document.querySelector("#root");
+        window.initialListMain = document.querySelector("main#main.timeline-page");
         window.markerLabels = [];
         console.timeStamp = (label) => window.markerLabels.push(label);
         window.applicationClicks = 0;
         window.lastApplicationClickTrusted = null;
+        window.lastApplicationClickDetail = null;
+        window.pointerDownTypes = [];
         window.destinationPath = ${JSON.stringify(expectedPath)};
         window.projectionMode = "valid";
         window.groupRanges = null;
@@ -61,10 +65,19 @@ function fixtureHtml() {
         window.popstateCount = 0;
         window.addEventListener("popstate", () => { window.popstateCount += 1; });
         window.renderProjection = (mode) => {
-          const main = document.querySelector("main#main.timeline-page");
+          let main = document.querySelector("main#main.timeline-page");
           if (mode === "detach-root") {
             document.querySelector("#root").remove();
             return;
+          }
+          if (mode === "replace-main") {
+            main.remove();
+            main = document.createElement("main");
+            main.id = "main";
+            main.className = "timeline-page";
+            main.dataset.view = "editor";
+            document.querySelector("#root").append(main);
+            window.editorMain = main;
           }
           if (mode === "transparent-ancestor") {
             document.querySelector("#root").style.opacity = "0";
@@ -100,11 +113,15 @@ function fixtureHtml() {
         document.querySelector("#target").addEventListener("click", (event) => {
           window.applicationClicks += 1;
           window.lastApplicationClickTrusted = event.isTrusted;
+          window.lastApplicationClickDetail = event.detail;
           if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
           event.preventDefault();
           history.pushState({}, "", window.destinationPath);
           if (window.projectionMode === "wrong-route") history.pushState({}, "", "/wrong-destination");
           if (window.renderOnClick) queueMicrotask(() => window.renderProjection(window.projectionMode));
+        });
+        document.querySelector("#target").addEventListener("pointerdown", (event) => {
+          window.pointerDownTypes.push(event.pointerType);
         });
         document.querySelector("#wrong").addEventListener("click", (event) => {
           event.preventDefault();
@@ -339,6 +356,44 @@ test("manual Timeline-open observer stays bounded, passive, and sanitized", {
       },
     );
 
+    await t.test(
+      "native keyboard activation is accepted without reporting pointer modality",
+      async () => {
+        await withPage(async ({ page, session }) => {
+          await instrumentListeners(page);
+          await startObserver(page, session);
+          await page.locator("#target").focus();
+          await page.keyboard.press("Enter");
+          const status = await waitForState(page, "projection-ready");
+
+          assert.equal(await page.evaluate(() => window.applicationClicks), 1);
+          assert.equal(
+            await page.evaluate(() => window.lastApplicationClickTrusted),
+            true,
+          );
+          assert.equal(
+            await page.evaluate(() => window.lastApplicationClickDetail),
+            0,
+          );
+          assert.deepEqual(
+            await page.evaluate(() => window.pointerDownTypes),
+            [],
+          );
+          assert.deepEqual(Object.keys(status).sort(), statusKeys);
+          assert.equal("pointerModality" in status, false);
+          assert.equal(status.clickCount, 1);
+          assert.equal(status.primaryClickMarkerSeen, true);
+          assert.equal(status.completionEndMarkerSeen, true);
+          assert.deepEqual(await page.evaluate(() => window.markerLabels), [
+            "ages-open-v1:100-interactive:capture-start",
+            "ages-open-v1:100-interactive:primary-click",
+            "ages-open-v1:100-interactive:completion-end",
+          ]);
+          await assertListenersClean(page);
+        });
+      },
+    );
+
     await t.test("10000-item contiguous projection is accepted", async () => {
       await withPage(async ({ page, session }) => {
         await page.evaluate((ranges) => {
@@ -569,6 +624,59 @@ test("manual Timeline-open observer stays bounded, passive, and sanitized", {
           );
           assert.ok(root);
           await disposeObserver(page);
+        });
+      },
+    );
+
+    await t.test(
+      "SPA editor replaces the list main under the same root and cleans up",
+      async () => {
+        await withPage(async ({ page, session }) => {
+          await page.evaluate(() => {
+            window.projectionMode = "replace-main";
+          });
+          await instrumentListeners(page);
+          await startObserver(page, session);
+          await page.locator("#target").click();
+          const status = await waitForState(page, "projection-ready");
+          const transition = await page.evaluate(() => {
+            const currentRoot = document.querySelector("#root");
+            const currentMain = document.querySelector(
+              "main#main.timeline-page",
+            );
+            return {
+              sameRoot: currentRoot === window.initialRoot,
+              originalListMainDetached: !window.initialListMain.isConnected,
+              freshEditorMain:
+                currentMain === window.editorMain &&
+                currentMain !== window.initialListMain &&
+                currentMain.dataset.view === "editor",
+              projectionUnderEditor:
+                currentMain.querySelectorAll(
+                  'section.story-viewport[data-viewport="story"] svg[role="img"][aria-label="Narrative order overview"]',
+                ).length === 1,
+            };
+          });
+
+          assert.deepEqual(transition, {
+            sameRoot: true,
+            originalListMainDetached: true,
+            freshEditorMain: true,
+            projectionUnderEditor: true,
+          });
+          assert.equal(status.state, "projection-ready");
+          assert.equal(status.pathMatches, true);
+          assert.equal(status.completionEndMarkerSeen, true);
+          assert.equal(
+            await page.evaluate(() => window.location.pathname),
+            expectedPath,
+          );
+          assert.deepEqual(await page.evaluate(() => window.markerLabels), [
+            "ages-open-v1:100-interactive:capture-start",
+            "ages-open-v1:100-interactive:primary-click",
+            "ages-open-v1:100-interactive:completion-end",
+          ]);
+          await assertListenersClean(page);
         });
       },
     );
