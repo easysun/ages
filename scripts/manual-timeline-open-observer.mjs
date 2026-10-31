@@ -202,14 +202,23 @@ export function createTimelineOpenObserver(options) {
       ) {
         return false;
       }
-      const style = window.getComputedStyle(node);
-      if (
-        style.display === "none" ||
-        style.visibility === "hidden" ||
-        style.visibility === "collapse" ||
-        Number(style.opacity) === 0
-      ) {
-        return false;
+      let cumulativeOpacity = 1;
+      for (let ancestor = node; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.hidden === true) return false;
+        const style = window.getComputedStyle(ancestor);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse"
+        ) {
+          return false;
+        }
+        const opacity = Number(style.opacity);
+        if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+          throw new Error("OBSERVER_DOM_READ_FAILED");
+        }
+        cumulativeOpacity *= opacity;
+        if (cumulativeOpacity === 0) return false;
       }
       if (node.getClientRects().length === 0) return false;
       const bounds = node.getBoundingClientRect();

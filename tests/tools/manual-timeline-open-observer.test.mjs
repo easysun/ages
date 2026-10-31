@@ -66,6 +66,9 @@ function fixtureHtml() {
             document.querySelector("#root").remove();
             return;
           }
+          if (mode === "transparent-ancestor") {
+            document.querySelector("#root").style.opacity = "0";
+          }
           if (mode === "missing") return;
           if (mode === "error") {
             const error = document.createElement("p");
@@ -657,6 +660,57 @@ test("manual Timeline-open observer stays bounded, passive, and sanitized", {
         await assertListenersClean(page);
       });
     });
+
+    await t.test(
+      "transparent ancestor never marks a projection complete",
+      async () => {
+        await withPage(async ({ page, session }) => {
+          await page.evaluate(() => {
+            window.projectionMode = "transparent-ancestor";
+          });
+          await startObserver(page, session, { timeoutMs: 500 });
+          await page.locator("#target").click();
+          await page.waitForFunction(
+            () => {
+              const state = window.__observerUnderTest?.status().state;
+              return state === "projection-ready" || state === "timed-out";
+            },
+            null,
+            { timeout: 1500 },
+          );
+          const status = await statusOf(page);
+          const computed = await page.evaluate(() => {
+            const root = document.querySelector("#root");
+            const section = document.querySelector("section.story-viewport");
+            const svg = document.querySelector(
+              'svg[aria-label="Narrative order overview"]',
+            );
+            return {
+              rootOpacity: getComputedStyle(root).opacity,
+              sectionOpacity: getComputedStyle(section).opacity,
+              svgOpacity: getComputedStyle(svg).opacity,
+              sectionHasBounds: section.getBoundingClientRect().width > 0,
+              svgHasBounds: svg.getBoundingClientRect().width > 0,
+            };
+          });
+
+          assert.deepEqual(computed, {
+            rootOpacity: "0",
+            sectionOpacity: "1",
+            svgOpacity: "1",
+            sectionHasBounds: true,
+            svgHasBounds: true,
+          });
+          assert.equal(status.state, "timed-out");
+          assert.equal(status.reason, "TIMEOUT");
+          assert.equal(status.completionEndMarkerSeen, false);
+          assert.deepEqual(await page.evaluate(() => window.markerLabels), [
+            "ages-open-v1:100-interactive:capture-start",
+            "ages-open-v1:100-interactive:primary-click",
+          ]);
+        });
+      },
+    );
 
     await t.test(
       "wrong destination and detached root are rejected",
