@@ -11,7 +11,34 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate:local
+      - run: npm run db:migrate:local
+      # Same non-browser gates as "npm run check". Browser tests run
+      # separately in isolated matrix jobs to avoid a serial CI bottleneck.
+      - run: npm run build:client
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run test:recovery-drill
+      - run: npm run test:trace-metrics
+      - run: npm run build:worker
+      - run: npm run build:tracking-worker
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,12 +49,13 @@ jobs:
       - run: npm run db:migrate:local
       - run: npm run db:migrate:local
       - run: npx playwright install --with-deps chromium
-      - run: npm run check
+      - run: npm run build:client
+      - run: npx playwright test --shard=${{ matrix.shard }}/4
       - name: Upload mobile media fallback diagnostic
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: media-fallback-diagnostic
+          name: media-fallback-diagnostic-shard-${{ matrix.shard }}
           path: test-results/**/media-fallback-diagnostic.json
           if-no-files-found: ignore
           retention-days: 3
