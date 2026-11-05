@@ -21,14 +21,13 @@ jobs:
       - run: npm ci
       - run: npm run db:migrate:local
       - run: npm run db:migrate:local
-      # Same non-browser gates as "npm run check". Browser tests run
-      # separately in isolated matrix jobs to avoid a serial CI bottleneck.
+      # Run Node, static and runtime gates here. Browser-dependent trace
+      # diagnostics run in shard 1 after Chromium is installed.
       - run: npm run build:client
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run test
       - run: npm run test:recovery-drill
-      - run: npm run test:trace-metrics
       - run: npm run build:worker
       - run: npm run build:tracking-worker
 
@@ -50,6 +49,9 @@ jobs:
       - run: npm run db:migrate:local
       - run: npx playwright install --with-deps chromium
       - run: npm run build:client
+      - name: Verify Chromium trace diagnostics
+        if: matrix.shard == 1
+        run: npm run test:trace-metrics
       - run: npx playwright test --shard=${{ matrix.shard }}/4
       - name: Upload mobile media fallback diagnostic
         if: failure()
