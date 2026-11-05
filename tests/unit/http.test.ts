@@ -27,6 +27,38 @@ beforeEach(() => {
 });
 
 describe("HTTP contracts", () => {
+  it("forces noindex only when explicitly enabled for the OKE development container", async () => {
+    const app = createApp();
+    app.get("/test-index", (context) => {
+      context.header("X-Robots-Tag", "index, follow");
+      return context.text("ok");
+    });
+    const local = await app.request("/health", {}, env);
+    const isolatedDev = await app.request(
+      "/health",
+      {},
+      {
+        ...env,
+        ROBOTS_NOINDEX: "true",
+      },
+    );
+    expect(local.headers.get("X-Robots-Tag")).toBeNull();
+    expect(isolatedDev.headers.get("X-Robots-Tag")).toBe(
+      "noindex, nofollow, noarchive, nosnippet",
+    );
+    const publicRoute = await app.request(
+      "/test-index",
+      {},
+      {
+        ...env,
+        ROBOTS_NOINDEX: "true",
+      },
+    );
+    expect(publicRoute.headers.get("X-Robots-Tag")).toBe(
+      "noindex, nofollow, noarchive, nosnippet",
+    );
+  });
+
   it("correlates a response with its log without accepting a client-forged ID", async () => {
     const app = createApp();
     const response = await app.request(

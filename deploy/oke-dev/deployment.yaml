@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ages
+  namespace: ages-dev
+  labels:
+    app.kubernetes.io/name: ages
+    app.kubernetes.io/part-of: ages
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ages
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ages
+        app.kubernetes.io/part-of: ages
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ages
+          # The GitOps repository must pin this to a published git-sha image.
+          image: ghcr.io/easysun/ages-dev:sha-REPLACE_WITH_COMMIT
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          envFrom:
+            - secretRef:
+                name: ages-dev-google-oauth
+                optional: true
+          env:
+            - name: AGES_LOCAL_DATA_DIR
+              value: /data
+          startupProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            failureThreshold: 36
+            periodSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scratch
+              mountPath: /data
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: 1Gi
