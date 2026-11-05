@@ -10,7 +10,8 @@ RUN npm ci --no-audit --no-fund
 
 COPY --chown=node:node . .
 RUN npm run build:client \
-    && printf 'User-agent: *\nDisallow: /\n' > dist/client/robots.txt
+    && printf 'User-agent: *\nDisallow: /\n' > dist/client/robots.txt \
+    && printf '/*\n  X-Robots-Tag: noindex, nofollow, noarchive, nosnippet\n  Cache-Control: private, no-store\n  X-Content-Type-Options: nosniff\n  X-Frame-Options: DENY\n  Referrer-Policy: no-referrer\n' > dist/client/_headers
 
 ENV HOME=/home/node \
     NODE_ENV=development
