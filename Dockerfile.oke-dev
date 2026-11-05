@@ -1,0 +1,18 @@
+FROM node:22.22.2-bookworm-slim
+
+WORKDIR /app
+
+# The container runs Wrangler's local simulator, not a production Cloudflare Worker.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+COPY . .
+RUN npm run build:client \
+    && mkdir -p /data \
+    && chown -R node:node /app /data
+
+ENV HOME=/home/node \
+    NODE_ENV=development
+USER node
+EXPOSE 8787
+CMD ["/bin/sh", "deploy/oke-dev/start.sh"]
