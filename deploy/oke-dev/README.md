@@ -10,6 +10,7 @@ This runs **Wrangler local simulation**, not a Cloudflare Worker production depl
 - The development container serves local HTTP with `APP_ORIGIN=http://127.0.0.1:8787`. It is usable only through the authenticated Kubernetes private API and `kubectl port-forward`, not through a public Cloudflare Tunnel. The tracking Worker is not deployed here.
 - `/health` is the liveness endpoint; `/health/ready` also checks simulated D1/R2/KV bindings. The Wrangler startup runs local migrations before starting the server.
 - Login requires separate Google OAuth credentials and the local callback `http://127.0.0.1:8787/auth/google/callback`; without them, use anonymous smoke tests only. Do not reuse production OAuth secrets.
+- The container emits `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet` from Worker routes and serves `robots.txt` containing `Disallow: /`. These are **not access controls**: require Cloudflare Access before exposing an external hostname, and set a host-scoped edge `X-Robots-Tag` rule to cover static assets and denied responses.
 
 ## Image pipeline
 

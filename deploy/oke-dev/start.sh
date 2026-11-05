@@ -10,6 +10,7 @@ const { writeFileSync } = require("node:fs");
 const variables = {
   APP_ORIGIN: "http://127.0.0.1:8787",
   TRACKING_ORIGIN: "http://localhost:8798",
+  ROBOTS_NOINDEX: "true",
 };
 for (const name of ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]) {
   if (process.env[name]) variables[name] = process.env[name];

@@ -9,7 +9,8 @@ COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY --chown=node:node . .
-RUN npm run build:client
+RUN npm run build:client \
+    && printf 'User-agent: *\nDisallow: /\n' > dist/client/robots.txt
 
 ENV HOME=/home/node \
     NODE_ENV=development
