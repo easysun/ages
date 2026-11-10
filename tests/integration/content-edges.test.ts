@@ -103,6 +103,34 @@ async function seedIncomingEdges(
   await env.DB.batch(statements);
 }
 
+async function seedOutgoingEdges(
+  sourceId: string,
+  candidates: { targetId: string; createdAt: string }[],
+) {
+  const statements = candidates.flatMap(({ targetId, createdAt }) => [
+    env.DB.prepare(`INSERT INTO content_nodes
+      (id,owner_id,kind,visibility,timeline_id,url,title,created_at,updated_at)
+      VALUES (?,?,'external','public',NULL,?,?,?,?)`).bind(
+      targetId,
+      "owner_a",
+      `https://example.test/${targetId}`,
+      targetId,
+      createdAt,
+      createdAt,
+    ),
+    env.DB.prepare(`INSERT INTO content_edges
+      (id,source_id,target_id,type,creator_id,created_at)
+      VALUES (?,?,?,'references',?,?)`).bind(
+      `ce_${targetId}`,
+      sourceId,
+      targetId,
+      "owner_a",
+      createdAt,
+    ),
+  ]);
+  await env.DB.batch(statements);
+}
+
 async function createExternal(
   title: string,
   visibility: "private" | "unlisted" | "public",
@@ -308,6 +336,20 @@ describe("directed ContentEdges", () => {
       ],
       next_cursor: null,
     });
+    const outgoing = await edgeList(source.id, "outgoing");
+    expect(outgoing.status).toBe(200);
+    expect(await outgoing.json()).toMatchObject({
+      edges: [
+        {
+          id: edge.id,
+          type: "related_to",
+          source: { id: source.id, title: "Source story" },
+          target: { id: target.id, title: "Target story" },
+        },
+      ],
+      next_cursor: null,
+    });
+
     const reverse = await edgeList(source.id, "incoming");
     expect((await reverse.json<{ edges: unknown[] }>()).edges).toHaveLength(0);
     expect(await count("content_edges")).toBe(1);
@@ -774,6 +816,106 @@ describe("directed ContentEdges", () => {
 });
 
 describe("edge listing and owner review", () => {
+  it.each([0, 1, 29, 30, 31, 100, 500])(
+    "returns every visible relation exactly once across pages with %i relations",
+    async (total) => {
+      const target = await createExternal("Pagination target", "public", other);
+      const candidates = Array.from({ length: total }, (_, index) => ({
+        sourceId: `cn_page_${String(index).padStart(4, "0")}`,
+        visibility: "public" as const,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }));
+      if (candidates.length > 0) await seedIncomingEdges(target.id, candidates);
+
+      const sourceByEdgeId = new Map(
+        candidates.map(({ sourceId }) => [`ce_${sourceId}`, sourceId]),
+      );
+      const seen: {
+        id: string;
+        source: { id: string };
+        target: { id: string };
+      }[] = [];
+      let cursor: string | null = null;
+      const maxPages = Math.max(1, Math.ceil(total / 30));
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        const query = `limit=30${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+        const response = await edgeList(target.id, "incoming", query);
+        expect(response.status).toBe(200);
+        const page = await response.json<{
+          edges: {
+            id: string;
+            source: { id: string };
+            target: { id: string };
+          }[];
+          next_cursor: string | null;
+        }>();
+        expect(page.edges.length).toBeLessThanOrEqual(30);
+        seen.push(...page.edges);
+        expect(seen.length).toBeLessThanOrEqual(total);
+        cursor = page.next_cursor;
+        if (cursor === null) break;
+      }
+
+      expect(cursor).toBeNull();
+      expect(seen).toHaveLength(total);
+      expect(new Set(seen.map(({ id }) => id))).toEqual(
+        new Set(sourceByEdgeId.keys()),
+      );
+      expect(
+        seen.every(
+          ({ id, source, target: edgeTarget }) =>
+            sourceByEdgeId.get(id) === source.id && edgeTarget.id === target.id,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("returns outgoing relations across pages with each edge paired to its source and target", async () => {
+    const source = await createExternal("Outgoing pagination source", "public");
+    const candidates = Array.from({ length: 31 }, (_, index) => ({
+      targetId: `cn_outgoing_${String(index).padStart(4, "0")}`,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }));
+    await seedOutgoingEdges(source.id, candidates);
+
+    const targetByEdgeId = new Map(
+      candidates.map(({ targetId }) => [`ce_${targetId}`, targetId]),
+    );
+    const seen: {
+      id: string;
+      source: { id: string };
+      target: { id: string };
+    }[] = [];
+    const pageSizes: number[] = [];
+    let cursor: string | null = null;
+    const maxPages = Math.max(1, Math.ceil(candidates.length / 30));
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      const query = `limit=30${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+      const response = await edgeList(source.id, "outgoing", query);
+      expect(response.status).toBe(200);
+      const page = await response.json<{
+        edges: { id: string; source: { id: string }; target: { id: string } }[];
+        next_cursor: string | null;
+      }>();
+      pageSizes.push(page.edges.length);
+      seen.push(...page.edges);
+      cursor = page.next_cursor;
+      if (cursor === null) break;
+    }
+
+    expect(cursor).toBeNull();
+    expect(pageSizes).toEqual([30, 1]);
+    expect(new Set(seen.map(({ id }) => id))).toEqual(
+      new Set(targetByEdgeId.keys()),
+    );
+    expect(
+      seen.every(
+        ({ id, source: edgeSource, target }) =>
+          edgeSource.id === source.id && targetByEdgeId.get(id) === target.id,
+      ),
+    ).toBe(true);
+  });
+
   it("keeps anonymous reads no-store on success and errors while preserving node authentication", async () => {
     const source = await createExternal("Source", "public");
     const target = await createExternal("Target", "public", other);
