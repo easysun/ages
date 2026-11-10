@@ -28,10 +28,13 @@ export async function exchangeGoogleCode(
   const config = oauthConfig(bindings);
   let response: Response;
   let payload: unknown;
+  let stage: "fetch" | "response" | "decode" = "fetch";
+  let providerStatus: number | null = null;
+  let responseFormat: "unavailable" | "json" | "other" = "unavailable";
   try {
     response = await fetch("https://oauth2.googleapis.com/token", {
       method: "POST",
-      redirect: "error",
+      redirect: "manual",
       signal: AbortSignal.timeout(10_000),
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -43,9 +46,31 @@ export async function exchangeGoogleCode(
         code_verifier: verifier,
       }),
     });
+    stage = "response";
+    providerStatus = response.status;
+    responseFormat =
+      response.headers
+        .get("Content-Type")
+        ?.split(";", 1)[0]
+        ?.trim()
+        .toLowerCase() === "application/json"
+        ? "json"
+        : "other";
+    if (response.status >= 300 && response.status < 400)
+      throw new Error("Provider redirect rejected");
     if (response.status >= 500) throw new Error("Provider unavailable");
+    stage = "decode";
     payload = await response.json();
   } catch {
+    // Closed fields identify the failing boundary without logging provider data.
+    console.error(
+      JSON.stringify({
+        event: "oauth_token_exchange_failed",
+        stage,
+        provider_status: providerStatus,
+        response_format: responseFormat,
+      }),
+    );
     throw new ApiError("SERVICE_UNAVAILABLE");
   }
   const token = z

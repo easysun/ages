@@ -90,6 +90,24 @@ Owners can replace each Link’s exact tags, channel labels, five UTM values, an
 
 Before running `npm run check` for the first time, install the browser with `npx playwright install chromium` (CI installs Chromium and system dependencies). Browser tests run the built client through actual HTTP at `http://127.0.0.1:8791`, with `.wrangler/e2e` persistence and synthetic users, hashed sessions, and PNG media seeded by local Wrangler CLI commands. Session cookies are injected only by Playwright fixtures, with no production authentication or fixture endpoint. Tests cover anonymous gating, foreign asset isolation, real media, tag persistence, pagination, desktop keyboard controls, 375-pixel touch layouts, request races (including upload/filter and upload/sign-out), upload recovery, focus restoration after tag edits, Timeline create/edit/append/share flows, 100-item ordering, stale-version recovery, viewport navigation, and API/client routing. Test screenshots and traces are written to ignored `test-results/`.
 
+The local Chromium method pilot can optionally record bounded synthetic input observations with installed Brave:
+
+```sh
+node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run --browser=installed-brave --observe-inputs
+```
+
+This opt-in writes diagnostic sidecars under `.superpowers/sdd/trusted-stimulus-discovery/runs/`. The events come from synthetic Playwright actions; DOM `isTrusted` only identifies browser-dispatched events and does not prove human input. Input-to-next-paint remains unproven.
+
+To include bounded retained input-node evidence for offline diagnostics, use this exact opt-in:
+
+```sh
+node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run --browser=installed-brave --observe-inputs --retain-input-nodes
+```
+
+Retained-node results remain diagnostic-only and do not qualify formal performance samples.
+
+Offline trace analysis verifies the manifest-declared trace and sidecar bytes, then reports bounded, sanitized discrete-input diagnostics. Formal action samples and input-to-next-paint measurements remain unavailable.
+
 Local upload browser scenarios simulate only the signed R2 transport: Playwright intercepts the synthetic S3 hostname, checks the PUT headers and binary body, seeds that object into local R2, and calls the real completion API. These are **simulated upload transport** checks, not evidence of cloud signature enforcement or CORS. Actual Google sign-in and live browser PUT remain the existing credentialed cloud smoke gates.
 
 ## Direct media upload
@@ -206,7 +224,7 @@ Trash purge claims the exact internal deletion generation in D1 before R2 deleti
 
 ## Local recovery rehearsal
 
-Run `npm run recovery:drill` to apply migrations to a fresh synthetic local D1 database, export schema and data separately, restore them into a second local D1 database, and independently back up and restore a synthetic PNG in local R2. Each run keeps its configs, SQL exports, object copies, command log, and report under the ignored `.wrangler/recovery-drills/<run-id>/` directory; the command does not access Cloudflare or production resources. A failure stops the run and preserves its evidence. The restored R2 PUT uses the source D1 `mime_type`, but the installed Wrangler CLI cannot read back stored R2 HTTP metadata, so that value is not independently verified. Run `npm run test:recovery-drill` for the local safety and comparison guards. This synthetic rehearsal does not close the Cloudflare recovery gate.
+Run `npm run recovery:drill` to apply migrations to a fresh synthetic local D1 database, export schema and data separately, restore them into a second local D1 database, and independently back up and restore a synthetic PNG in local R2. During the offline restore, the drill captures and drops all application triggers before loading exported rows, then reinstalls and compares their exact definitions. It checks live links and retained slug reservations, probes that the restored reservation trigger rejects reuse, and runs D1 `quick_check` and `foreign_key_check` before reporting success. Each run keeps its configs, SQL exports, object copies, command log, and report under the ignored `.wrangler/recovery-drills/<run-id>/` directory; the command does not access Cloudflare or production resources. A failure stops the run and preserves its evidence. The restored R2 PUT uses the source D1 `mime_type`, but the installed Wrangler CLI cannot read back stored R2 HTTP metadata, so that value is not independently verified. Run `npm run test:recovery-drill` for the local safety and comparison guards. This synthetic rehearsal does not close the Cloudflare recovery gate.
 
 ## Content reports and reversible moderation
 

@@ -1,0 +1,127 @@
+{
+  "traceEvents": [
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10000,
+      "id": "0x1",
+      "args": {
+        "data": {
+          "type": "click",
+          "frame": "frame-A",
+          "nodeId": 311,
+          "cancelable": true,
+          "interactionId": 4,
+          "interactionOffset": 5,
+          "timeStamp": 1,
+          "processingStart": 1.001,
+          "processingEnd": 1.005
+        }
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10001,
+      "id2": { "local": "0x2" },
+      "args": {
+        "event_timing": {
+          "type": "CLICK_EVENT",
+          "frame": "frame-A",
+          "node_id": 311,
+          "cancelable": true,
+          "interaction_id": 4,
+          "interaction_offset": 5
+        },
+        "fallback_reason": "None",
+        "fallback_time": 0
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10005,
+      "id2": { "local": "0x2" }
+    },
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 10008,
+      "id": "0x1"
+    },
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 20000,
+      "id": "0x4",
+      "args": {
+        "data": {
+          "type": "pointermove",
+          "frame": "frame-A",
+          "nodeId": 311,
+          "cancelable": false,
+          "interactionId": 0,
+          "interactionOffset": 0,
+          "timeStamp": 11,
+          "processingStart": 11.001,
+          "processingEnd": 11.005
+        }
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "b",
+      "pid": 101,
+      "tid": 7,
+      "ts": 20001,
+      "id2": { "local": "0x5" },
+      "args": {
+        "event_timing": {
+          "type": "POINTER_MOVE_EVENT",
+          "frame": "frame-A",
+          "node_id": 311,
+          "cancelable": false,
+          "interaction_id": 0,
+          "interaction_offset": 0,
+          "pointer_id": 1
+        },
+        "fallback_reason": "None",
+        "fallback_time": 0
+      }
+    },
+    {
+      "name": "EventProcessing",
+      "cat": "latency",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 20005,
+      "id2": { "local": "0x5" }
+    },
+    {
+      "name": "EventTiming",
+      "cat": "devtools.timeline",
+      "ph": "e",
+      "pid": 101,
+      "tid": 7,
+      "ts": 20008,
+      "id": "0x4"
+    }
+  ]
+}

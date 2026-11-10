@@ -838,7 +838,7 @@ export function ContentEdgesPanel({
               : "Load older incoming review"}
           </button>
         ) : null}
-        {review.length === 0 && !loading ? (
+        {review.length === 0 && incoming.length === 0 && !loading ? (
           <p>No incoming relationships.</p>
         ) : (
           <ul className="content-edge-list">
