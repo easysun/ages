@@ -42,12 +42,19 @@ async function installNetworkStubs(
   const destinationReferrers: string[] = [];
   const trackingCookieHeaders: string[] = [];
   const continuationOrigins: string[] = [];
+  const continuationStatuses: number[] = [];
   const vendorReferrers: string[] = [];
   const vendorDocumentReferrers: string[] = [];
   const containerRuns: ContainerObservation[] = [];
   let releaseScripts = () => {};
   const scriptsReleased = new Promise<void>((resolveScripts) => {
     releaseScripts = resolveScripts;
+  });
+
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (url.origin === e2eOrigin && url.pathname === "/s/continue")
+      continuationStatuses.push(response.status());
   });
 
   page.on("request", async (request) => {
@@ -178,6 +185,7 @@ async function installNetworkStubs(
     destinationReferrers,
     trackingCookieHeaders,
     continuationOrigins,
+    continuationStatuses,
     vendorReferrers,
     vendorDocumentReferrers,
     containerRuns,
@@ -699,7 +707,17 @@ test("skip and unanswered consent continue without requesting provider code", as
   });
   expect(new URL(page.url()).origin).toBe(e2eTrackingOrigin);
   await page.waitForTimeout(10_100);
-  await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  try {
+    await expect(page).toHaveURL(/127\.0\.0\.3:8799\/landing\?/);
+  } catch (error) {
+    // Log only bounded response metadata, never ticket URLs or form tokens.
+    console.info("Unanswered consent continuation", {
+      statuses: unanswered.vendors.continuationStatuses,
+      origins: unanswered.vendors.continuationOrigins,
+      destinationRequests: unanswered.vendors.destinationRequests.length,
+    });
+    throw error;
+  }
   await expect(
     page.getByRole("heading", { name: "External fixture reached" }),
   ).toBeVisible();

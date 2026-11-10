@@ -47,6 +47,20 @@ Tests use isolated local storage, separate from the development database. Migrat
 
 ## Google authentication
 
+### Local test account
+
+To explore the Library and Timeline editor without Google credentials, apply local
+migrations and run `npm run dev:demo`. Open `http://127.0.0.1:8787` and select
+**Use local test account**. This creates a normal free account with a one-hour
+HttpOnly session. Signing in again retains its local content; normal Sign out
+revokes the session. The account is shared by browsers using this local database.
+
+The endpoint requires `APP_ENV=local`, an exact loopback `APP_ORIGIN`, and
+`LOCAL_LOGIN_ENABLED=true`. Normal `npm run dev` leaves the feature disabled.
+Development, preview, and production reject it even if the flag is set. The test
+account does not grant administrator access or simulate R2 uploads: real binary
+upload still needs the R2 configuration below. No cloud resources are created.
+
 Create a Google OAuth **Web application** client and register the exact redirect URI `http://127.0.0.1:8787/auth/google/callback` for local development. Copy `.dev.vars.example` to ignored `.dev.vars`, then set the client ID and secret there. Never paste secrets into chat, commits, or PRs. Each deployed environment needs its own `APP_ORIGIN` and registered HTTPS redirect URI; supply credentials through platform secrets.
 
 | Route | Contract |
