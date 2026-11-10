@@ -268,7 +268,6 @@ async function main() {
     throw new Error("AGES_DEMO_PORT must be a valid TCP port.");
 
   mkdirSync(persistence, { recursive: true });
-  mkdirSync(fixtures, { recursive: true });
   // Never forward CI or production Cloudflare credentials into local Wrangler.
   const localEnv = { ...process.env };
   delete localEnv.CLOUDFLARE_API_TOKEN;
@@ -283,34 +282,65 @@ async function main() {
   }
 
   wrangler(["d1", "migrations", "apply", "DB"]);
-  const media = [];
-  for (const asset of demoAssets) {
-    const bytes = samplePng(asset.width, asset.height, asset.tone);
-    const file = resolve(fixtures, `${asset.id}.png`);
-    const key = `originals/us_local_test/${asset.id}/fixture`;
-    writeFileSync(file, bytes);
-    wrangler([
-      "r2",
-      "object",
-      "put",
-      `ages-media-local/${key}`,
-      "--file",
-      file,
-      "--content-type",
-      "image/png",
-    ]);
-    media.push({
-      ...asset,
-      size: bytes.length,
-      etag: createHash("md5").update(bytes).digest("hex"),
-    });
-  }
-  const sqlFile = resolve(fixtures, "seed.sql");
-  writeFileSync(sqlFile, seedSql(media));
-  wrangler(["d1", "execute", "DB", "--file", sqlFile]);
-  console.log(
-    "Local-only demo seeded: 4 photos, 2 timelines, 1 short link. No cloud resources were accessed.",
+  const seedState = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        cli,
+        "d1",
+        "execute",
+        "DB",
+        "--command",
+        "SELECT EXISTS(SELECT 1 FROM users WHERE id='us_local_test') AS initialized",
+        "--json",
+        ...localArgs,
+      ],
+      {
+        cwd: root,
+        env: localEnv,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "inherit"],
+      },
+    ),
   );
+  const initialized = seedState[0]?.results?.[0]?.initialized;
+  if (initialized !== 0 && initialized !== 1)
+    throw new Error(
+      "Could not determine whether the local demo is initialized.",
+    );
+  if (initialized === 0) {
+    mkdirSync(fixtures, { recursive: true });
+    const media = [];
+    for (const asset of demoAssets) {
+      const bytes = samplePng(asset.width, asset.height, asset.tone);
+      const file = resolve(fixtures, `${asset.id}.png`);
+      const key = `originals/us_local_test/${asset.id}/fixture`;
+      writeFileSync(file, bytes);
+      wrangler([
+        "r2",
+        "object",
+        "put",
+        `ages-media-local/${key}`,
+        "--file",
+        file,
+        "--content-type",
+        "image/png",
+      ]);
+      media.push({
+        ...asset,
+        size: bytes.length,
+        etag: createHash("md5").update(bytes).digest("hex"),
+      });
+    }
+    const sqlFile = resolve(fixtures, "seed.sql");
+    writeFileSync(sqlFile, seedSql(media));
+    wrangler(["d1", "execute", "DB", "--file", sqlFile]);
+    console.log(
+      "Local-only demo seeded: 4 photos, 2 timelines, 1 short link. No cloud resources were accessed.",
+    );
+  } else {
+    console.log("Local-only demo already initialized; preserving demo edits.");
+  }
   if (seedOnly) return;
 
   const origin = `http://127.0.0.1:${port}`;

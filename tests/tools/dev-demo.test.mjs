@@ -89,3 +89,57 @@ test("demo seed is local-only and idempotent against real D1/R2 bindings", {
     rmSync(persistence, { recursive: true, force: true });
   }
 });
+
+test("restarting the demo does not restore deleted seeded moments or tags", {
+  timeout: 180_000,
+}, () => {
+  const persistence = resolve(root, `.wrangler/demo-deletions/${randomUUID()}`);
+  const env = { ...process.env, AGES_DEMO_PERSIST_TO: persistence };
+  delete env.CLOUDFLARE_API_TOKEN;
+  delete env.CLOUDFLARE_ACCOUNT_ID;
+  const opts = {
+    cwd: root,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 180_000,
+  };
+  const executeSql = (sql) =>
+    execFileSync(
+      process.execPath,
+      [
+        cli,
+        "d1",
+        "execute",
+        "DB",
+        "--command",
+        sql,
+        "--json",
+        "--local",
+        "--env",
+        "",
+        "--persist-to",
+        persistence,
+      ],
+      opts,
+    );
+
+  try {
+    execFileSync(process.execPath, [demo, "--seed-only"], opts);
+    executeSql("DELETE FROM timeline_items WHERE id='ti_demo_coast'");
+    executeSql(
+      "DELETE FROM asset_tags WHERE asset_id='as_demo_coast' AND tag='Coast'",
+    );
+    execFileSync(process.execPath, [demo, "--seed-only"], opts);
+
+    const output = executeSql(
+      "SELECT " +
+        "(SELECT COUNT(*) FROM timeline_items WHERE id='ti_demo_coast') AS moment_count," +
+        "(SELECT COUNT(*) FROM asset_tags WHERE asset_id='as_demo_coast' AND tag='Coast') AS tag_count",
+    );
+    assert.match(output, /"moment_count"\s*:\s*0/);
+    assert.match(output, /"tag_count"\s*:\s*0/);
+  } finally {
+    rmSync(persistence, { recursive: true, force: true });
+  }
+});
