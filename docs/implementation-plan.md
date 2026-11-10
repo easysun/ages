@@ -10,6 +10,9 @@ The north star is Monthly Active Timelines: distinct timelines receiving at leas
 
 - TypeScript, npm, Hono, and Zod on Cloudflare Workers; React when client work begins.
 - D1 is authoritative for identity, ownership, quotas, timelines, and sharing policies. R2 stores media. KV is a disposable cache, never an authorization or quota ledger.
+- The payment foundation remains disabled: no checkout or webhook adapters are
+  enabled. Any future integration must meet the [payment foundation
+  requirements](payment-foundation.md) before launch.
 - Browser uploads binary directly using short-lived, object-specific R2 PUT capabilities. Workers handle intent, authorization, validation, completion, API, and SSR.
 - Keep API contracts usable by web, Android, iOS, and VR. Native clients will need an explicit authentication flow; browser cookies alone are not a native API design.
 - Use responsive layouts, touch and keyboard alternatives to dragging, semantic controls, and reduced-motion support. Do not implement native or VR clients in the MVP.
