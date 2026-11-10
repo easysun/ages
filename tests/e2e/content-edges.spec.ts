@@ -165,6 +165,14 @@ function artifactPath(name: string, project: string) {
   return join(directory, `${name}-${project}.png`);
 }
 
+function incomingReferenceArtifactPath(project: string) {
+  const directory = resolve(
+    ".superpowers/sdd/2026-10-24-incoming-reference-empty-state/task-1-artifacts",
+  );
+  mkdirSync(directory, { recursive: true });
+  return join(directory, `same-owner-incoming-reference-${project}.png`);
+}
+
 async function noHorizontalOverflow(page: Page) {
   const dimensions = await page.evaluate(() => ({
     document: document.documentElement.scrollWidth,
@@ -265,6 +273,83 @@ test("public_relation_appears_as_a_backlink_from_a_typed_owner_edge", async ({
     fullPage: true,
   });
   await sourceContext.close();
+});
+
+test("same_owner_incoming_reference_has_no_empty_state", async ({
+  context,
+  page,
+}) => {
+  await seedLibrary(context);
+  const source = await createExternal(
+    context,
+    "Private incoming source",
+    "private",
+  );
+  const target = await createExternal(
+    context,
+    "Private incoming target",
+    "private",
+  );
+
+  await page.goto(`${e2eOrigin}/content`);
+  const targetChoice = page.getByRole("button", {
+    name: `Edit ${target.title}`,
+  });
+  await expect(targetChoice).toBeVisible();
+  await targetChoice.click();
+
+  const incoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  const emptyMessage = incoming.getByText("No incoming relationships.", {
+    exact: true,
+  });
+  await expect(emptyMessage).toBeVisible();
+
+  await createEdge(context, source.id, target.id);
+  const reviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reviewPage.edges).toEqual([]);
+
+  await page.getByRole("button", { name: "Refresh relationships" }).click();
+  const visibleIncoming = incoming.getByRole("list").first();
+  await expect(
+    visibleIncoming.getByText(source.title, { exact: true }),
+  ).toBeVisible();
+  await expect(emptyMessage).toHaveCount(0);
+
+  await page.reload();
+  const reloadedTargetChoice = page.getByRole("button", {
+    name: `Edit ${target.title}`,
+  });
+  await expect(reloadedTargetChoice).toBeVisible();
+  await reloadedTargetChoice.click();
+
+  const reloadedIncoming = page.getByRole("region", {
+    name: "Incoming relationships",
+  });
+  await expect(
+    reloadedIncoming
+      .getByRole("list")
+      .first()
+      .getByText(source.title, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    reloadedIncoming.getByText("No incoming relationships.", { exact: true }),
+  ).toHaveCount(0);
+  const reloadedReviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reloadedReviewPage.edges).toEqual([]);
+  await page.screenshot({
+    path: incomingReferenceArtifactPath(test.info().project.name),
+    fullPage: true,
+  });
 });
 
 test("pending_unlisted_relation_is_owner_review_only_and_controls_do_not_endorse", async ({
@@ -590,82 +675,111 @@ test("known_pair_selection_is_disabled_during_relationship_refresh", async ({
   await seedLibrary(context);
   const target = await createExternal(context, "Refresh lock target", "public");
   const { context: sourceContext } = await makeOwner(browser);
-  const source = await createExternal(
-    sourceContext,
-    "Refresh lock unlisted source",
-    "unlisted",
-  );
-  const edge = await createEdge(sourceContext, source.id, target.id);
-  await edgeAction(context, edge.id, "accept");
-  await edgeAction(context, edge.id, "suppress");
-
-  await page.goto(`${e2eOrigin}/content`);
-  await page.getByRole("button", { name: `Edit ${target.title}` }).click();
-  const incoming = page.getByRole("region", {
-    name: "Incoming relationships",
-  });
-  const reviewList = incoming.getByRole("list").last();
-  const suppressedReview = reviewList
-    .getByRole("listitem")
-    .filter({ hasText: "Suppressed" });
-  await expect(suppressedReview).toHaveCount(1);
-
   const outgoing = deferredSignal();
   const visibleIncoming = deferredSignal();
-  const reviewRead = deferredSignal();
-  await page.route(
-    `**/api/content-nodes/${target.id}/edges?direction=outgoing*`,
-    async (route) => {
-      const response = await route.fetch();
-      outgoing.signal();
-      await outgoing.promise;
-      await route.fulfill({ response }).catch(() => undefined);
-    },
-  );
-  await page.route(
-    `**/api/content-nodes/${target.id}/edges?direction=incoming*`,
-    async (route) => {
-      const response = await route.fetch();
-      visibleIncoming.signal();
-      await visibleIncoming.promise;
-      await route.fulfill({ response }).catch(() => undefined);
-    },
-  );
-  await page.route(
-    `**/api/content-nodes/${target.id}/incoming-review*`,
-    async (route) => {
-      const response = await route.fetch();
-      await route.fulfill({ response });
-      reviewRead.signal();
-    },
-  );
-
-  await page.getByRole("button", { name: "Refresh relationships" }).click();
+  const knownPairRead = deferredSignal();
+  let knownPairCallbackStarted = false;
+  let knownPairCallbackCompleted = false;
   try {
-    await Promise.all([
-      outgoing.started,
-      visibleIncoming.started,
-      reviewRead.started,
-    ]);
-    await expect(suppressedReview).toBeVisible();
+    const source = await createExternal(
+      sourceContext,
+      "Refresh lock unlisted source",
+      "unlisted",
+    );
+    const edge = await createEdge(sourceContext, source.id, target.id);
+    await edgeAction(context, edge.id, "accept");
+    await edgeAction(context, edge.id, "suppress");
+
+    await page.goto(`${e2eOrigin}/content`);
+    await page.getByRole("button", { name: `Edit ${target.title}` }).click();
+    const incoming = page.getByRole("region", {
+      name: "Incoming relationships",
+    });
+    const reviewList = incoming.getByRole("list").last();
+    const suppressedReview = reviewList
+      .getByRole("listitem")
+      .filter({ hasText: "Suppressed" });
+    await expect(suppressedReview).toHaveCount(1);
+    const reviewRead = deferredSignal();
+
+    await page.route(
+      `**/api/content-nodes/${target.id}/edges?direction=outgoing*`,
+      async (route) => {
+        const response = await route.fetch();
+        outgoing.signal();
+        await outgoing.promise;
+        await route.fulfill({ response });
+      },
+    );
+    await page.route(
+      `**/api/content-nodes/${target.id}/edges?direction=incoming*`,
+      async (route) => {
+        const knownNode = new URL(route.request().url()).searchParams.get(
+          "known_node",
+        );
+        if (knownNode === source.id) {
+          knownPairCallbackStarted = true;
+          knownPairRead.signal();
+          await knownPairRead.promise;
+        } else {
+          const response = await route.fetch();
+          visibleIncoming.signal();
+          await visibleIncoming.promise;
+          await route.fulfill({ response });
+          return;
+        }
+        const response = await route.fetch();
+        await route.fulfill({ response });
+        if (knownNode === source.id) knownPairCallbackCompleted = true;
+      },
+    );
+    await page.route(
+      `**/api/content-nodes/${target.id}/incoming-review*`,
+      async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response });
+        reviewRead.signal();
+      },
+    );
+
+    await page.getByRole("button", { name: "Refresh relationships" }).click();
+    try {
+      await Promise.all([
+        outgoing.started,
+        visibleIncoming.started,
+        reviewRead.started,
+      ]);
+      await expect(suppressedReview).toBeVisible();
+      await expect(
+        suppressedReview.getByRole("button", { name: "Open known pair" }),
+      ).toBeDisabled();
+    } finally {
+      outgoing.release();
+      visibleIncoming.release();
+    }
+
     await expect(
-      suppressedReview.getByRole("button", { name: "Open known pair" }),
-    ).toBeDisabled();
+      page.getByRole("button", { name: "Refresh relationships" }),
+    ).toBeEnabled();
+    await suppressedReview
+      .getByRole("button", { name: "Open known pair" })
+      .click();
+    await knownPairRead.started;
+    await expect(
+      page.getByRole("region", { name: "Known pair relationship" }),
+    ).toContainText(source.id);
   } finally {
     outgoing.release();
     visibleIncoming.release();
+    knownPairRead.release();
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+      if (knownPairCallbackStarted)
+        expect(knownPairCallbackCompleted).toBe(true);
+    } finally {
+      await sourceContext.close();
+    }
   }
-
-  await expect(
-    page.getByRole("button", { name: "Refresh relationships" }),
-  ).toBeEnabled();
-  await suppressedReview
-    .getByRole("button", { name: "Open known pair" })
-    .click();
-  await expect(
-    page.getByRole("region", { name: "Known pair relationship" }),
-  ).toContainText(source.id);
-  await sourceContext.close();
 });
 
 test("late_relation_response_after_logout_or_auth_generation_change_is_discarded", async ({
@@ -682,6 +796,18 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
     "unlisted",
   );
   await createEdge(sourceContext, source.id, target.id);
+  const reviewPage = await readOwnerEdgePage(
+    context,
+    target.id,
+    "incoming-review",
+  );
+  expect(reviewPage.edges).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        source: expect.objectContaining({ id: source.id, title: source.title }),
+      }),
+    ]),
+  );
 
   let release!: () => void;
   let started!: () => void;
@@ -694,24 +820,33 @@ test("late_relation_response_after_logout_or_auth_generation_change_is_discarded
   await page.route(
     `**/api/content-nodes/${target.id}/incoming-review*`,
     async (route) => {
-      const response = await route.fetch();
       started();
       await pending;
-      await route.fulfill({ response }).catch(() => undefined);
+      await route.fulfill({ status: 200, json: reviewPage });
     },
   );
-  await page.goto(`${e2eOrigin}/content`);
-  await hit;
-  await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  release();
-  await expect(
-    page.getByRole("link", { name: "Continue with Google" }),
-  ).toBeVisible();
-  await expect(page.locator("body")).not.toContainText(source.title);
-  await sourceContext.close();
+  try {
+    await page.goto(`${e2eOrigin}/content`);
+    await hit;
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    release();
+    // Observe the UI only after every intercepted response has settled.
+    await page.unrouteAll({ behavior: "wait" });
+    await expect(
+      page.getByRole("link", { name: "Continue with Google" }),
+    ).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(source.title);
+  } finally {
+    release();
+    try {
+      await page.unrouteAll({ behavior: "wait" });
+    } finally {
+      await sourceContext.close();
+    }
+  }
 });
 
 test("late_acceptance_after_node_switch_is_discarded", async ({

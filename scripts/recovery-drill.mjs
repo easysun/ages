@@ -65,6 +65,24 @@ const SNAPSHOT_FIELDS = [
   "timeline_item_caption",
   "timeline_item_event_at",
 ];
+const LINK_SNAPSHOT_FIELDS = [
+  "distribution_link_count",
+  "reserved_slug_count",
+  "live_link_id",
+  "live_link_owner_id",
+  "live_link_slug",
+  "live_link_target_kind",
+  "live_link_target_url",
+  "live_link_timeline_id",
+  "live_link_asset_id",
+  "live_link_active",
+  "live_link_expires_at",
+  "live_link_created_at",
+  "live_link_updated_at",
+  "live_slug_reservation_count",
+  "deleted_slug_reservation_count",
+  "deleted_link_row_count",
+];
 const LOCAL_ONLY_OVERRIDES = new Set([
   "--",
   "--config",
@@ -267,6 +285,71 @@ export function compareSnapshots(source, restored) {
   return mismatches;
 }
 
+function normalizeTriggerCaptures(triggerRows, { allowEmpty = false } = {}) {
+  if (!Array.isArray(triggerRows) || (!allowEmpty && triggerRows.length === 0))
+    throw new Error("Restored D1 trigger capture is empty or malformed.");
+
+  const names = new Set();
+  const triggers = triggerRows.map((trigger) => {
+    if (
+      trigger === null ||
+      typeof trigger !== "object" ||
+      typeof trigger.name !== "string" ||
+      trigger.name.length === 0 ||
+      trigger.name.includes("\0") ||
+      typeof trigger.sql !== "string" ||
+      !/^CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b/i.test(
+        trigger.sql.trimStart(),
+      )
+    )
+      throw new Error("Restored D1 trigger capture is empty or malformed.");
+    if (names.has(trigger.name))
+      throw new Error("Restored D1 trigger capture has duplicate names.");
+    names.add(trigger.name);
+    return { name: trigger.name, sql: trigger.sql };
+  });
+
+  return triggers.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+}
+
+export function buildTriggerReplaySql(triggerRows) {
+  const triggers = normalizeTriggerCaptures(triggerRows);
+  const dropSql = `${triggers
+    .map(({ name }) => `DROP TRIGGER "${name.replaceAll('"', '""')}";`)
+    .join("\n")}\n`;
+  const createSql = `${triggers
+    .map(({ sql }) => {
+      const definition = sql.trimEnd();
+      return definition.endsWith(";") ? definition : `${definition};`;
+    })
+    .join("\n")}\n`;
+  return { dropSql, createSql };
+}
+
+export function compareTriggerCaptures(expectedRows, actualRows) {
+  const expected = normalizeTriggerCaptures(expectedRows);
+  const actual = normalizeTriggerCaptures(actualRows, { allowEmpty: true });
+  const actualByName = new Map(
+    actual.map((trigger) => [trigger.name, trigger]),
+  );
+  const expectedNames = new Set(expected.map((trigger) => trigger.name));
+  const mismatches = [];
+
+  for (const trigger of expected) {
+    const restored = actualByName.get(trigger.name);
+    if (!restored) mismatches.push(`trigger.missing.${trigger.name}`);
+    else if (restored.sql !== trigger.sql)
+      mismatches.push(`trigger.sql_mismatch.${trigger.name}`);
+  }
+  for (const trigger of actual)
+    if (!expectedNames.has(trigger.name))
+      mismatches.push(`trigger.unexpected.${trigger.name}`);
+
+  return mismatches;
+}
+
 function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -334,6 +417,25 @@ function rowsFromD1(output) {
   );
 }
 
+function rowsFromSingleD1Statement(output) {
+  let parsed;
+  try {
+    parsed = JSON.parse(asText(output).trim());
+  } catch {
+    throw new Error("D1 check query returned invalid JSON.");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 1 ||
+    parsed[0]?.success !== true ||
+    !Array.isArray(parsed[0].results)
+  )
+    throw new Error(
+      "D1 check query did not return one successful statement with result rows.",
+    );
+  return parsed[0].results;
+}
+
 function fileFacts(filePath) {
   const bytes = readFileSync(filePath);
   return {
@@ -373,6 +475,44 @@ function expectedRowMismatches(row, ids) {
   );
 }
 
+function expectedLinkRowMismatches(row, ids) {
+  const expected = {
+    distribution_link_count: 1,
+    reserved_slug_count: 2,
+    live_link_id: ids.linkId,
+    live_link_owner_id: ids.userId,
+    live_link_slug: "synthetic-recovery-live",
+    live_link_target_kind: "url",
+    live_link_target_url: "https://example.invalid/synthetic-recovery",
+    live_link_timeline_id: null,
+    live_link_asset_id: null,
+    live_link_active: 1,
+    live_link_expires_at: null,
+    live_link_created_at: CREATED_AT,
+    live_link_updated_at: CREATED_AT,
+    live_slug_reservation_count: 1,
+    deleted_slug_reservation_count: 1,
+    deleted_link_row_count: 0,
+  };
+  return LINK_SNAPSHOT_FIELDS.filter(
+    (field) => !Object.is(row[field], expected[field]),
+  );
+}
+
+function expectedLinkProbeMismatches(row) {
+  const expected = {
+    distribution_link_count: 2,
+    reserved_slug_count: 3,
+    probe_link_count: 1,
+    probe_slug_reservation_count: 1,
+    deleted_slug_reservation_count: 1,
+    deleted_link_row_count: 0,
+  };
+  return Object.keys(expected).filter(
+    (field) => !Object.is(row[field], expected[field]),
+  );
+}
+
 function formatObject(facts) {
   return facts
     ? `${facts.byteLength} bytes; SHA-256 ${facts.sha256}`
@@ -392,6 +532,8 @@ function writeFinalEvidence(paths, result) {
     `Wrangler commands completed or attempted: ${result.commandCount}`,
     `Source D1 joined rows: ${result.sourceRowCount ?? "not verified"}`,
     `Restored D1 joined rows: ${result.restoredRowCount ?? "not verified"}`,
+    `Source D1 Link rows: ${result.sourceLinkRowCount ?? "not verified"}`,
+    `Restored D1 Link rows: ${result.restoredLinkRowCount ?? "not verified"}`,
     `D1 field mismatches: ${result.mismatches.length ? result.mismatches.join(", ") : result.status === "PASS" ? "none" : "not verified"}`,
     "",
     "## R2 object bytes",
@@ -426,6 +568,8 @@ function writeFinalEvidence(paths, result) {
     command_count: result.commandCount,
     source_row_count: result.sourceRowCount ?? null,
     restored_row_count: result.restoredRowCount ?? null,
+    source_link_row_count: result.sourceLinkRowCount ?? null,
+    restored_link_row_count: result.restoredLinkRowCount ?? null,
     d1_mismatches: result.mismatches,
     comparisons: result.comparisons,
     object: {
@@ -446,6 +590,9 @@ function createSeedSql(ids) {
     `UPDATE assets SET status = 'ready', updated_at = ${sqlString(CREATED_AT)} WHERE id = ${sqlString(ids.assetId)} AND status = 'pending';`,
     `INSERT INTO timelines (id, owner_id, title, visibility, cover_asset_id, created_at, updated_at) VALUES (${sqlString(ids.timelineId)}, ${sqlString(ids.userId)}, 'Synthetic recovery timeline', 'private', ${sqlString(ids.assetId)}, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
     `INSERT INTO timeline_items (id, timeline_id, owner_id, asset_id, position, caption, event_at, created_at, updated_at) VALUES (${sqlString(ids.itemId)}, ${sqlString(ids.timelineId)}, ${sqlString(ids.userId)}, ${sqlString(ids.assetId)}, 0, 'Synthetic recovery item', ${sqlString(EVENT_AT)}, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
+    `INSERT INTO distribution_links (id, owner_id, slug, target_kind, target_url, active, created_at, updated_at) VALUES (${sqlString(ids.linkId)}, ${sqlString(ids.userId)}, 'synthetic-recovery-live', 'url', 'https://example.invalid/synthetic-recovery', 1, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
+    `INSERT INTO distribution_links (id, owner_id, slug, target_kind, target_url, active, created_at, updated_at) VALUES (${sqlString(ids.deletedLinkId)}, ${sqlString(ids.userId)}, 'synthetic-recovery-deleted', 'url', 'https://example.invalid/deleted-synthetic-recovery', 0, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
+    `DELETE FROM distribution_links WHERE id = ${sqlString(ids.deletedLinkId)};`,
     "",
   ].join("\n");
 }
@@ -472,6 +619,75 @@ function createSnapshotSql(ids) {
     `  AND ti.id = ${sqlString(ids.itemId)};`,
     "",
   ].join("\n");
+}
+
+function createLinkSnapshotSql(ids) {
+  return [
+    "SELECT",
+    "  (SELECT count(*) FROM distribution_links) AS distribution_link_count,",
+    "  (SELECT count(*) FROM reserved_link_slugs) AS reserved_slug_count,",
+    "  live_link.id AS live_link_id, live_link.owner_id AS live_link_owner_id,",
+    "  live_link.slug AS live_link_slug, live_link.target_kind AS live_link_target_kind,",
+    "  live_link.target_url AS live_link_target_url, live_link.timeline_id AS live_link_timeline_id,",
+    "  live_link.asset_id AS live_link_asset_id, live_link.active AS live_link_active,",
+    "  live_link.expires_at AS live_link_expires_at, live_link.created_at AS live_link_created_at,",
+    "  live_link.updated_at AS live_link_updated_at,",
+    `  (SELECT count(*) FROM reserved_link_slugs WHERE slug = ${sqlString("synthetic-recovery-live")}) AS live_slug_reservation_count,`,
+    `  (SELECT count(*) FROM reserved_link_slugs WHERE slug = ${sqlString("synthetic-recovery-deleted")}) AS deleted_slug_reservation_count,`,
+    `  (SELECT count(*) FROM distribution_links WHERE slug = ${sqlString("synthetic-recovery-deleted")}) AS deleted_link_row_count`,
+    "FROM distribution_links live_link",
+    `WHERE live_link.id = ${sqlString(ids.linkId)}`,
+    `  AND live_link.owner_id = ${sqlString(ids.userId)};`,
+    "",
+  ].join("\n");
+}
+
+function createTriggerSnapshotSql() {
+  return "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' ORDER BY name;\n";
+}
+
+function createLinkReservationProbeSql(ids) {
+  return [
+    "INSERT INTO distribution_links (id, owner_id, slug, target_kind, target_url, active, created_at, updated_at)",
+    `VALUES (${sqlString(ids.probeLinkId)}, ${sqlString(ids.userId)}, 'synthetic-recovery-probe', 'url', 'https://example.invalid/recovery-probe', 1, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
+    "",
+  ].join("\n");
+}
+
+function createTombstoneReuseProbeSql(ids) {
+  return [
+    "-- reuse-tombstoned-link-probe",
+    "INSERT INTO distribution_links (id, owner_id, slug, target_kind, target_url, active, created_at, updated_at)",
+    `VALUES (${sqlString(ids.reuseLinkId)}, ${sqlString(ids.userId)}, 'synthetic-recovery-deleted', 'url', 'https://example.invalid/reused-synthetic-recovery', 1, ${sqlString(CREATED_AT)}, ${sqlString(CREATED_AT)});`,
+    "",
+  ].join("\n");
+}
+
+function createLinkProbeSnapshotSql(ids) {
+  return [
+    "SELECT",
+    "  (SELECT count(*) FROM distribution_links) AS distribution_link_count,",
+    "  (SELECT count(*) FROM reserved_link_slugs) AS reserved_slug_count,",
+    `  (SELECT count(*) FROM distribution_links WHERE id = ${sqlString(ids.probeLinkId)} AND owner_id = ${sqlString(ids.userId)} AND slug = 'synthetic-recovery-probe' AND target_kind = 'url' AND target_url = 'https://example.invalid/recovery-probe' AND active = 1) AS probe_link_count,`,
+    "  (SELECT count(*) FROM reserved_link_slugs WHERE slug = 'synthetic-recovery-probe') AS probe_slug_reservation_count,",
+    "  (SELECT count(*) FROM reserved_link_slugs WHERE slug = 'synthetic-recovery-deleted') AS deleted_slug_reservation_count,",
+    "  (SELECT count(*) FROM distribution_links WHERE slug = 'synthetic-recovery-deleted') AS deleted_link_row_count;",
+    "",
+  ].join("\n");
+}
+
+function isExpectedSlugReservationConflict(error) {
+  const output = [
+    error.message,
+    asText(error.stdout),
+    asText(error.stderr),
+  ].join("\n");
+  return (
+    typeof error.status === "number" &&
+    error.status !== 0 &&
+    !error.signal &&
+    /UNIQUE constraint failed:\s*reserved_link_slugs\.slug\b/.test(output)
+  );
 }
 
 function verifyObjectFacts(name, facts) {
@@ -512,13 +728,15 @@ export function runRecoveryDrill({
     failureMessage: null,
     sourceRowCount: null,
     restoredRowCount: null,
+    sourceLinkRowCount: null,
+    restoredLinkRowCount: null,
     mismatches: [],
     comparisons: null,
     objectFacts: { original: null, backup: null, restored: null },
     restoreMimeType: null,
   };
 
-  function runCommand(label, commandArgs, role) {
+  function runCommand(label, commandArgs, role, acceptFailure = null) {
     const config = role === "restored" ? restoredConfig : sourceConfig;
     const persistTo =
       commandArgs[0] === "d1" && commandArgs[1] === "export"
@@ -532,28 +750,38 @@ export function runRecoveryDrill({
       at: new Date().toISOString(),
       argv: [process.execPath, ...argv],
     };
+    let output;
+    let error;
     try {
-      const output = execute(process.execPath, argv, {
+      output = execute(process.execPath, argv, {
         cwd: role === "restored" ? paths.restored : paths.source,
         env: childEnv,
         encoding: "utf8",
         maxBuffer: 20 * 1024 * 1024,
         shell: false,
       });
-      record.exit_code = 0;
-      record.signal = null;
-      appendLog(paths.log, record);
-      commandRecords.push(record);
-      result.commandCount = commandRecords.length;
-      return output;
-    } catch (error) {
-      record.exit_code = typeof error.status === "number" ? error.status : null;
-      record.signal = error.signal ?? null;
-      appendLog(paths.log, record);
-      commandRecords.push(record);
-      result.commandCount = commandRecords.length;
-      throw new CommandFailure(label, record.exit_code, record.signal);
+    } catch (caught) {
+      error = caught;
     }
+    const acceptedFailure = Boolean(error && acceptFailure?.(error));
+    record.exit_code = error
+      ? typeof error.status === "number"
+        ? error.status
+        : null
+      : 0;
+    record.signal = error?.signal ?? null;
+    if (acceptedFailure) record.expected_failure = true;
+    appendLog(paths.log, record);
+    commandRecords.push(record);
+    result.commandCount = commandRecords.length;
+
+    if (error && acceptedFailure) return { expectedFailure: true };
+    if (error) throw new CommandFailure(label, record.exit_code, record.signal);
+    if (acceptFailure)
+      throw new VerificationFailure([
+        "tombstoned_slug_reuse_unexpectedly_succeeded",
+      ]);
+    return output;
   }
 
   const ids = {
@@ -561,6 +789,10 @@ export function runRecoveryDrill({
     assetId: `synthetic-asset-${randomUUID()}`,
     timelineId: `synthetic-timeline-${randomUUID()}`,
     itemId: `synthetic-item-${randomUUID()}`,
+    linkId: `synthetic-link-${randomUUID()}`,
+    deletedLinkId: `synthetic-deleted-link-${randomUUID()}`,
+    probeLinkId: `synthetic-probe-link-${randomUUID()}`,
+    reuseLinkId: `synthetic-reuse-link-${randomUUID()}`,
   };
   ids.r2Key = `originals/${ids.userId}/${ids.assetId}/probe-image.png`;
 
@@ -571,7 +803,26 @@ export function runRecoveryDrill({
   const dataExport = join(paths.backup, "d1-data.sql");
   const seedFile = join(paths.source, "seed.sql");
   const snapshotFile = join(paths.source, "snapshot.sql");
+  const linkSnapshotFile = join(paths.source, "links-snapshot.sql");
+  const triggerSnapshotFile = join(paths.restored, "trigger-snapshot.sql");
+  const triggerDropFile = join(paths.restored, "drop-triggers.sql");
+  const triggerCreateFile = join(paths.restored, "create-triggers.sql");
+  const linkReservationProbeFile = join(
+    paths.restored,
+    "link-reservation-probe.sql",
+  );
+  const tombstoneReuseProbeFile = join(
+    paths.restored,
+    "tombstoned-link-reuse-probe.sql",
+  );
+  const linkProbeSnapshotFile = join(paths.restored, "link-probe-snapshot.sql");
+  const quickCheckFile = join(paths.restored, "quick-check.sql");
+  const foreignKeyCheckFile = join(paths.restored, "foreign-key-check.sql");
   const expectedRow = {
+    source: null,
+    restored: null,
+  };
+  const expectedLink = {
     source: null,
     restored: null,
   };
@@ -637,6 +888,38 @@ export function runRecoveryDrill({
       flag: "wx",
       encoding: "utf8",
     });
+    writeFileSync(linkSnapshotFile, createLinkSnapshotSql(ids), {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(triggerSnapshotFile, createTriggerSnapshotSql(), {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(
+      linkReservationProbeFile,
+      createLinkReservationProbeSql(ids),
+      {
+        flag: "wx",
+        encoding: "utf8",
+      },
+    );
+    writeFileSync(tombstoneReuseProbeFile, createTombstoneReuseProbeSql(ids), {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(linkProbeSnapshotFile, createLinkProbeSnapshotSql(ids), {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(quickCheckFile, "PRAGMA quick_check;\n", {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(foreignKeyCheckFile, "PRAGMA foreign_key_check;\n", {
+      flag: "wx",
+      encoding: "utf8",
+    });
     runCommand(
       "Seed the synthetic user, quota, Asset, Timeline, and item",
       ["d1", "execute", "DB", "--file", seedFile],
@@ -657,6 +940,24 @@ export function runRecoveryDrill({
     const sourceMismatches = expectedRowMismatches(expectedRow.source, ids);
     if (sourceMismatches.length)
       throw new VerificationFailure(sourceMismatches);
+
+    const sourceLinkRows = rowsFromD1(
+      runCommand(
+        "Query source distribution Links and reserved slugs",
+        ["d1", "execute", "DB", "--file", linkSnapshotFile, "--json"],
+        "source",
+      ),
+    );
+    result.sourceLinkRowCount = sourceLinkRows.length;
+    if (sourceLinkRows.length !== 1)
+      throw new VerificationFailure(["source.link_snapshot_row_count"]);
+    expectedLink.source = sourceLinkRows[0];
+    const sourceLinkMismatches = expectedLinkRowMismatches(
+      expectedLink.source,
+      ids,
+    );
+    if (sourceLinkMismatches.length)
+      throw new VerificationFailure(sourceLinkMismatches);
 
     runCommand(
       "Export source D1 schema without data",
@@ -700,11 +1001,51 @@ export function runRecoveryDrill({
       ["d1", "execute", "DB", "--file", schemaExport],
       "restored",
     );
+
+    const capturedTriggers = rowsFromD1(
+      runCommand(
+        "Capture restored D1 triggers before row replay",
+        ["d1", "execute", "DB", "--file", triggerSnapshotFile, "--json"],
+        "restored",
+      ),
+    );
+    const triggerReplaySql = buildTriggerReplaySql(capturedTriggers);
+    writeFileSync(triggerDropFile, triggerReplaySql.dropSql, {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    writeFileSync(triggerCreateFile, triggerReplaySql.createSql, {
+      flag: "wx",
+      encoding: "utf8",
+    });
+    runCommand(
+      "Drop restored D1 triggers for row replay",
+      ["d1", "execute", "DB", "--file", triggerDropFile],
+      "restored",
+    );
     runCommand(
       "Restore source D1 rows after schema and indexes",
       ["d1", "execute", "DB", "--file", dataExport],
       "restored",
     );
+    runCommand(
+      "Reinstall the captured D1 triggers",
+      ["d1", "execute", "DB", "--file", triggerCreateFile],
+      "restored",
+    );
+    const restoredTriggers = rowsFromD1(
+      runCommand(
+        "Verify restored D1 trigger definitions",
+        ["d1", "execute", "DB", "--file", triggerSnapshotFile, "--json"],
+        "restored",
+      ),
+    );
+    const triggerMismatches = compareTriggerCaptures(
+      capturedTriggers,
+      restoredTriggers,
+    );
+    if (triggerMismatches.length)
+      throw new VerificationFailure(triggerMismatches);
 
     result.restoreMimeType = expectedRow.source.asset_mime_type;
     runCommand(
@@ -736,6 +1077,30 @@ export function runRecoveryDrill({
     const restoredMismatches = expectedRowMismatches(expectedRow.restored, ids);
     if (restoredMismatches.length)
       throw new VerificationFailure(restoredMismatches);
+
+    const restoredLinkRows = rowsFromD1(
+      runCommand(
+        "Query restored distribution Links and reserved slugs",
+        ["d1", "execute", "DB", "--file", linkSnapshotFile, "--json"],
+        "restored",
+      ),
+    );
+    result.restoredLinkRowCount = restoredLinkRows.length;
+    if (restoredLinkRows.length !== 1)
+      throw new VerificationFailure(["restored.link_snapshot_row_count"]);
+    expectedLink.restored = restoredLinkRows[0];
+    const restoredLinkMismatches = expectedLinkRowMismatches(
+      expectedLink.restored,
+      ids,
+    );
+    if (restoredLinkMismatches.length)
+      throw new VerificationFailure(restoredLinkMismatches);
+    const linkSnapshotMismatches = LINK_SNAPSHOT_FIELDS.filter(
+      (field) =>
+        !Object.is(expectedLink.source[field], expectedLink.restored[field]),
+    ).map((field) => `link.${field}`);
+    if (linkSnapshotMismatches.length)
+      throw new VerificationFailure(linkSnapshotMismatches);
 
     runCommand(
       "Retrieve the restored R2 object for byte comparison",
@@ -780,6 +1145,24 @@ export function runRecoveryDrill({
       throw new VerificationFailure(["asset_to_object.size"]);
 
     result.comparisons = {
+      triggers_restored_exactly: true,
+      distribution_link_count_is_one:
+        expectedLink.source.distribution_link_count === 1 &&
+        expectedLink.restored.distribution_link_count === 1,
+      reserved_slug_count_is_two:
+        expectedLink.source.reserved_slug_count === 2 &&
+        expectedLink.restored.reserved_slug_count === 2,
+      live_url_link_preserved:
+        expectedLink.source.live_link_target_kind === "url" &&
+        expectedLink.source.live_link_active === 1 &&
+        expectedLink.restored.live_link_target_kind === "url" &&
+        expectedLink.restored.live_link_active === 1,
+      deleted_slug_reservation_preserved:
+        expectedLink.source.deleted_slug_reservation_count === 1 &&
+        expectedLink.source.deleted_link_row_count === 0 &&
+        expectedLink.restored.deleted_slug_reservation_count === 1 &&
+        expectedLink.restored.deleted_link_row_count === 0,
+      link_snapshot_preserved: linkSnapshotMismatches.length === 0,
       quota_used_is_69_bytes:
         expectedRow.source.storage_used_bytes === 69 &&
         expectedRow.restored.storage_used_bytes === 69,
@@ -821,6 +1204,63 @@ export function runRecoveryDrill({
           result.objectFacts.backup.sha256 &&
         result.objectFacts.backup.sha256 === result.objectFacts.restored.sha256,
     };
+
+    runCommand(
+      "Probe restored Link reservation trigger",
+      ["d1", "execute", "DB", "--file", linkReservationProbeFile],
+      "restored",
+    );
+    const reuseResult = runCommand(
+      "Verify restored tombstoned slug cannot be reused",
+      ["d1", "execute", "DB", "--file", tombstoneReuseProbeFile],
+      "restored",
+      isExpectedSlugReservationConflict,
+    );
+    if (!reuseResult?.expectedFailure)
+      throw new VerificationFailure(["tombstoned_slug_reuse_not_rejected"]);
+
+    const linkProbeRows = rowsFromD1(
+      runCommand(
+        "Verify restored Link reservation probe state",
+        ["d1", "execute", "DB", "--file", linkProbeSnapshotFile, "--json"],
+        "restored",
+      ),
+    );
+    if (linkProbeRows.length !== 1)
+      throw new VerificationFailure(["restored.link_probe_row_count"]);
+    const linkProbeMismatches = expectedLinkProbeMismatches(linkProbeRows[0]);
+    if (linkProbeMismatches.length)
+      throw new VerificationFailure(linkProbeMismatches);
+    result.comparisons.probe_link_reserves_slug =
+      linkProbeRows[0].probe_link_count === 1 &&
+      linkProbeRows[0].probe_slug_reservation_count === 1;
+    result.comparisons.tombstoned_slug_reuse_rejected =
+      reuseResult.expectedFailure &&
+      linkProbeRows[0].deleted_slug_reservation_count === 1 &&
+      linkProbeRows[0].deleted_link_row_count === 0;
+
+    const quickCheckRows = rowsFromD1(
+      runCommand(
+        "Check restored D1 quick_check",
+        ["d1", "execute", "DB", "--file", quickCheckFile, "--json"],
+        "restored",
+      ),
+    );
+    if (quickCheckRows.length !== 1 || quickCheckRows[0].quick_check !== "ok")
+      throw new VerificationFailure(["restored.quick_check"]);
+    result.comparisons.quick_check_ok = true;
+
+    const foreignKeyRows = rowsFromSingleD1Statement(
+      runCommand(
+        "Check restored D1 foreign keys",
+        ["d1", "execute", "DB", "--file", foreignKeyCheckFile, "--json"],
+        "restored",
+      ),
+    );
+    if (foreignKeyRows.length !== 0)
+      throw new VerificationFailure(["restored.foreign_key_check"]);
+    result.comparisons.foreign_key_check_clear = true;
+
     const failedComparisons = Object.entries(result.comparisons)
       .filter(([, passed]) => !passed)
       .map(([name]) => name);

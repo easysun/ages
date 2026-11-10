@@ -30,7 +30,7 @@ publicTimeline.get("/:id", async (context) => {
       )
       .bind(id),
     db
-      .prepare(`SELECT i.id, i.caption, i.event_at, a.id AS asset_id, a.kind FROM timeline_items i
+      .prepare(`SELECT i.id, i.caption, i.event_at, a.id AS asset_id, a.kind, a.width, a.height FROM timeline_items i
       JOIN assets a ON a.id = i.asset_id AND a.owner_id = i.owner_id
       JOIN timelines t ON t.id = i.timeline_id AND t.owner_id = i.owner_id
       WHERE t.id = ? AND ${visibleTimelineSql} AND a.status = 'ready' AND a.deleted_at IS NULL

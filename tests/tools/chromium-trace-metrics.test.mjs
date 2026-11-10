@@ -177,6 +177,75 @@ const knownBrave15580Observations = {
   status: "installed-brave-schema-probe",
 };
 
+const knownBrave15585Observations = {
+  browser: {
+    product: "Runtime browser observation",
+    version: "155.0.8059.85",
+  },
+  browserIdentity: {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.59",
+      bundleVersion: "197.59",
+      scmRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    },
+    executableSha256:
+      "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7",
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-brave-schema-probe",
+  status: "installed-brave-schema-probe",
+};
+
+const knownAndroidBrave15585Observations = {
+  browser: {
+    product: "Runtime Android browser observation",
+    version: "155.0.8059.85",
+  },
+  browserIdentity: {
+    platform: { os: "Android", version: "16", apiLevel: 36 },
+    package: {
+      identifier: "com.brave.browser",
+      versionName: "1.97.59",
+      versionCode: 429705904,
+      minSdk: 32,
+      targetSdk: 37,
+      artifacts: {
+        "base.apk":
+          "b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33",
+        "split_chrome.apk":
+          "055ae12ddb53aac8c7b6d9064d725111f6ab3e7a390f0b04ce01245697fb39d8",
+        "split_config.zh.apk":
+          "d151e31a957eadb09d11b85d117d8574f334de045cf1e52d7b61c26e407b6f68",
+        "split_on_demand.apk":
+          "4c4d15e114b1e5689f6d48734aa4de960c53b8918d0698b2f632534fcd1cc893",
+      },
+    },
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  },
+  qualification: "installed-android-brave-schema-probe",
+  status: "installed-android-brave-schema-probe",
+};
+const knownBrave15585VersionThreeObservations = {
+  browser: structuredClone(knownBrave15585Observations.browser),
+  browserIdentity: structuredClone(knownBrave15585Observations.browserIdentity),
+  status: "diagnostic-only",
+};
+
 function withBrave155InteractionValues(trace) {
   const legacy = trace.traceEvents[0].args.data;
   const modern = trace.traceEvents[1].args.event_timing;
@@ -223,6 +292,45 @@ function brave15580Crosswalk(
   ).discreteEventTimingCrosswalk;
 }
 
+function brave15585Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownBrave15585Observations,
+) {
+  return analyzeTrace(
+    trace,
+    { trace: "brave15585-synthetic.trace.json", dataLossOccurred: false },
+    [],
+    observations,
+  ).discreteEventTimingCrosswalk;
+}
+
+function androidBrave15585Analysis(
+  trace = makeBrave155Trace(),
+  observations = knownAndroidBrave15585Observations,
+  traceRecord = {
+    trace: "android-brave15585-synthetic.trace.json",
+    dataLossOccurred: false,
+  },
+  observerEvidence,
+) {
+  return analyzeTrace(trace, traceRecord, [], observations, observerEvidence);
+}
+
+function androidBrave15585Crosswalk(
+  trace = makeBrave155Trace(),
+  observations = knownAndroidBrave15585Observations,
+  traceRecord,
+) {
+  return androidBrave15585Analysis(
+    trace,
+    observations,
+    traceRecord ?? {
+      trace: "android-brave15585-synthetic.trace.json",
+      dataLossOccurred: false,
+    },
+  ).discreteEventTimingCrosswalk;
+}
+
 function assertUnsupportedBrave155(crosswalk) {
   assert.equal(crosswalk.status, "unavailable");
   assert.deepEqual(crosswalk.candidates, []);
@@ -247,12 +355,71 @@ function assertUnsupportedBrave15580(crosswalk) {
   assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
 }
 
+function assertUnsupportedBrave15585(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(JSON.stringify(crosswalk), /TRACE_PRIVATE_/);
+}
+
+function assertUnsupportedAndroidBrave15585(crosswalk) {
+  assert.equal(crosswalk.status, "unavailable");
+  assert.deepEqual(crosswalk.candidates, []);
+  assert.equal(crosswalk.methodScope, null);
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.deepEqual(crosswalk.gateReasonCodes, [
+    "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /TRACE_PRIVATE_|\/Users\/private/,
+  );
+}
+
 const observedSourceHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
 const currentRetainedCollectorSourceHash =
   "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
+const cleanupVerifiedCollectorSourceHash =
+  "12c0ecc50a541835456367e4c57f8285feb119ad959aad8d0e222b75c06c33ab";
+const postReviewFrozenProducerSourceHash =
+  "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a";
 
-test("pins current collector lifecycle hashes to explicit producer inputs", () => {
+function currentCollectorSourceHash() {
+  const collectorSource = readFileSync(
+    resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
+    "utf8",
+  );
+  const extrasDeclaration = collectorSource.match(
+    /const extras = \[([\s\S]*?)\];/,
+  );
+  assert.ok(extrasDeclaration, "collector must declare explicit hash inputs");
+  const extras = Array.from(
+    extrasDeclaration[1].matchAll(/"([^"]+)"/g),
+    ([, path]) => path,
+  );
+  const tracked = execFileSync("git", ["ls-files", "-z", "src", "migrations"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
+  const sourceHash = createHash("sha256");
+  for (const path of [...new Set([...tracked, ...extras])].sort()) {
+    sourceHash.update(path);
+    sourceHash.update("\0");
+    sourceHash.update(readFileSync(resolve(repoRoot, path)));
+  }
+  return sourceHash.digest("hex");
+}
+
+test("pins frozen collector lifecycle hashes to explicit producer inputs", () => {
   const collectorSource = readFileSync(
     resolve(repoRoot, "scripts/capture-chromium-method-pilot.mjs"),
     "utf8",
@@ -266,6 +433,7 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     ([, path]) => path,
   );
   assert.ok(extras.includes("scripts/retained-input-node-evidence.mjs"));
+  assert.ok(extras.includes("scripts/lib/owned-cleanup-receipt.mjs"));
   assert.ok(!extras.includes("scripts/chromium-trace-metrics.mjs"));
   assert.ok(!extras.includes("scripts/analyze-chromium-traces.mjs"));
 
@@ -282,13 +450,9 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
   assert.ok(!producerInputs.includes("scripts/chromium-trace-metrics.mjs"));
   assert.ok(!producerInputs.includes("scripts/analyze-chromium-traces.mjs"));
 
-  const sourceHash = createHash("sha256");
-  for (const path of producerInputs) {
-    sourceHash.update(path);
-    sourceHash.update("\0");
-    sourceHash.update(readFileSync(resolve(repoRoot, path)));
-  }
-  const actualHash = sourceHash.digest("hex");
+  // Historical capture profiles remain frozen when application source changes.
+  const actualHash = postReviewFrozenProducerSourceHash;
+  assert.notEqual(actualHash, cleanupVerifiedCollectorSourceHash);
   const metricsSource = readFileSync(
     resolve(repoRoot, "scripts/chromium-trace-metrics.mjs"),
     "utf8",
@@ -303,8 +467,53 @@ test("pins current collector lifecycle hashes to explicit producer inputs", () =
     return hash[1];
   };
 
-  assert.equal(lifecycleHash("currentVersionOneRetentionDisabled"), actualHash);
-  assert.equal(lifecycleHash("currentVersionTwoRetentionEnabled"), actualHash);
+  assert.equal(lifecycleHash("originalVersionOne"), observedSourceHash);
+  assert.equal(
+    lifecycleHash("currentVersionOneRetentionDisabled"),
+    currentRetainedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("currentVersionTwoRetentionEnabled"),
+    currentRetainedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("cleanupVerifiedVersionOneRetentionDisabled"),
+    cleanupVerifiedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("cleanupVerifiedVersionTwoRetentionEnabled"),
+    cleanupVerifiedCollectorSourceHash,
+  );
+  assert.equal(
+    lifecycleHash("runLevelCleanupReceiptVersionOne"),
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  );
+  assert.equal(
+    lifecycleHash("runLevelCleanupReceiptVersionTwo"),
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  );
+  assert.equal(
+    lifecycleHash("postReviewVersionOneRetentionDisabled"),
+    actualHash,
+  );
+  assert.equal(
+    lifecycleHash("postReviewVersionTwoRetentionEnabled"),
+    actualHash,
+  );
+  assert.equal(
+    lifecycleHash("finalReviewedVersionThreeRetentionEnabled"),
+    actualHash,
+  );
+  assert.match(
+    metricsSource.match(
+      /finalReviewedVersionThreeRetentionEnabled: Object\.freeze\(\{([\s\S]*?)\n {2}\}\)/,
+    )?.[1] ?? "",
+    /browserProfile: "brave15585"/,
+  );
+  assert.notEqual(
+    lifecycleHash("runLevelCleanupReceiptVersionOne"),
+    lifecycleHash("originalVersionOne"),
+  );
 });
 
 const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
@@ -582,6 +791,168 @@ function makeVersionTwoObserverEvidence({
   };
 }
 
+function validSameDocumentLoadingWitness(overrides = {}) {
+  const scope = {
+    frameId: observedFrameId,
+    loaderId: "loader-A",
+    contextUniqueId: "context-A",
+    targetId: "target-A",
+    sessionId: "session-A",
+  };
+  return {
+    status: "complete",
+    reasonCode: null,
+    protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    events: [
+      {
+        sequence: 0,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.frameStartedLoading",
+        frameId: observedFrameId,
+      },
+      {
+        sequence: 1,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.navigatedWithinDocument",
+        frameId: observedFrameId,
+        navigationType: "historyApi",
+      },
+    ],
+    droppedCount: 0,
+    overflow: false,
+    loadingCount: 1,
+    historyApiCount: 1,
+    orderingBasis: "cdp-receipt",
+    sourceOrder: "unknown",
+    retainedTargetProof: {
+      sourceRecordIndex: 1,
+      documentId: observedDocumentId,
+      targetToken: observedTargetToken,
+      mappingIndex: 0,
+      sourceCapture: {
+        targetIsNode: true,
+        ownerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        composedPathStartsAtTarget: true,
+      },
+      baselineScope: { ...scope },
+      finalProof: {
+        stage: "post-trace-before-release",
+        savedDocumentSame: true,
+        savedRootSame: true,
+        savedTargetSame: true,
+        targetOwnerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        mappedBackendNodeId: 311,
+        finalBackendNodeId: 311,
+        cdpScope: { ...scope },
+      },
+    },
+    firstInvalidation: null,
+    collectorCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+    ...overrides,
+  };
+}
+
+function makeVersionThreeObserverEvidence({
+  records = [
+    observedApiEntry({
+      targetToken: null,
+      targetLabel: null,
+      targetResolution: "unknown",
+    }),
+    observedDomEntry(),
+  ],
+  retainedOverrides = {},
+  witnessOverrides = {},
+  observationOverrides = {},
+  sidecarOverrides = {},
+  declarationOverrides = {},
+  traceRecordOverrides = {},
+  sourceHashSha256 = postReviewFrozenProducerSourceHash,
+  traceDataLossOccurred = false,
+} = {}) {
+  const base = makeObserverEvidence({
+    records,
+    observationOverrides,
+    traceRecordOverrides,
+    sourceHashSha256,
+    traceDataLossOccurred,
+  });
+  const fixture = "100-interactive-open";
+  const traceName = `${fixture}.trace.json`;
+  const observation = {
+    ...base.sidecar.observation,
+    schemaVersion: 3,
+    retainedNodeEvidence: validRetainedNodeEvidence(retainedOverrides),
+    sameDocumentLoadingWitness:
+      validSameDocumentLoadingWitness(witnessOverrides),
+  };
+  const sidecar = {
+    ...base.sidecar,
+    schemaVersion: 3,
+    fixture,
+    observation,
+    ...sidecarOverrides,
+  };
+  const declaration = {
+    ...base.declaration,
+    schemaVersion: 3,
+    recordByteLimit: 256 * 1024 - 36 * 1024 - 80 * 1024,
+    retainedNodeEvidence: {
+      enabled: true,
+      maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+      mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    },
+    ...declarationOverrides,
+  };
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecar)}\n`);
+  const caseRecord = {
+    ...base.capture.caseRecord,
+    fixture,
+    trace: traceName,
+    workload: "100-interactive",
+    rowCount: 100,
+    action: "open",
+    measurementStatus: "unavailable",
+    measurementReasonCode: "V3_DIAGNOSTIC_ONLY",
+    trustedStimulusObservation: {
+      ...base.capture.caseRecord.trustedStimulusObservation,
+      fileName: `${fixture}.stimulus.json`,
+      byteCount: sidecarBytes.byteLength,
+      sha256: createHash("sha256").update(sidecarBytes).digest("hex"),
+    },
+  };
+  return {
+    declaration,
+    sidecar,
+    capture: { sourceHashSha256, caseRecord },
+    traceRecord: { ...base.traceRecord, fixture, trace: traceName },
+  };
+}
+
+function refreshVersionThreeEvidenceBytes(evidence) {
+  evidence.sidecar.observation.recordBytes = Buffer.byteLength(
+    JSON.stringify(evidence.sidecar.observation.records),
+    "utf8",
+  );
+  const bytes = Buffer.from(`${JSON.stringify(evidence.sidecar)}\n`);
+  Object.assign(evidence.capture.caseRecord.trustedStimulusObservation, {
+    byteCount: bytes.byteLength,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+}
+
 function makeVersionTwoTrace({
   trace = makeBrave155Trace(),
   frame = observedFrameId,
@@ -603,15 +974,56 @@ function makeVersionTwoTrace({
   return trace;
 }
 
+function makeVersionThreeTrace({
+  trace = makeBrave155Trace(),
+  frame = observedFrameId,
+  processId = 101,
+  markerPid = processId,
+  metadataEvents = [],
+} = {}) {
+  const versionTwoTrace = makeVersionTwoTrace({
+    trace,
+    frame,
+    processId,
+    metadataEvents,
+  });
+  versionTwoTrace.traceEvents.splice(1, 0, {
+    name: "TimeStamp",
+    cat: "blink.user_timing",
+    ph: "I",
+    pid: markerPid,
+    tid: 1,
+    ts: 1n,
+    args: {
+      data: { message: "pilot-100-interactive-open:segment-start" },
+    },
+  });
+  return versionTwoTrace;
+}
+
 function analyzeVersionTwoTrace({
   evidence = makeVersionTwoObserverEvidence(),
   trace = makeVersionTwoTrace(),
+  sourceObservations = knownBrave15580Observations,
+} = {}) {
+  return analyzeTrace(trace, evidence.traceRecord, [], sourceObservations, {
+    declaration: evidence.declaration,
+    sidecar: evidence.sidecar,
+    capture: evidence.capture,
+  }).observedDiscreteInputs;
+}
+
+function analyzeVersionThreeTrace({
+  evidence = makeVersionThreeObserverEvidence(),
+  trace = makeVersionThreeTrace(),
+  segments = [],
+  sourceObservations = knownBrave15585VersionThreeObservations,
 } = {}) {
   return analyzeTrace(
     trace,
     evidence.traceRecord,
-    [],
-    knownBrave15580Observations,
+    segments,
+    sourceObservations,
     {
       declaration: evidence.declaration,
       sidecar: evidence.sidecar,
@@ -627,6 +1039,407 @@ function assertVersionTwoUnavailable(result) {
   assert.equal(result.formalActionStatus, "unavailable");
   assert.deepEqual(result.formalActionSamples, []);
 }
+
+function assertVersionThreeUnavailable(result, message) {
+  assert.equal(result.status, "unavailable", message);
+  assert.equal(result.counts.accepted, 0, message);
+  assert.equal(result.counts.rejected, result.counts.apiEntries, message);
+  assert.equal(result.formalActionStatus, "unavailable", message);
+  assert.deepEqual(result.formalActionSamples, [], message);
+}
+
+test("v3 association requires singleton raw positive backend node equality and preserves API null", () => {
+  const evidence = makeVersionThreeObserverEvidence();
+  const result = analyzeVersionThreeTrace({ evidence });
+
+  assert.deepEqual(result, {
+    status: "diagnostic-only",
+    counts: { apiEntries: 1, accepted: 1, rejected: 0 },
+    entries: [
+      {
+        dispatchPhase: "primary",
+        actionLabel: "open-primary",
+        eventType: "click",
+        durationUs: 8,
+        processingEndToPresentationUs: 3,
+        status: "diagnostic-only",
+      },
+    ],
+    rejectionCounts: [],
+    formalActionStatus: "unavailable",
+    formalActionSamples: [],
+  });
+  assert.equal(
+    evidence.sidecar.observation.records[0].targetToken,
+    null,
+    "the API's null target remains null while independent proof binds the DOM target",
+  );
+
+  for (const field of ["connected", "rootContainsTarget"]) {
+    const detached = makeVersionThreeObserverEvidence();
+    detached.sidecar.observation.sameDocumentLoadingWitness.retainedTargetProof.finalProof[
+      field
+    ] = false;
+    assert.equal(
+      analyzeVersionThreeTrace({ evidence: detached }).counts.accepted,
+      1,
+    );
+  }
+
+  const mismatchedMapping = makeVersionThreeObserverEvidence({
+    retainedOverrides: {
+      mappings: [{ targetToken: observedTargetToken, backendNodeId: 312 }],
+    },
+  });
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ evidence: mismatchedMapping }),
+  );
+
+  const rawNodeMismatch = makeVersionThreeObserverEvidence({
+    retainedOverrides: {
+      mappings: [{ targetToken: observedTargetToken, backendNodeId: 312 }],
+    },
+  });
+  const rawNodeProof =
+    rawNodeMismatch.sidecar.observation.sameDocumentLoadingWitness
+      .retainedTargetProof.finalProof;
+  rawNodeProof.mappedBackendNodeId = 312;
+  rawNodeProof.finalBackendNodeId = 312;
+  const rawNodeMismatchResult = analyzeVersionThreeTrace({
+    evidence: rawNodeMismatch,
+  });
+  assertVersionThreeUnavailable(rawNodeMismatchResult);
+  assert.deepEqual(rawNodeMismatchResult.rejectionCounts, [
+    { code: "RETAINED_NODE_MAPPING_MISMATCH", count: 1 },
+  ]);
+
+  const nonNullApiTargetMismatch = makeVersionThreeObserverEvidence();
+  nonNullApiTargetMismatch.sidecar.observation.records[0].targetToken =
+    "t-cccccccccccccccccccccccc";
+  refreshVersionThreeEvidenceBytes(nonNullApiTargetMismatch);
+  const nonNullTargetResult = analyzeVersionThreeTrace({
+    evidence: nonNullApiTargetMismatch,
+  });
+  assertVersionThreeUnavailable(nonNullTargetResult);
+  assert.deepEqual(nonNullTargetResult.rejectionCounts, [
+    { code: "TARGET_IDENTITY_MISMATCH", count: 1 },
+  ]);
+
+  const duplicateRawContender = makeVersionThreeTrace();
+  duplicateRawContender.traceEvents.push({
+    ...structuredClone(duplicateRawContender.traceEvents[2]),
+    id: "0xduplicate",
+  });
+  const ambiguous = analyzeVersionThreeTrace({
+    trace: duplicateRawContender,
+  });
+  assertVersionThreeUnavailable(ambiguous);
+  assert.deepEqual(ambiguous.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+
+  const crossFramePeer = makeVersionThreeTrace();
+  const otherFrameCandidate = structuredClone(crossFramePeer.traceEvents[2]);
+  otherFrameCandidate.id = "0xcrossframe";
+  otherFrameCandidate.args.data.frame = "other-frame";
+  crossFramePeer.traceEvents.push(otherFrameCandidate);
+  const crossFrameAmbiguous = analyzeVersionThreeTrace({
+    trace: crossFramePeer,
+  });
+  assertVersionThreeUnavailable(crossFrameAmbiguous);
+  assert.deepEqual(crossFrameAmbiguous.rejectionCounts, [
+    { code: "TRACE_IDENTITY_AMBIGUOUS", count: 1 },
+  ]);
+
+  const nonpositiveRawNode = makeVersionThreeTrace();
+  nonpositiveRawNode.traceEvents[2].args.data.nodeId = 0;
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: nonpositiveRawNode }),
+  );
+
+  const rawFrameMismatch = makeVersionThreeTrace();
+  rawFrameMismatch.traceEvents[2].args.data.frame = "other-frame";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: rawFrameMismatch }),
+  );
+
+  const actionMismatch = makeVersionThreeObserverEvidence();
+  actionMismatch.sidecar.observation.records[1].targetLabel = "fit-all";
+  refreshVersionThreeEvidenceBytes(actionMismatch);
+  const actionMismatchResult = analyzeVersionThreeTrace({
+    evidence: actionMismatch,
+  });
+  assertVersionThreeUnavailable(actionMismatchResult);
+  assert.deepEqual(actionMismatchResult.rejectionCounts, [
+    { code: "UNSELECTED_ACTION_DISPATCH", count: 1 },
+  ]);
+});
+
+test("v3 rejects each missing, false, or inconsistent retained-target proof field", () => {
+  assert.equal(analyzeVersionThreeTrace().counts.accepted, 1);
+  const scenarios = [
+    ["source record index missing", (proof) => delete proof.sourceRecordIndex],
+    ["source record index mismatch", (proof) => (proof.sourceRecordIndex = 0)],
+    ["document binding missing", (proof) => delete proof.documentId],
+    [
+      "document binding mismatch",
+      (proof) => (proof.documentId = "d-cccccccccccccccccccccccc"),
+    ],
+    ["target token missing", (proof) => delete proof.targetToken],
+    [
+      "target token binding mismatch",
+      (proof) => (proof.targetToken = "t-cccccccccccccccccccccccc"),
+    ],
+    ["mapping index missing", (proof) => delete proof.mappingIndex],
+    ["mapping index mismatch", (proof) => (proof.mappingIndex = 1)],
+    ["source capture missing", (proof) => delete proof.sourceCapture],
+    ["baseline scope missing", (proof) => delete proof.baselineScope],
+    ...[
+      ["frameId", "other-frame"],
+      ["loaderId", "other-loader"],
+      ["contextUniqueId", "other-context"],
+      ["targetId", "other-target"],
+      ["sessionId", "other-session"],
+    ].flatMap(([field, value]) => [
+      [
+        `baseline ${field} missing`,
+        (proof) => delete proof.baselineScope[field],
+      ],
+      [
+        `baseline ${field} mismatch`,
+        (proof) => (proof.baselineScope[field] = value),
+      ],
+    ]),
+    ["final proof missing", (proof) => delete proof.finalProof],
+    [
+      "final proof stage mismatch",
+      (proof) => (proof.finalProof.stage = "after-release"),
+    ],
+    [
+      "mapped backend node missing",
+      (proof) => delete proof.finalProof.mappedBackendNodeId,
+    ],
+    [
+      "mapped backend node mismatch",
+      (proof) => (proof.finalProof.mappedBackendNodeId = 312),
+    ],
+    [
+      "final backend node missing",
+      (proof) => delete proof.finalProof.finalBackendNodeId,
+    ],
+    [
+      "final backend node mismatch",
+      (proof) => (proof.finalProof.finalBackendNodeId = 312),
+    ],
+    ["final CDP scope missing", (proof) => delete proof.finalProof.cdpScope],
+    ...[
+      ["frameId", "other-frame"],
+      ["loaderId", "other-loader"],
+      ["contextUniqueId", "other-context"],
+      ["targetId", "other-target"],
+      ["sessionId", "other-session"],
+    ].flatMap(([field, value]) => [
+      [
+        `final CDP ${field} missing`,
+        (proof) => delete proof.finalProof.cdpScope[field],
+      ],
+      [
+        `final CDP ${field} mismatch`,
+        (proof) => (proof.finalProof.cdpScope[field] = value),
+      ],
+    ]),
+    ["extra proof field", (proof) => (proof.unreviewed = true)],
+    ...[
+      "targetIsNode",
+      "ownerDocumentMatches",
+      "rootContainsTarget",
+      "connected",
+      "composedPathStartsAtTarget",
+    ].flatMap((field) => [
+      [`${field} missing`, (proof) => delete proof.sourceCapture[field]],
+      [`${field} false`, (proof) => (proof.sourceCapture[field] = false)],
+    ]),
+    ...[
+      "savedDocumentSame",
+      "savedRootSame",
+      "savedTargetSame",
+      "targetOwnerDocumentMatches",
+    ].flatMap((field) => [
+      [`${field} missing`, (proof) => delete proof.finalProof[field]],
+      [`${field} false`, (proof) => (proof.finalProof[field] = false)],
+    ]),
+    ...["rootContainsTarget", "connected"].map((field) => [
+      `${field} missing in final proof`,
+      (proof) => delete proof.finalProof[field],
+    ]),
+  ];
+
+  for (const [name, mutateProof] of scenarios) {
+    const evidence = makeVersionThreeObserverEvidence();
+    mutateProof(
+      evidence.sidecar.observation.sameDocumentLoadingWitness
+        .retainedTargetProof,
+    );
+    assertVersionThreeUnavailable(analyzeVersionThreeTrace({ evidence }), name);
+  }
+});
+
+test("v3 rejects identity and trace-order mismatches", () => {
+  assert.equal(analyzeVersionThreeTrace().counts.accepted, 1);
+  assert.throws(
+    () => analyzeVersionThreeTrace({ segments: [{}] }),
+    /version-three analysis cannot include action measurement segments/i,
+  );
+
+  const unknownHash = makeVersionThreeObserverEvidence({
+    sourceHashSha256: "0".repeat(64),
+  });
+  const unknownHashResult = analyzeVersionThreeTrace({ evidence: unknownHash });
+  assertVersionThreeUnavailable(unknownHashResult);
+  assert.deepEqual(unknownHashResult.rejectionCounts, [
+    { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+  ]);
+
+  const eightyProfile = analyzeTrace(
+    makeVersionThreeTrace(),
+    makeVersionThreeObserverEvidence().traceRecord,
+    [],
+    knownBrave15580Observations,
+    {
+      declaration: makeVersionThreeObserverEvidence().declaration,
+      sidecar: makeVersionThreeObserverEvidence().sidecar,
+      capture: makeVersionThreeObserverEvidence().capture,
+    },
+  ).observedDiscreteInputs;
+  assertVersionThreeUnavailable(eightyProfile);
+
+  const qualifiedProfile = analyzeVersionThreeTrace({
+    sourceObservations: knownBrave15585Observations,
+  });
+  assertVersionThreeUnavailable(qualifiedProfile);
+  assert.deepEqual(qualifiedProfile.rejectionCounts, [
+    { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+  ]);
+
+  const markerPidMismatch = analyzeVersionThreeTrace({
+    trace: makeVersionThreeTrace({ markerPid: 202 }),
+  });
+  assertVersionThreeUnavailable(markerPidMismatch);
+
+  const rendererPidMismatchTrace = makeVersionThreeTrace({
+    processId: 202,
+    markerPid: 202,
+  });
+  const rendererPidMismatch = analyzeVersionThreeTrace({
+    trace: rendererPidMismatchTrace,
+  });
+  assertVersionThreeUnavailable(rendererPidMismatch);
+
+  const candidateBeforeMarker = makeVersionThreeTrace();
+  const marker = candidateBeforeMarker.traceEvents.splice(1, 1)[0];
+  candidateBeforeMarker.traceEvents.push(marker);
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: candidateBeforeMarker }),
+  );
+
+  const missingMarker = makeVersionThreeTrace();
+  missingMarker.traceEvents.splice(1, 1);
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: missingMarker }),
+  );
+
+  const duplicateMarker = makeVersionThreeTrace();
+  duplicateMarker.traceEvents.splice(
+    2,
+    0,
+    structuredClone(duplicateMarker.traceEvents[1]),
+  );
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: duplicateMarker }),
+  );
+
+  const malformedMarker = makeVersionThreeTrace();
+  malformedMarker.traceEvents[1].cat = "devtools.timeline";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: malformedMarker }),
+  );
+
+  const malformedMarkerPhase = makeVersionThreeTrace();
+  malformedMarkerPhase.traceEvents[1].ph = "X";
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ trace: malformedMarkerPhase }),
+  );
+
+  const epochChangesAfterMarker = makeVersionThreeTrace();
+  epochChangesAfterMarker.traceEvents.push({
+    name: "FrameCommittedInBrowser",
+    ph: "I",
+    args: { data: { frame: observedFrameId } },
+  });
+  const epochInvalidated = analyzeVersionThreeTrace({
+    trace: epochChangesAfterMarker,
+  });
+  assertVersionThreeUnavailable(epochInvalidated);
+  assert.deepEqual(epochInvalidated.rejectionCounts, [
+    { code: "TRACE_FRAME_EPOCH_INVALIDATED", count: 1 },
+  ]);
+});
+
+test("v1 and v2 historical and current fingerprints stay profile-bound", () => {
+  const v1Hashes = [
+    observedSourceHash,
+    currentRetainedCollectorSourceHash,
+    cleanupVerifiedCollectorSourceHash,
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+    postReviewFrozenProducerSourceHash,
+  ];
+  for (const sourceHashSha256 of v1Hashes) {
+    const evidence = makeObserverEvidence({ sourceHashSha256 });
+    const supported = analyzeObservedTrace({ evidence });
+    assert.equal(supported.counts.accepted, 1, sourceHashSha256);
+    const unsupported = analyzeTrace(
+      makeBrave155Trace(),
+      evidence.traceRecord,
+      [],
+      knownBrave15585Observations,
+      {
+        declaration: evidence.declaration,
+        sidecar: evidence.sidecar,
+        capture: evidence.capture,
+      },
+    ).observedDiscreteInputs;
+    assertVersionTwoUnavailable(unsupported);
+    assert.deepEqual(unsupported.rejectionCounts, [
+      { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+    ]);
+  }
+
+  const v2Hashes = [
+    currentRetainedCollectorSourceHash,
+    cleanupVerifiedCollectorSourceHash,
+    "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+    postReviewFrozenProducerSourceHash,
+  ];
+  for (const sourceHashSha256 of v2Hashes) {
+    const evidence = makeVersionTwoObserverEvidence({ sourceHashSha256 });
+    assert.equal(analyzeVersionTwoTrace({ evidence }).counts.accepted, 1);
+    assert.equal(
+      analyzeVersionTwoTrace({
+        evidence,
+        sourceObservations: knownBrave15585Observations,
+      }).counts.accepted,
+      1,
+    );
+  }
+
+  const v3UnknownHash = makeVersionThreeObserverEvidence({
+    sourceHashSha256:
+      "8ab4d0f155af00e6b16784873c3bc867b5423696e4d31572a2a3d3ba5af28f28",
+  });
+  assertVersionThreeUnavailable(
+    analyzeVersionThreeTrace({ evidence: v3UnknownHash }),
+  );
+});
 
 test("accepts the complete installed Brave 155 tuple as a separate diagnostic profile", () => {
   const crosswalk = brave155Crosswalk();
@@ -743,6 +1556,620 @@ test("accepts only the exact Brave 155.0.8059.80 published-source projection", (
     mutate(observations);
     assertUnsupportedBrave15580(brave15580Crosswalk(undefined, observations));
   }
+});
+
+test("accepts only the exact Brave 155.0.8059.85 tuple with diagnostic source compatibility provenance", () => {
+  const crosswalk = brave15585Crosswalk();
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    pinnedSourceRevision: "0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+    observedBundleRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes("INSTALLED_BRAVE_SCHEMA_PROBE_ONLY"),
+  );
+  for (const reason of [
+    "ACTION_ATTRIBUTION_UNPROVEN",
+    "INTERACTION_AGGREGATION_UNPROVEN",
+    "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+    "MODALITY_EQUIVALENCE_UNPROVEN",
+    "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+  ]) {
+    assert.ok(crosswalk.gateReasonCodes.includes(reason), reason);
+  }
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+
+  const requiredPaths = [
+    ["browser"],
+    ["browser", "product"],
+    ["browser", "version"],
+    ["qualification"],
+    ["status"],
+    ["browserIdentity"],
+    ["browserIdentity", "bundle"],
+    ["browserIdentity", "bundle", "identifier"],
+    ["browserIdentity", "bundle", "shortVersion"],
+    ["browserIdentity", "bundle", "bundleVersion"],
+    ["browserIdentity", "bundle", "scmRevision"],
+    ["browserIdentity", "executableSha256"],
+    ["browserIdentity", "runtime"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+  ];
+  for (const path of requiredPaths) {
+    const missing = structuredClone(knownBrave15585Observations);
+    let parent = missing;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    delete parent[path.at(-1)];
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, missing));
+
+    const changed = structuredClone(knownBrave15585Observations);
+    parent = changed;
+    for (const key of path.slice(0, -1)) parent = parent[key];
+    parent[path.at(-1)] = `TRACE_PRIVATE_${path.join("_")}`;
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, changed));
+  }
+
+  const extraFieldMutations = [
+    (observations) => {
+      observations.extra = "TRACE_PRIVATE_ROOT";
+    },
+    (observations) => {
+      observations.browser.extra = "TRACE_PRIVATE_BROWSER";
+    },
+    (observations) => {
+      observations.browserIdentity.extra = "TRACE_PRIVATE_IDENTITY";
+    },
+    (observations) => {
+      observations.browserIdentity.bundle.extra = "TRACE_PRIVATE_BUNDLE";
+    },
+    (observations) => {
+      observations.browserIdentity.runtime.extra = "TRACE_PRIVATE_RUNTIME";
+    },
+  ];
+  for (const mutate of extraFieldMutations) {
+    const observations = structuredClone(knownBrave15585Observations);
+    mutate(observations);
+    assertUnsupportedBrave15585(brave15585Crosswalk(undefined, observations));
+  }
+});
+
+test("accepts the exact Android Brave tuple as a diagnostic-only crosswalk with closed formal gates", () => {
+  const traceRecord = {
+    trace: "TRACE_PRIVATE_/Users/private/android/base.apk",
+    dataLossOccurred: false,
+  };
+  const crosswalk = androidBrave15585Crosswalk(
+    makeBrave155Trace(),
+    knownAndroidBrave15585Observations,
+    traceRecord,
+  );
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    platform: "Android",
+    observedPackageIdentifier: "com.brave.browser",
+    observedPackageVersion: "1.97.59",
+    observedRuntimeRevision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId:
+        "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99",
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-android-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  for (const reason of [
+    "ACTION_ATTRIBUTION_UNPROVEN",
+    "INTERACTION_AGGREGATION_UNPROVEN",
+    "BROWSER_SOURCE_COMPLETENESS_UNPROVEN",
+    "MODALITY_EQUIVALENCE_UNPROVEN",
+    "INSTALLED_ANDROID_BRAVE_SCHEMA_PROBE_ONLY",
+    "VENDOR_PATCH_IDENTITY_UNVERIFIED",
+    "NAVIGATION_DOCUMENT_IDENTITY_NOT_INFERRED",
+  ]) {
+    assert.ok(crosswalk.gateReasonCodes.includes(reason), reason);
+  }
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal("pinnedSourceRevision" in crosswalk.methodScope, false);
+  assert.equal("observedBundleRevision" in crosswalk.methodScope, false);
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /TRACE_PRIVATE_|\/Users\/private/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(crosswalk),
+    /b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33/,
+  );
+
+  function reverseKeys(value) {
+    if (Array.isArray(value)) return value.map(reverseKeys);
+    if (value === null || typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .reverse()
+        .map(([key, nested]) => [key, reverseKeys(nested)]),
+    );
+  }
+  const reordered = androidBrave15585Crosswalk(
+    makeBrave155Trace(),
+    reverseKeys(knownAndroidBrave15585Observations),
+  );
+  assert.equal(reordered.status, "diagnostic-only");
+  assert.equal(reordered.candidates.length, 1);
+});
+
+test("rejects missing, mistyped, changed, and unknown Android Brave observation fields", () => {
+  const leafPaths = [
+    ["browser", "product"],
+    ["browser", "version"],
+    ["browserIdentity", "chromiumSourceIdentity"],
+    ["browserIdentity", "platform", "os"],
+    ["browserIdentity", "platform", "version"],
+    ["browserIdentity", "platform", "apiLevel"],
+    ["browserIdentity", "package", "identifier"],
+    ["browserIdentity", "package", "versionName"],
+    ["browserIdentity", "package", "versionCode"],
+    ["browserIdentity", "package", "minSdk"],
+    ["browserIdentity", "package", "targetSdk"],
+    ["browserIdentity", "package", "artifacts", "base.apk"],
+    ["browserIdentity", "package", "artifacts", "split_chrome.apk"],
+    ["browserIdentity", "package", "artifacts", "split_config.zh.apk"],
+    ["browserIdentity", "package", "artifacts", "split_on_demand.apk"],
+    ["browserIdentity", "runtime", "version"],
+    ["browserIdentity", "runtime", "product"],
+    ["browserIdentity", "runtime", "revision"],
+    ["browserIdentity", "runtime", "userAgent"],
+    ["qualification"],
+    ["status"],
+  ];
+  const objectPaths = [
+    ["browser"],
+    ["browserIdentity"],
+    ["browserIdentity", "platform"],
+    ["browserIdentity", "package"],
+    ["browserIdentity", "package", "artifacts"],
+    ["browserIdentity", "runtime"],
+  ];
+  const readPath = (value, path) =>
+    path.reduce((parent, key) => parent[key], value);
+  const writePath = (value, path, replacement) => {
+    const parent = readPath(value, path.slice(0, -1));
+    parent[path.at(-1)] = replacement;
+  };
+  const deletePath = (value, path) => {
+    const parent = readPath(value, path.slice(0, -1));
+    delete parent[path.at(-1)];
+  };
+
+  for (const path of leafPaths) {
+    const value = readPath(knownAndroidBrave15585Observations, path);
+    const missing = structuredClone(knownAndroidBrave15585Observations);
+    deletePath(missing, path);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, missing),
+    );
+
+    const mistyped = structuredClone(knownAndroidBrave15585Observations);
+    writePath(
+      mistyped,
+      path,
+      typeof value === "string" ? 1 : "TRACE_PRIVATE_WRONG_TYPE",
+    );
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, mistyped),
+    );
+
+    const changed = structuredClone(knownAndroidBrave15585Observations);
+    writePath(
+      changed,
+      path,
+      typeof value === "string" ? `${value}-changed` : value + 1,
+    );
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, changed),
+    );
+  }
+
+  for (const path of objectPaths) {
+    const missing = structuredClone(knownAndroidBrave15585Observations);
+    deletePath(missing, path);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, missing),
+    );
+
+    const mistyped = structuredClone(knownAndroidBrave15585Observations);
+    writePath(mistyped, path, null);
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, mistyped),
+    );
+
+    const withUnknownField = structuredClone(
+      knownAndroidBrave15585Observations,
+    );
+    const parent = readPath(withUnknownField, path);
+    parent.unexpectedField = "TRACE_PRIVATE_UNKNOWN_FIELD";
+    assertUnsupportedAndroidBrave15585(
+      androidBrave15585Crosswalk(undefined, withUnknownField),
+    );
+  }
+
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, null),
+  );
+  const rootWithUnknownField = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  rootWithUnknownField.unexpectedField = "TRACE_PRIVATE_UNKNOWN_ROOT_FIELD";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, rootWithUnknownField),
+  );
+
+  const desktopSubstitution = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  desktopSubstitution.browserIdentity = structuredClone(
+    knownBrave15585Observations.browserIdentity,
+  );
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, desktopSubstitution),
+  );
+
+  const mobileUserAgentConflict = structuredClone(
+    knownAndroidBrave15585Observations,
+  );
+  mobileUserAgentConflict.browserIdentity.runtime.userAgent =
+    "Mozilla/5.0 (Linux; Android 15; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, mobileUserAgentConflict),
+  );
+
+  const desktopUserAgent = structuredClone(knownAndroidBrave15585Observations);
+  desktopUserAgent.browserIdentity.runtime.userAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, desktopUserAgent),
+  );
+
+  const osVersionMismatch = structuredClone(knownAndroidBrave15585Observations);
+  osVersionMismatch.browserIdentity.platform.version = "15";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, osVersionMismatch),
+  );
+
+  const artifactPath = structuredClone(knownAndroidBrave15585Observations);
+  artifactPath.browserIdentity.package.artifacts["base.apk"] =
+    "/Users/private/base.apk";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, artifactPath),
+  );
+
+  const extraArtifact = structuredClone(knownAndroidBrave15585Observations);
+  extraArtifact.browserIdentity.package.artifacts["split_extra.apk"] =
+    "TRACE_PRIVATE_EXTRA_ARTIFACT";
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, extraArtifact),
+  );
+
+  const artifactsArray = structuredClone(knownAndroidBrave15585Observations);
+  artifactsArray.browserIdentity.package.artifacts = [
+    ...Object.values(artifactsArray.browserIdentity.package.artifacts),
+  ];
+  assertUnsupportedAndroidBrave15585(
+    androidBrave15585Crosswalk(undefined, artifactsArray),
+  );
+});
+
+test("keeps Android Brave outside observer attribution and rejects version-three profile selection", () => {
+  const versionTwo = makeVersionTwoObserverEvidence();
+  const versionTwoAnalysis = androidBrave15585Analysis(
+    makeVersionTwoTrace(),
+    knownAndroidBrave15585Observations,
+    versionTwo.traceRecord,
+    {
+      declaration: versionTwo.declaration,
+      sidecar: versionTwo.sidecar,
+      capture: versionTwo.capture,
+    },
+  );
+  assert.equal(
+    versionTwoAnalysis.discreteEventTimingCrosswalk.status,
+    "diagnostic-only",
+  );
+  assert.equal(
+    versionTwoAnalysis.discreteEventTimingCrosswalk.candidates.length,
+    1,
+  );
+  assert.equal(versionTwoAnalysis.observedDiscreteInputs.status, "unavailable");
+  assert.equal(versionTwoAnalysis.observedDiscreteInputs.counts.accepted, 0);
+  assert.ok(
+    versionTwoAnalysis.observedDiscreteInputs.rejectionCounts.some(
+      ({ code }) => code === "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+    ),
+  );
+  assert.deepEqual(
+    versionTwoAnalysis.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+
+  const versionThree = makeVersionThreeObserverEvidence();
+  const versionThreeAnalysis = analyzeTrace(
+    makeVersionThreeTrace(),
+    versionThree.traceRecord,
+    [],
+    knownAndroidBrave15585Observations,
+    {
+      declaration: versionThree.declaration,
+      sidecar: versionThree.sidecar,
+      capture: versionThree.capture,
+    },
+  );
+  assertUnsupportedAndroidBrave15585(
+    versionThreeAnalysis.discreteEventTimingCrosswalk,
+  );
+  assert.equal(
+    versionThreeAnalysis.observedDiscreteInputs.status,
+    "unavailable",
+  );
+  assert.ok(
+    versionThreeAnalysis.observedDiscreteInputs.rejectionCounts.some(
+      ({ code }) => code === "BROWSER_SOURCE_PROFILE_UNSUPPORTED",
+    ),
+  );
+  assert.deepEqual(
+    versionThreeAnalysis.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+});
+
+test("bounds all Android Brave legacy and modern interaction IDs and offsets to signed int32", () => {
+  const fields = [
+    {
+      owner: "legacy",
+      key: "interactionId",
+      peerOwner: "modern",
+      peerKey: "interaction_id",
+    },
+    {
+      owner: "legacy",
+      key: "interactionOffset",
+      peerOwner: "modern",
+      peerKey: "interaction_offset",
+    },
+    {
+      owner: "modern",
+      key: "interaction_id",
+      peerOwner: "legacy",
+      peerKey: "interactionId",
+    },
+    {
+      owner: "modern",
+      key: "interaction_offset",
+      peerOwner: "legacy",
+      peerKey: "interactionOffset",
+    },
+  ];
+  const boundaries = [
+    ["zero", 0n, true],
+    ["signed maximum", 2147483647n, true],
+    ["negative one", -1n, false],
+    ["signed maximum plus one", 2147483648n, false],
+  ];
+
+  for (const field of fields) {
+    for (const [label, value, supported] of boundaries) {
+      const trace = makeBrave155Trace();
+      const legacy = trace.traceEvents[0].args.data;
+      const modern = trace.traceEvents[1].args.event_timing;
+      const target = field.owner === "legacy" ? legacy : modern;
+      target[field.key] = value;
+      if (supported) {
+        const peer = field.peerOwner === "legacy" ? legacy : modern;
+        peer[field.peerKey] = value;
+      }
+
+      const crosswalk = androidBrave15585Crosswalk(trace);
+      if (supported) {
+        assert.equal(
+          crosswalk.status,
+          "diagnostic-only",
+          `${field.owner}.${field.key}: ${label}`,
+        );
+        assert.equal(
+          crosswalk.candidates.length,
+          1,
+          `${field.owner}.${field.key}: ${label}`,
+        );
+      } else {
+        assert.deepEqual(
+          crosswalk.candidates,
+          [],
+          `${field.owner}.${field.key}: ${label}`,
+        );
+        assert.ok(
+          crosswalk.rejectionCounts.some(
+            ({ code, count }) =>
+              code === "BRAVE_SIGNED_IDENTITY_OVERFLOW_UNVERIFIED" &&
+              count === 1,
+          ),
+          `${field.owner}.${field.key}: ${label}`,
+        );
+      }
+    }
+  }
+});
+
+test("preserves Android Brave processing endpoint and fallback evidence gates", () => {
+  const endpointMismatch = makeBrave155TraceFromRaw((events) => {
+    events[2].ts = 10006;
+  });
+  const endpointCrosswalk = androidBrave15585Crosswalk(endpointMismatch);
+  assert.deepEqual(endpointCrosswalk.candidates, []);
+  assert.ok(
+    endpointCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "PROCESSING_ENDPOINT_MISMATCH",
+    ),
+  );
+
+  const wrongFallbackReason = makeBrave155Trace();
+  wrongFallbackReason.traceEvents[1].args.fallback_reason = "unknown";
+  const wrongReasonCrosswalk = androidBrave15585Crosswalk(wrongFallbackReason);
+  assert.deepEqual(wrongReasonCrosswalk.candidates, []);
+  assert.ok(
+    wrongReasonCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
+
+  const nonzeroFallbackEndpoint = makeBrave155Trace();
+  nonzeroFallbackEndpoint.traceEvents[1].args.fallback_time = 1n;
+  const fallbackTimeCrosswalk = androidBrave15585Crosswalk(
+    nonzeroFallbackEndpoint,
+  );
+  assert.deepEqual(fallbackTimeCrosswalk.candidates, []);
+  assert.ok(
+    fallbackTimeCrosswalk.rejectionCounts.some(
+      ({ code }) => code === "FALLBACK_UNPROVEN",
+    ),
+  );
+});
+
+test("accepts the preserved .80 retained-node protocol catalog for exact Brave .85 as a diagnostic compatibility input", () => {
+  const evidence = makeVersionTwoObserverEvidence();
+  const analysis = analyzeTrace(
+    makeVersionTwoTrace(),
+    evidence.traceRecord,
+    [],
+    knownBrave15585Observations,
+    {
+      declaration: evidence.declaration,
+      sidecar: evidence.sidecar,
+      capture: evidence.capture,
+    },
+  );
+  assert.equal(analysis.observedDiscreteInputs.status, "diagnostic-only");
+  assert.equal(analysis.observedDiscreteInputs.counts.accepted, 1);
+  assert.equal(
+    analysis.observedDiscreteInputs.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(analysis.observedDiscreteInputs.formalActionSamples, []);
+  assert.deepEqual(
+    analysis.discreteEventTimingCrosswalk.methodScope
+      .protocolCatalogCompatibility,
+    {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+  );
+
+  const mismatchedCatalog = makeVersionTwoObserverEvidence();
+  const unsupported85Catalog =
+    "chromium-0e66b94549a8bd85f03fbdf189b752d6e7b63c32+v8-712e1808de2d7416f1276d0deb1ee4ac978132b8";
+  mismatchedCatalog.declaration.retainedNodeEvidence.protocolCatalogId =
+    unsupported85Catalog;
+  mismatchedCatalog.sidecar.observation.retainedNodeEvidence.protocolCatalogId =
+    unsupported85Catalog;
+  const rejected = analyzeVersionTwoTrace({
+    evidence: mismatchedCatalog,
+    sourceObservations: knownBrave15585Observations,
+  });
+  assertVersionTwoUnavailable(rejected);
+  assert.deepEqual(rejected.rejectionCounts, [
+    { code: "OBSERVER_EVIDENCE_INVALID", count: 1 },
+  ]);
+});
+
+test("keeps version-one observed association limited to Brave 155.0.8059.80", () => {
+  const versionOneEvidence = makeObserverEvidence();
+  const versionOneObserver = {
+    declaration: versionOneEvidence.declaration,
+    sidecar: versionOneEvidence.sidecar,
+    capture: versionOneEvidence.capture,
+  };
+  const versionOne80 = analyzeTrace(
+    makeBrave155Trace(),
+    versionOneEvidence.traceRecord,
+    [],
+    knownBrave15580Observations,
+    versionOneObserver,
+  ).observedDiscreteInputs;
+  assert.equal(versionOne80.status, "diagnostic-only");
+  assert.equal(versionOne80.counts.accepted, 1);
+  assert.equal(versionOne80.formalActionStatus, "unavailable");
+  assert.deepEqual(versionOne80.formalActionSamples, []);
+
+  const versionOne85 = analyzeTrace(
+    makeBrave155Trace(),
+    versionOneEvidence.traceRecord,
+    [],
+    knownBrave15585Observations,
+    versionOneObserver,
+  ).observedDiscreteInputs;
+  assert.equal(versionOne85.status, "unavailable");
+  assert.deepEqual(versionOne85.counts, {
+    apiEntries: 1,
+    accepted: 0,
+    rejected: 1,
+  });
+  assert.deepEqual(versionOne85.rejectionCounts, [
+    { code: "BROWSER_SOURCE_PROFILE_UNSUPPORTED", count: 1 },
+  ]);
+  assert.equal(versionOne85.formalActionStatus, "unavailable");
+  assert.deepEqual(versionOne85.formalActionSamples, []);
+
+  const versionTwo85 = analyzeVersionTwoTrace({
+    evidence: makeVersionTwoObserverEvidence(),
+    sourceObservations: knownBrave15585Observations,
+  });
+  assert.equal(versionTwo85.status, "diagnostic-only");
+  assert.equal(versionTwo85.counts.accepted, 1);
+  assert.equal(versionTwo85.formalActionStatus, "unavailable");
+  assert.deepEqual(versionTwo85.formalActionSamples, []);
 });
 
 test("requires every asserted Brave 155 observation and rejects independent tuple mutations", () => {
@@ -3848,6 +5275,17 @@ test("version-one observer association remains tied to its original schema and h
     1,
   );
 
+  const cleanupVerifiedVersionOne = makeObserverEvidence({
+    sourceHashSha256: cleanupVerifiedCollectorSourceHash,
+  });
+  const cleanupVerifiedResult = analyzeObservedTrace({
+    evidence: cleanupVerifiedVersionOne,
+  });
+  assert.equal(cleanupVerifiedResult.status, "diagnostic-only");
+  assert.equal(cleanupVerifiedResult.counts.accepted, 1);
+  assert.equal(cleanupVerifiedResult.formalActionStatus, "unavailable");
+  assert.deepEqual(cleanupVerifiedResult.formalActionSamples, []);
+
   const versionTwoLabelOnVersionOneSchema = makeObserverEvidence({
     declarationOverrides: { schemaVersion: 2 },
   });
@@ -3855,6 +5293,63 @@ test("version-one observer association remains tied to its original schema and h
     evidence: versionTwoLabelOnVersionOneSchema,
   });
   assertVersionTwoUnavailable(rejected);
+});
+
+test("version-two observer accepts only registered retention-enabled collector hashes", () => {
+  const cleanupVerifiedVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: cleanupVerifiedCollectorSourceHash,
+  });
+  const cleanupVerifiedResult = analyzeVersionTwoTrace({
+    evidence: cleanupVerifiedVersionTwo,
+  });
+  assert.equal(cleanupVerifiedResult.status, "diagnostic-only");
+  assert.equal(cleanupVerifiedResult.counts.accepted, 1);
+  assert.equal(cleanupVerifiedResult.formalActionStatus, "unavailable");
+  assert.deepEqual(cleanupVerifiedResult.formalActionSamples, []);
+
+  const beebe32VersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: currentRetainedCollectorSourceHash,
+  });
+  assert.equal(
+    analyzeVersionTwoTrace({ evidence: beebe32VersionTwo }).counts.accepted,
+    1,
+  );
+
+  const unknownVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256: "0".repeat(64),
+  });
+  const unknownResult = analyzeVersionTwoTrace({ evidence: unknownVersionTwo });
+  assertVersionTwoUnavailable(unknownResult);
+  assert.deepEqual(unknownResult.rejectionCounts, [
+    { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+  ]);
+});
+
+test("run-level cleanup receipt producer hash is accepted only with matching observer schema", () => {
+  const sourceHashSha256 = postReviewFrozenProducerSourceHash;
+  const versionOne = makeObserverEvidence({ sourceHashSha256 });
+  const versionOneResult = analyzeObservedTrace({ evidence: versionOne });
+  assert.equal(versionOneResult.counts.accepted, 1);
+
+  const versionTwo = makeVersionTwoObserverEvidence({ sourceHashSha256 });
+  const versionTwoResult = analyzeVersionTwoTrace({ evidence: versionTwo });
+  assert.equal(versionTwoResult.counts.accepted, 1);
+
+  const crossedVersionOne = makeObserverEvidence({
+    sourceHashSha256,
+    declarationOverrides: { schemaVersion: 2 },
+  });
+  assertVersionTwoUnavailable(
+    analyzeObservedTrace({ evidence: crossedVersionOne }),
+  );
+
+  const crossedVersionTwo = makeVersionTwoObserverEvidence({
+    sourceHashSha256,
+    declarationOverrides: { schemaVersion: 1 },
+  });
+  assertVersionTwoUnavailable(
+    analyzeVersionTwoTrace({ evidence: crossedVersionTwo }),
+  );
 });
 
 test("keeps a secondary open dispatch explicitly separate from the primary action", () => {
@@ -3875,4 +5370,856 @@ test("keeps a secondary open dispatch explicitly separate from the primary actio
   assert.equal(result.entries[0].dispatchPhase, "secondary");
   assert.equal(result.formalActionStatus, "unavailable");
   assert.deepEqual(result.formalActionSamples, []);
+});
+
+test("application changes do not implicitly qualify a new collector producer", () => {
+  const sourceHashSha256 = currentCollectorSourceHash();
+  if (sourceHashSha256 === postReviewFrozenProducerSourceHash) return;
+  for (const result of [
+    analyzeObservedTrace({
+      evidence: makeObserverEvidence({ sourceHashSha256 }),
+    }),
+    analyzeVersionTwoTrace({
+      evidence: makeVersionTwoObserverEvidence({ sourceHashSha256 }),
+    }),
+  ]) {
+    assert.equal(result.counts.accepted, 0);
+    assert.deepEqual(result.rejectionCounts, [
+      { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+    ]);
+  }
+});
+
+test("reconstructs a bounded pointer interaction including nonmax fallback endpoints", () => {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const members = [
+    {
+      type: "pointerdown",
+      modern: "POINTER_DOWN_EVENT",
+      begin: 100000,
+      duration: 25338,
+    },
+    {
+      type: "pointerup",
+      modern: "POINTER_UP_EVENT",
+      begin: 140000,
+      duration: 2083,
+    },
+    { type: "click", modern: "CLICK_EVENT", begin: 150000, duration: 79668 },
+  ];
+  const events = [];
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(template.traceEvents[0]);
+    const modernBegin = structuredClone(template.traceEvents[1]);
+    const modernEnd = structuredClone(template.traceEvents[2]);
+    const legacyEnd = structuredClone(template.traceEvents[3]);
+    const end = member.begin + member.duration;
+    legacyBegin.id = legacyEnd.id = `0x${index + 10}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${index + 20}`;
+    legacyBegin.ts = member.begin;
+    legacyEnd.ts = end;
+    Object.assign(legacyBegin.args.data, {
+      type: member.type,
+      timeStamp: (member.begin - 9000) / 1000,
+      processingStart: (member.begin + 100 - 9000) / 1000,
+      processingEnd: (member.begin + 200 - 9000) / 1000,
+    });
+    modernBegin.ts = member.begin + 100;
+    modernEnd.ts = member.begin + 200;
+    modernBegin.args.event_timing.type = member.modern;
+    if (member.type !== "click") {
+      modernBegin.args.fallback_reason = "DoesNotNeedNextPaint";
+      modernBegin.args.fallback_time = end;
+      modernBegin.args.event_timing.fallback_time_us = end - 9000;
+    }
+    events.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+  }
+  const counters = {
+    pointerdown: 0,
+    pointerup: 0,
+    click: 0,
+    keydown: 0,
+    keypress: 0,
+    keyup: 0,
+    input: 0,
+  };
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: { timeOrigin: 1000, observedAt: 0, counters },
+    after: {
+      timeOrigin: 1000,
+      observedAt: 1000,
+      counters: { ...counters, pointerdown: 1, pointerup: 1, click: 1 },
+    },
+    clickDelta: 1,
+    clicks: [
+      {
+        type: "click",
+        isTrusted: true,
+        targetMatched: true,
+        timeStamp: 141,
+        observedAt: 141.2,
+      },
+    ],
+    overflow: false,
+  };
+  const observations = {
+    browser: { product: "Google Chrome", version: "155.0.8059.84" },
+    status: "bounded-click-calibration",
+    sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+  };
+  const binding = {
+    documentId: "synthetic-document",
+    frame: "frame-A",
+    rendererPid: 101,
+    targetNodeId: "311",
+    traceSha256: "a".repeat(64),
+    sourceRevision: observations.sourceRevision,
+  };
+  const result = analyzeTrace(
+    parseTrace(JSON.stringify({ traceEvents: events })),
+    { trace: "synthetic.json", dataLossOccurred: false },
+    [],
+    observations,
+    undefined,
+    { sidecar, binding },
+  );
+  assert.equal(result.interactionGroups.length, 1);
+  const [group] = result.interactionGroups;
+  assert.equal(group.countClosure.status, "closed");
+  assert.equal(group.status, "bounded-calibration-verified");
+  assert.equal(group.formalStatus, "unavailable");
+  assert.equal(group.observedMaximum.rawDurationUs, 79668);
+  assert.equal(group.observedMaximum.sourceRoundedDurationMs, 80);
+  assert.equal(group.observedMaximum.presentationClaimEligible, true);
+  assert.deepEqual(
+    group.members.map(
+      ({ eventType, durationUs, endpointClass, sourceRoundedDurationMs }) => [
+        eventType,
+        durationUs,
+        endpointClass,
+        sourceRoundedDurationMs,
+      ],
+    ),
+    [
+      ["pointerdown", 25338, "recognized-fallback", 24],
+      ["pointerup", 2083, "recognized-fallback", 0],
+      ["click", 79668, "presentation", 80],
+    ],
+  );
+});
+
+const calibratedChrome155Observations = {
+  browser: { product: "Google Chrome", version: "155.0.8059.84" },
+  status: "bounded-click-calibration",
+  sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+};
+
+function makeCalibratedInteraction({
+  members = [
+    { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+    { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+    { type: "click", durationUs: 79668, endpoint: "presentation" },
+  ],
+  beforeObservedAt = 100,
+  afterObservedAt = 300,
+  originUs = 9000,
+  counterDeltas = {},
+  navigationKeys = "absent",
+  sidecarChanges = {},
+  bindingChanges = {},
+  traceDataLoss = false,
+  extraEvents = [],
+} = {}) {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const events = [];
+  const counts = {
+    click: 0,
+    pointerdown: 0,
+    pointerup: 0,
+    keydown: 0,
+    keypress: 0,
+    keyup: 0,
+    input: 0,
+  };
+
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(template.traceEvents[0]);
+    const modernBegin = structuredClone(template.traceEvents[1]);
+    const modernEnd = structuredClone(template.traceEvents[2]);
+    const legacyEnd = structuredClone(template.traceEvents[3]);
+    const begin = member.beginUs ?? 150000 + index * 20000;
+    const end = begin + member.durationUs;
+    const processStart = begin + 100;
+    const processEnd = begin + 200;
+    const legacyId = member.asyncId ?? index + 10;
+    const modernId = member.modernAsyncId ?? index + 20;
+    legacyBegin.id = legacyEnd.id = `0x${legacyId.toString(16)}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${modernId.toString(16)}`;
+    legacyBegin.pid = legacyEnd.pid = 101;
+    modernBegin.pid = modernEnd.pid = 101;
+    legacyBegin.tid = legacyEnd.tid = 7;
+    modernBegin.tid = modernEnd.tid = 7;
+    legacyBegin.ts = begin;
+    legacyEnd.ts = end;
+    modernBegin.ts = processStart;
+    modernEnd.ts = processEnd;
+    const legacyData = legacyBegin.args.data;
+    Object.assign(legacyData, {
+      type: member.type,
+      frame: member.frame ?? "frame-A",
+      nodeId: member.nodeId ?? 311,
+      interactionId: member.interactionId ?? 17,
+      interactionOffset: member.interactionOffset ?? 18,
+      timeStamp: (begin - originUs) / 1000,
+      processingStart: (processStart - originUs) / 1000,
+      processingEnd: (processEnd - originUs) / 1000,
+    });
+    const modernArgs = modernBegin.args;
+    const modernTiming = modernArgs.event_timing;
+    Object.assign(modernTiming, {
+      type: {
+        click: "CLICK_EVENT",
+        pointerdown: "POINTER_DOWN_EVENT",
+        pointerup: "POINTER_UP_EVENT",
+        keydown: "KEY_DOWN_EVENT",
+        keyup: "KEY_UP_EVENT",
+      }[member.type],
+      frame: member.frame ?? "frame-A",
+      node_id: member.nodeId ?? 311,
+      interaction_id: member.interactionId ?? 17,
+      interaction_offset: member.interactionOffset ?? 18,
+    });
+    if (member.endpoint === "fallback") {
+      modernArgs.fallback_reason = "DoesNotNeedNextPaint";
+      modernArgs.fallback_time = member.fallbackTime ?? end;
+      modernTiming.fallback_time_us = member.fallbackTimeUs ?? end - originUs;
+    } else if (member.endpoint === "unknown") {
+      modernArgs.fallback_reason = "UnknownEndpointReason";
+      modernArgs.fallback_time = end;
+      modernTiming.fallback_time_us = end - 9000;
+    } else {
+      modernArgs.fallback_reason = "None";
+      modernArgs.fallback_time = 0;
+    }
+    events.push(legacyBegin, modernBegin);
+    if (member.incomplete !== "modern") events.push(modernEnd);
+    if (member.incomplete !== "legacy") events.push(legacyEnd);
+    if (member.counted !== false && Object.hasOwn(counts, member.type)) {
+      counts[member.type] += 1;
+    }
+  }
+  events.push(...extraEvents);
+
+  for (const [type, count] of Object.entries(counterDeltas)) {
+    counts[type] = count;
+  }
+  const beforeCounters = Object.fromEntries(
+    Object.keys(counts).map((type) => [type, 0]),
+  );
+  const afterCounters = { ...counts, ...counterDeltas };
+
+  const withNavigation = (counters) => {
+    if (navigationKeys === "present") {
+      Object.assign(counters, { navigate: 0, popstate: 0, hashchange: 0 });
+    } else if (navigationKeys === "partial") {
+      counters.navigate = 0;
+    }
+    return counters;
+  };
+  const click = members.find((member) => member.type === "click");
+  const sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: {
+      timeOrigin: 1000,
+      observedAt: beforeObservedAt,
+      counters: withNavigation(beforeCounters),
+    },
+    after: {
+      timeOrigin: 1000,
+      observedAt: afterObservedAt,
+      counters: withNavigation(afterCounters),
+    },
+    clickDelta: 1,
+    clicks: click
+      ? [
+          {
+            type: "click",
+            isTrusted: true,
+            targetMatched: true,
+            timeStamp: 151,
+            observedAt: 151.2,
+          },
+        ]
+      : [],
+    overflow: false,
+  };
+  Object.assign(sidecar, sidecarChanges);
+
+  return {
+    trace: parseTrace(JSON.stringify({ traceEvents: events })),
+    traceRecord: {
+      trace: "calibrated-synthetic.trace.json",
+      dataLossOccurred: traceDataLoss,
+    },
+    observations: calibratedChrome155Observations,
+    calibration: {
+      sidecar,
+      binding: {
+        documentId: "synthetic-document",
+        frame: "frame-A",
+        rendererPid: 101,
+        targetNodeId: "311",
+        traceSha256: "a".repeat(64),
+        sourceRevision: calibratedChrome155Observations.sourceRevision,
+        ...bindingChanges,
+      },
+    },
+  };
+}
+
+function makeMalformedCalibratedSlice(
+  name,
+  { beginUs, durationUs = 1000, originUs = 9000 } = {},
+) {
+  const template = JSON.parse(readFixture("event-timing-fallback.trace.json"));
+  const begin = structuredClone(
+    name === "EventTiming" ? template.traceEvents[0] : template.traceEvents[1],
+  );
+  const end = structuredClone(
+    name === "EventTiming" ? template.traceEvents[3] : template.traceEvents[2],
+  );
+
+  begin.pid = end.pid = 101;
+  begin.tid = end.tid = 7;
+  begin.ts = beginUs;
+  end.ts = beginUs + durationUs;
+  if (name === "EventTiming") {
+    begin.id = end.id = "0xfeed";
+    Object.assign(begin.args.data, {
+      type: "pointerdown",
+      frame: "frame-A",
+      nodeId: 311,
+      interactionId: 17,
+      interactionOffset: 19,
+      timeStamp: (beginUs - originUs) / 1000,
+      processingStart: (beginUs + 100 - originUs) / 1000,
+      processingEnd: (beginUs + 200 - originUs) / 1000,
+      unsupported_legacy_field: "synthetic malformed marker",
+    });
+  } else {
+    begin.id2.local = end.id2.local = "0xbeef";
+    Object.assign(begin.args.event_timing, {
+      type: "POINTER_DOWN_EVENT",
+      frame: "frame-A",
+      node_id: 311,
+      interaction_id: 17,
+      interaction_offset: 19,
+    });
+    begin.args.event_timing.unsupported_event_timing_field =
+      "synthetic malformed marker";
+  }
+  return [begin, end];
+}
+
+test("scope-identifiable parser-rejected modern records prevent count closure", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventProcessing", {
+      beginUs: 160000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+});
+
+test("scope-identifiable parser-rejected legacy records prevent count closure", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventTiming", {
+      beginUs: 160000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+});
+
+test("parser-rejected legacy records use document-relative window coordinates", () => {
+  const input = makeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 200000,
+      },
+      {
+        type: "pointerup",
+        durationUs: 2083,
+        endpoint: "fallback",
+        beginUs: 220000,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+    extraEvents: makeMalformedCalibratedSlice("EventTiming", {
+      beginUs: 129900,
+      originUs: 80000,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(group.reasonCodes.includes("MALFORMED_RELEVANT_ENTRY"));
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("parser-rejected relevant records near a calibration boundary keep closure open", () => {
+  const input = makeCalibratedInteraction({
+    extraEvents: makeMalformedCalibratedSlice("EventProcessing", {
+      beginUs: 110950,
+    }),
+  });
+  const [group] = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  ).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.equal(group.status, "diagnostic-only");
+  assert.ok(
+    group.reasonCodes.includes("INTERACTION_MEMBER_BOUNDARY_UNCERTAIN"),
+  );
+});
+
+function analyzeCalibratedInteraction(options) {
+  const input = makeCalibratedInteraction(options);
+  return analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  );
+}
+
+test("retains raw and source-rounded maximum ties without a false presentation claim", () => {
+  const analysis = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 79668, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 78500, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  });
+  const [group] = analysis.interactionGroups;
+
+  assert.equal(group.countClosure.status, "closed");
+  assert.deepEqual(group.observedMaximum.rawMembers, ["member-1", "member-3"]);
+  assert.deepEqual(group.observedMaximum.roundedMembers, [
+    "member-1",
+    "member-2",
+    "member-3",
+  ]);
+  assert.equal(group.observedMaximum.presentationClaimEligible, false);
+});
+
+test("a recognized fallback maximum remains in the maximum calculation", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 90000, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.observedMaximum.rawDurationUs, 90000);
+  assert.deepEqual(group.observedMaximum.rawMembers, ["member-1"]);
+  assert.equal(group.observedMaximum.presentationClaimEligible, false);
+});
+
+test("source rounding uses half-up 8 ms boundaries in integer microseconds", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 3999, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 4000, endpoint: "fallback" },
+      { type: "keydown", durationUs: 11999, endpoint: "fallback" },
+      { type: "click", durationUs: 12000, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.deepEqual(
+    group.members.map(({ durationUs, sourceRoundedDurationMs }) => [
+      durationUs,
+      sourceRoundedDurationMs,
+    ]),
+    [
+      [3999, 0],
+      [4000, 8],
+      [11999, 8],
+      [12000, 16],
+    ],
+  );
+});
+
+test("unknown or contradictory fallback endpoints keep the maximum unavailable", () => {
+  const unknown = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      { type: "pointerup", durationUs: 2083, endpoint: "unknown" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const contradictory = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        fallbackTimeUs: 25339,
+      },
+      { type: "pointerup", durationUs: 2083, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(unknown.members[1].endpointClass, "unknown");
+  assert.equal(unknown.members[1].durationUs, null);
+  assert.equal(unknown.observedMaximum, null);
+  assert.equal(contradictory.members[0].endpointClass, "unknown");
+  assert.equal(contradictory.observedMaximum, null);
+  assert.equal(unknown.status, "diagnostic-only");
+});
+
+test("the contracted 11 ms window admits strict interior starts and leaves boundaries open", () => {
+  const inside = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 119901,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const atLeadingBoundary = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 119900,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const atTrailingBoundary = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 297900,
+      },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(inside.countClosure.status, "closed");
+  assert.equal(atLeadingBoundary.countClosure.status, "open");
+  assert.equal(atTrailingBoundary.countClosure.status, "open");
+});
+
+test("the contracted window compares binary64 snapshot times as exact rationals", () => {
+  const [group] = analyzeCalibratedInteraction({
+    beforeObservedAt: 0.3,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 20201,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "closed");
+});
+
+test("unmatched counters, ambiguous exact pairs, and incomplete records keep closure open", () => {
+  const missing = analyzeCalibratedInteraction({
+    members: [{ type: "click", durationUs: 79668, endpoint: "presentation" }],
+    counterDeltas: { pointerdown: 1 },
+  }).interactionGroups[0];
+  const ambiguous = analyzeCalibratedInteraction({
+    members: [
+      { type: "pointerdown", durationUs: 25338, endpoint: "fallback" },
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 150000,
+        asyncId: 90,
+        modernAsyncId: 91,
+        counted: false,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const incomplete = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        incomplete: "modern",
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+
+  assert.equal(missing.countClosure.status, "open");
+  assert.ok(
+    missing.countClosure.byType.some(
+      ({ eventType, C, R }) =>
+        eventType === "pointerdown" && C === 1 && R === 0,
+    ),
+  );
+  assert.equal(ambiguous.countClosure.status, "open");
+  assert.equal(incomplete.countClosure.status, "open");
+});
+
+test("a paired record outside the contracted window cannot satisfy an in-window counter", () => {
+  const [group] = analyzeCalibratedInteraction({
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 88000,
+      },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("a nonzero trace origin cannot close an out-of-window selected member", () => {
+  const [group] = analyzeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 129900,
+        counted: false,
+      },
+      {
+        type: "pointerdown",
+        durationUs: 10000,
+        endpoint: "fallback",
+        beginUs: 200000,
+        interactionId: 99,
+        nodeId: 900,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+  }).interactionGroups;
+
+  assert.equal(group.countClosure.status, "open");
+  assert.ok(
+    group.countClosure.byType.some(
+      ({ eventType, C, R }) =>
+        eventType === "pointerdown" && C === 1 && R === 0,
+    ),
+  );
+  assert.ok(group.reasonCodes.includes("INTERACTION_MEMBER_OUTSIDE_WINDOW"));
+});
+
+test("a nonzero trace origin does not broaden click candidates", () => {
+  const groups = analyzeCalibratedInteraction({
+    originUs: 80000,
+    members: [
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 129900,
+        interactionId: 99,
+        counted: false,
+      },
+      {
+        type: "pointerdown",
+        durationUs: 25338,
+        endpoint: "fallback",
+        beginUs: 200000,
+      },
+      {
+        type: "click",
+        durationUs: 79668,
+        endpoint: "presentation",
+        beginUs: 250000,
+      },
+    ],
+  }).interactionGroups;
+  const selectedGroup = groups.find(({ members }) =>
+    members.some(({ eventType }) => eventType === "pointerdown"),
+  );
+
+  assert.ok(selectedGroup);
+  assert.equal(selectedGroup.countClosure.status, "closed");
+  assert.equal(selectedGroup.status, "bounded-calibration-verified");
+});
+
+test("keyboard counters close on exact members while input surplus stays open", () => {
+  const keydown = analyzeCalibratedInteraction({
+    members: [
+      { type: "keydown", durationUs: 25338, endpoint: "fallback" },
+      { type: "click", durationUs: 79668, endpoint: "presentation" },
+    ],
+  }).interactionGroups[0];
+  const inputSurplus = analyzeCalibratedInteraction({
+    members: [{ type: "click", durationUs: 79668, endpoint: "presentation" }],
+    counterDeltas: { input: 1 },
+  }).interactionGroups[0];
+
+  assert.equal(keydown.countClosure.status, "closed");
+  assert.ok(
+    keydown.countClosure.byType.some(
+      ({ eventType, C, R, N, D }) =>
+        eventType === "keydown" && C === 1 && R === 1 && N === 1 && D === 0,
+    ),
+  );
+  assert.equal(inputSurplus.countClosure.status, "open");
+});
+
+test("navigation keys are absent when disabled and require a complete accepted map when present", () => {
+  const absent = analyzeCalibratedInteraction().interactionGroups[0];
+  const present = analyzeCalibratedInteraction({ navigationKeys: "present" })
+    .interactionGroups[0];
+  const partial = analyzeCalibratedInteraction({ navigationKeys: "partial" })
+    .interactionGroups[0];
+
+  assert.equal(absent.countClosure.status, "closed");
+  assert.deepEqual(absent.countClosure.unsupportedApiTypes, [
+    "navigate",
+    "popstate",
+    "hashchange",
+  ]);
+  assert.equal(present.countClosure.status, "open");
+  assert.equal(partial.countClosure.status, "unavailable");
+});
+
+test("calibration declarations are recomputed and private capture identifiers stay out of output", () => {
+  const input = makeCalibratedInteraction({
+    sidecarChanges: {
+      status: "invalid",
+      clickDelta: 999,
+      documentId: "TRACE_PRIVATE_DOCUMENT_MARKER",
+    },
+    bindingChanges: {
+      frame: "frame-A",
+      rendererPid: 101,
+      documentId: "TRACE_PRIVATE_DOCUMENT_MARKER",
+    },
+  });
+  const analysis = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    input.observations,
+    undefined,
+    input.calibration,
+  );
+  const serialized = JSON.stringify(analysis.interactionGroups);
+
+  assert.equal(
+    analysis.interactionGroups[0].countClosure.status,
+    "unavailable",
+  );
+  assert.equal(analysis.interactionGroups[0].formalStatus, "unavailable");
+  assert.doesNotMatch(
+    serialized,
+    /TRACE_PRIVATE_|101|frame-A|synthetic-document|calibrated-synthetic\.trace\.json/,
+  );
+});
+
+test("trace data loss prevents bounded calibration closure", () => {
+  const [group] = analyzeCalibratedInteraction({
+    traceDataLoss: true,
+  }).interactionGroups;
+
+  assert.equal(group.status, "diagnostic-only");
+  assert.equal(group.countClosure.status, "unavailable");
+  assert.ok(group.reasonCodes.includes("TRACE_DATA_LOSS"));
+});
+
+test("unsupported source descriptors do not activate calibrated groups", () => {
+  const input = makeCalibratedInteraction();
+  const analysis = analyzeTrace(
+    input.trace,
+    input.traceRecord,
+    [],
+    { ...input.observations, extra: "not-exact" },
+    undefined,
+    input.calibration,
+  );
+
+  assert.equal(Object.hasOwn(analysis, "interactionGroups"), false);
 });

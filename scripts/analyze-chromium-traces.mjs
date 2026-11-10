@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -16,12 +17,20 @@ import {
   nearestRank,
   parseTrace,
 } from "./chromium-trace-metrics.mjs";
+import {
+  OWNED_CLEANUP_RECEIPT_BYTE_LIMIT,
+  OWNED_CLEANUP_RECEIPT_FILENAME,
+  parseOwnedCleanupReceipt,
+  summarizeOwnedCleanupReceipt,
+} from "./lib/owned-cleanup-receipt.mjs";
 
 const USAGE =
   "Usage: node scripts/analyze-chromium-traces.mjs <manifest.json> [--out <new-report.json>]";
 const METADATA_TEXT_LIMIT = 256;
 const OBSERVER_TRACE_BYTE_LIMIT = 16 * 1024 * 1024;
 const OBSERVER_SIDECAR_BYTE_LIMIT = 256 * 1024;
+const INTERACTION_GROUP_SOURCE_REVISION =
+  "5869fe313571d75152b77813cf0a4ee26a4e6df0";
 const PROTOCOL_GROUP_LIMIT = 56;
 const PROTOCOL_SEGMENT_LIMIT = PROTOCOL_GROUP_LIMIT * 120;
 const PROTOCOL_ACTIONS = new Set([
@@ -370,6 +379,7 @@ function validateManifest(manifest) {
   }
 
   const traceNames = new Set();
+  const interactionGroupSidecars = new Set();
   for (const record of manifest.traces) {
     if (
       !isRecord(record) ||
@@ -391,6 +401,55 @@ function validateManifest(manifest) {
       throw new Error("Invalid manifest: duplicate trace basename.");
     }
     traceNames.add(record.trace);
+    const calibration = record.interactionGroupCalibration;
+    if (calibration !== undefined) {
+      if (
+        !isRecord(calibration) ||
+        !hasOnlyKeys(
+          calibration,
+          new Set([
+            "sidecar",
+            "sidecarByteCount",
+            "sidecarSha256",
+            "documentId",
+            "frame",
+            "rendererPid",
+            "targetNodeId",
+            "traceSha256",
+            "sourceRevision",
+          ]),
+        ) ||
+        Object.keys(calibration).length !== 9 ||
+        !isSafeManifestBasename(calibration.sidecar) ||
+        calibration.sidecar === record.trace ||
+        interactionGroupSidecars.has(calibration.sidecar) ||
+        !Number.isSafeInteger(calibration.sidecarByteCount) ||
+        calibration.sidecarByteCount < 1 ||
+        calibration.sidecarByteCount > OBSERVER_SIDECAR_BYTE_LIMIT ||
+        typeof calibration.sidecarSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(calibration.sidecarSha256) ||
+        typeof calibration.traceSha256 !== "string" ||
+        !/^[a-f0-9]{64}$/.test(calibration.traceSha256) ||
+        !safeText(calibration.documentId) ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(calibration.documentId) ||
+        !safeText(calibration.frame) ||
+        calibration.frame.length === 0 ||
+        calibration.frame.length > 128 ||
+        !Number.isSafeInteger(calibration.rendererPid) ||
+        calibration.rendererPid <= 0 ||
+        typeof calibration.targetNodeId !== "string" ||
+        !/^[1-9][0-9]*$/.test(calibration.targetNodeId) ||
+        calibration.targetNodeId.length > 128 ||
+        calibration.sourceRevision !== INTERACTION_GROUP_SOURCE_REVISION ||
+        !isRecord(manifest.browser) ||
+        manifest.browser.product !== "Google Chrome" ||
+        manifest.browser.version !== "155.0.8059.84" ||
+        manifest.status !== "bounded-click-calibration"
+      ) {
+        throw new Error("Invalid interaction-group calibration descriptor.");
+      }
+      interactionGroupSidecars.add(calibration.sidecar);
+    }
     if (
       record.dataLossOccurred !== undefined &&
       record.dataLossOccurred !== null &&
@@ -558,6 +617,49 @@ function parseObserverSidecar(bytes) {
   }
 }
 
+function parseInteractionGroupCalibrationSidecar(bytes) {
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error("Invalid interaction-group calibration sidecar JSON.");
+  }
+}
+
+function loadInteractionGroupCalibrations(manifest, directory) {
+  const calibrationsByTrace = new Map();
+  for (const traceRecord of manifest.traces) {
+    const descriptor = traceRecord.interactionGroupCalibration;
+    if (descriptor === undefined) continue;
+    const bytes = readVerifiedRegularFile(directory, descriptor.sidecar, {
+      byteCount: descriptor.sidecarByteCount,
+      sha256: descriptor.sidecarSha256,
+      maxBytes: OBSERVER_SIDECAR_BYTE_LIMIT,
+      invalidFileMessage:
+        "Unable to read interaction-group calibration sidecar.",
+      integrityMessage:
+        "Interaction-group calibration sidecar integrity check failed.",
+      tooLargeMessage:
+        "Interaction-group calibration sidecar exceeds the 256 KiB limit.",
+    });
+    const sidecar = parseInteractionGroupCalibrationSidecar(bytes);
+    if (!isRecord(sidecar) || sidecar.documentId !== descriptor.documentId) {
+      throw new Error("Interaction-group calibration document binding failed.");
+    }
+    calibrationsByTrace.set(traceRecord.trace, {
+      sidecar,
+      binding: {
+        documentId: descriptor.documentId,
+        frame: descriptor.frame,
+        rendererPid: descriptor.rendererPid,
+        targetNodeId: descriptor.targetNodeId,
+        traceSha256: descriptor.traceSha256,
+        sourceRevision: descriptor.sourceRevision,
+      },
+    });
+  }
+  return calibrationsByTrace;
+}
+
 function loadObserverInputs(manifest, directory) {
   if (!Array.isArray(manifest.cases)) {
     throw new Error("Invalid observer case and trace linkage.");
@@ -647,8 +749,18 @@ function buildTraceReport(
   browserSourceObservations,
   preparedInput,
   observerEvidence,
+  interactionGroupCalibration,
 ) {
   const { bytes, trace } = preparedInput ?? readTrace(directory, record);
+  if (
+    interactionGroupCalibration !== undefined &&
+    createHash("sha256").update(bytes).digest("hex") !==
+      interactionGroupCalibration.binding.traceSha256
+  ) {
+    throw new Error(
+      "Interaction-group calibration trace integrity check failed.",
+    );
+  }
   const traceRecordForAnalysis =
     observerEvidence === undefined
       ? {
@@ -659,12 +771,21 @@ function buildTraceReport(
               : undefined,
         }
       : record;
+  const sourceObservationsForAnalysis =
+    interactionGroupCalibration === undefined
+      ? browserSourceObservations
+      : {
+          browser: browserSourceObservations.browser,
+          status: browserSourceObservations.status,
+          sourceRevision: interactionGroupCalibration.binding.sourceRevision,
+        };
   const analysis = analyzeTrace(
     trace,
     traceRecordForAnalysis,
     measurementSegments,
-    browserSourceObservations,
+    sourceObservationsForAnalysis,
     observerEvidence,
+    interactionGroupCalibration,
   );
   const reportedFrameIntervals = { ...analysis.frameIntervals };
   delete reportedFrameIntervals.qualifiedProtocolTrials;
@@ -696,6 +817,9 @@ function buildTraceReport(
         unit: "microseconds",
       },
       diagnostics: analysis.diagnostics,
+      ...(analysis.interactionGroups === undefined
+        ? {}
+        : { interactionGroups: analysis.interactionGroups }),
       ...(observerEvidence === undefined
         ? {}
         : { observedDiscreteInputs: analysis.observedDiscreteInputs }),
@@ -913,16 +1037,40 @@ function buildProtocolGroupReport(group, groupIndex, manifest, builtTraces) {
   };
 }
 
-function buildReport(manifest, manifestPath) {
+function buildReport(manifest, manifestPath, ownedCleanupReceipt = null) {
+  if (manifest.observationEvidence?.schemaVersion === 3) {
+    const measurementSegments = manifest.measurementSegments ?? [];
+    if (
+      !Array.isArray(manifest.traces) ||
+      manifest.traces.length !== 1 ||
+      !Array.isArray(manifest.cases) ||
+      manifest.cases.length !== 1 ||
+      !Array.isArray(measurementSegments) ||
+      measurementSegments.length !== 0 ||
+      (manifest.protocolGroups !== undefined &&
+        (!Array.isArray(manifest.protocolGroups) ||
+          manifest.protocolGroups.length !== 0))
+    ) {
+      throw new Error(
+        "Version-three analysis requires one case and trace without action segments.",
+      );
+    }
+  }
   const manifestDirectory = dirname(manifestPath);
   const observerInputs =
     manifest.observationEvidence === undefined
       ? undefined
       : loadObserverInputs(manifest, manifestDirectory);
+  const interactionGroupCalibrations = loadInteractionGroupCalibrations(
+    manifest,
+    manifestDirectory,
+  );
   const browserSourceObservations = {
     browser: manifest.browser,
     browserIdentity: manifest.browserIdentity,
-    qualification: manifest.qualification,
+    ...(manifest.qualification === undefined
+      ? {}
+      : { qualification: manifest.qualification }),
     status: manifest.status,
   };
   const builtTraces = manifest.traces.map((record) =>
@@ -933,6 +1081,7 @@ function buildReport(manifest, manifestPath) {
       browserSourceObservations,
       observerInputs?.traceInputs.get(record.trace),
       observerInputs?.evidenceByTrace.get(record.trace),
+      interactionGroupCalibrations.get(record.trace),
     ),
   );
   const report = {
@@ -942,12 +1091,119 @@ function buildReport(manifest, manifestPath) {
     metadata: selectedMetadata(manifest),
     traces: builtTraces.map(({ report: traceReport }) => traceReport),
   };
+  if (ownedCleanupReceipt !== null) {
+    report.metadata.ownedCleanupReceipt = ownedCleanupReceipt;
+  }
   if (manifest.protocolGroups !== undefined) {
     report.protocolGroups = manifest.protocolGroups.map((group, index) =>
       buildProtocolGroupReport(group, index, manifest, builtTraces),
     );
   }
   return report;
+}
+
+function readOptionalOwnedCleanupReceipt(
+  manifestPath,
+  manifestBytes,
+  required = false,
+) {
+  const directory = dirname(manifestPath);
+  const receiptPath = resolve(directory, OWNED_CLEANUP_RECEIPT_FILENAME);
+  let fileInfo;
+  try {
+    fileInfo = lstatSync(receiptPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      if (required) {
+        throw new Error(
+          "Version-three cleanup receipt is required for analysis.",
+        );
+      }
+      return null;
+    }
+    throw new Error("Unable to read owned cleanup receipt.");
+  }
+  if (!fileInfo.isFile() || fileInfo.isSymbolicLink()) {
+    throw new Error("Invalid owned cleanup receipt file.");
+  }
+
+  let descriptor;
+  try {
+    descriptor = openSync(
+      receiptPath,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    throw new Error("Unable to read owned cleanup receipt.");
+  }
+
+  try {
+    const openedInfo = fstatSync(descriptor);
+    if (!openedInfo.isFile()) {
+      throw new Error("Invalid owned cleanup receipt file.");
+    }
+    if (openedInfo.size > OWNED_CLEANUP_RECEIPT_BYTE_LIMIT) {
+      throw new Error("Owned cleanup receipt exceeds the 16 KiB limit.");
+    }
+
+    const buffer = Buffer.alloc(OWNED_CLEANUP_RECEIPT_BYTE_LIMIT + 1);
+    let offset = 0;
+    while (offset < buffer.byteLength) {
+      const bytesRead = readSync(
+        descriptor,
+        buffer,
+        offset,
+        buffer.byteLength - offset,
+        null,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > OWNED_CLEANUP_RECEIPT_BYTE_LIMIT) {
+      throw new Error("Owned cleanup receipt exceeds the 16 KiB limit.");
+    }
+
+    const receipt = parseOwnedCleanupReceipt(
+      buffer.subarray(0, offset),
+      manifestBytes,
+    );
+    if (
+      required &&
+      (receipt.primaryRunFailure !== null ||
+        receipt.context.outcome !== "closed" ||
+        receipt.browser.outcome !== "closed" ||
+        receipt.ownedServer.stopHelper !== "returned" ||
+        receipt.ownedServer.processGroupSnapshot.outcome === "nonempty" ||
+        receipt.cleanupFailures.length !== 0)
+    ) {
+      throw new Error(
+        "Version-three analysis requires a successful run cleanup receipt.",
+      );
+    }
+    return summarizeOwnedCleanupReceipt(receipt);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      [
+        "Invalid owned cleanup receipt file.",
+        "Owned cleanup receipt exceeds the 16 KiB limit.",
+        "Invalid owned cleanup receipt.",
+        "Owned cleanup receipt manifest binding failed.",
+        "Version-three analysis requires a successful run cleanup receipt.",
+      ].includes(error.message)
+    ) {
+      throw error;
+    }
+    throw new Error("Unable to read owned cleanup receipt.");
+  } finally {
+    try {
+      closeSync(descriptor);
+    } catch {
+      // Preserve the receipt read or validation error.
+    }
+  }
 }
 
 function writeExclusive(outputPath, contents) {
@@ -1006,7 +1262,12 @@ function main(args) {
   }
 
   const manifest = parseManifest(manifestBytes);
-  const report = buildReport(manifest, manifestPath);
+  const ownedCleanupReceipt = readOptionalOwnedCleanupReceipt(
+    manifestPath,
+    manifestBytes,
+    manifest.observationEvidence?.schemaVersion === 3,
+  );
+  const report = buildReport(manifest, manifestPath, ownedCleanupReceipt);
   const reportText = `${JSON.stringify(report, null, 2)}\n`;
 
   if (parsedArgs.outputPath === null) {

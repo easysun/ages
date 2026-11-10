@@ -89,10 +89,42 @@ function makeFixture(
   return { directory, manifest, manifestPath, traceBytes, tracePath };
 }
 
+function writeOwnedCleanupReceipt(input, overrides = {}) {
+  const receiptPath = join(input.directory, "owned-cleanup-receipt.json");
+  const receipt = {
+    schemaVersion: 1,
+    completedAtUtc: "2026-10-20T00:00:00.000Z",
+    manifestSha256: sha256(readFileSync(input.manifestPath)),
+    primaryRunFailure: null,
+    context: { outcome: "closed", errorCode: null },
+    browser: {
+      outcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    ownedServer: {
+      stopHelper: "returned",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "unavailable", memberCount: null },
+      childExitKnown: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    cleanupFailures: [],
+    ...overrides,
+  };
+  writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+    flag: "wx",
+  });
+  return { receipt, receiptPath };
+}
+
 const observedCollectorHash =
   "96a969d576f7610b66217294480c444a36205cec69dba66e8dee0b9a820ce8ae";
 const currentRetainedCollectorHash =
   "beb2868156bff1fa73389a6c83023aa878397cff9ac9e4df16599982051928a0";
+const postReviewProducerHash =
+  "1800489f4942aefe4ab642da9350af4177c39c06c44eb29b7ec2ee84a398996a";
 const observedDocumentId = "d-aaaaaaaaaaaaaaaaaaaaaaaa";
 const observedTargetToken = "t-bbbbbbbbbbbbbbbbbbbbbbbb";
 const observedManifestDeclaration = {
@@ -353,6 +385,209 @@ function makeVersionTwoObservedFixture(t) {
   return input;
 }
 
+function makeVersionThreeObservedFixture(t) {
+  const input = makeVersionTwoObservedFixture(t);
+  const fixture = "100-interactive-open";
+  const traceName = `${fixture}.trace.json`;
+  const trace = JSON.parse(readFileSync(input.tracePath, "utf8"));
+  trace.traceEvents.splice(1, 0, {
+    name: "TimeStamp",
+    cat: "blink.user_timing",
+    ph: "I",
+    pid: 101,
+    tid: 1,
+    ts: 1,
+    args: {
+      data: { message: "pilot-100-interactive-open:segment-start" },
+    },
+  });
+  const traceBytes = Buffer.from(`${JSON.stringify(trace)}\n`);
+  input.tracePath = join(input.directory, traceName);
+  writeFileSync(input.tracePath, traceBytes, { flag: "wx" });
+  input.traceBytes = traceBytes;
+  input.traceRecord = input.manifest.traces[0];
+  Object.assign(input.traceRecord, {
+    fixture,
+    trace: traceName,
+    byteCount: traceBytes.byteLength,
+    sha256: sha256(traceBytes),
+  });
+
+  input.caseRecord.fixture = fixture;
+  input.caseRecord.trace = traceName;
+  input.caseRecord.workload = "100-interactive";
+  input.caseRecord.rowCount = 100;
+  input.sidecar.schemaVersion = 3;
+  input.sidecar.fixture = fixture;
+  input.sidecar.observation.schemaVersion = 3;
+  input.caseRecord.action = "open";
+  input.caseRecord.measurementStatus = "unavailable";
+  input.caseRecord.measurementReasonCode = "V3_DIAGNOSTIC_ONLY";
+  input.sidecar.observation.records[0].targetToken = null;
+  input.sidecar.observation.records[0].targetLabel = null;
+  input.sidecar.observation.records[0].targetResolution = "unknown";
+  input.sidecar.observation.recordBytes = Buffer.byteLength(
+    JSON.stringify(input.sidecar.observation.records),
+    "utf8",
+  );
+  input.sidecar.observation.sameDocumentLoadingWitness = {
+    status: "complete",
+    reasonCode: null,
+    protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    events: [
+      {
+        sequence: 0,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.frameStartedLoading",
+        frameId: "frame-A",
+      },
+      {
+        sequence: 1,
+        phase: "primary-action",
+        source: "page",
+        method: "Page.navigatedWithinDocument",
+        frameId: "frame-A",
+        navigationType: "historyApi",
+      },
+    ],
+    droppedCount: 0,
+    overflow: false,
+    loadingCount: 1,
+    historyApiCount: 1,
+    orderingBasis: "cdp-receipt",
+    sourceOrder: "unknown",
+    retainedTargetProof: {
+      sourceRecordIndex: 1,
+      documentId: observedDocumentId,
+      targetToken: observedTargetToken,
+      mappingIndex: 0,
+      sourceCapture: {
+        targetIsNode: true,
+        ownerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        composedPathStartsAtTarget: true,
+      },
+      baselineScope: {
+        frameId: "frame-A",
+        loaderId: "loader-A",
+        contextUniqueId: "context-A",
+        targetId: "target-A",
+        sessionId: "session-A",
+      },
+      finalProof: {
+        stage: "post-trace-before-release",
+        savedDocumentSame: true,
+        savedRootSame: true,
+        savedTargetSame: true,
+        targetOwnerDocumentMatches: true,
+        rootContainsTarget: true,
+        connected: true,
+        mappedBackendNodeId: 311,
+        finalBackendNodeId: 311,
+        cdpScope: {
+          frameId: "frame-A",
+          loaderId: "loader-A",
+          contextUniqueId: "context-A",
+          targetId: "target-A",
+          sessionId: "session-A",
+        },
+      },
+    },
+    firstInvalidation: null,
+    collectorCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+      objectGroupReleased: true,
+      cdpListenersRemoved: true,
+    },
+  };
+  input.manifest.observationEvidence = {
+    ...structuredClone(observedManifestDeclaration),
+    schemaVersion: 3,
+    recordByteLimit: 256 * 1024 - 36 * 1024 - 80 * 1024,
+    retainedNodeEvidence: {
+      enabled: true,
+      maxNodes: RETAINED_NODE_EVIDENCE_POLICY.maxNodes,
+      mappingByteLimit: RETAINED_NODE_EVIDENCE_POLICY.mappingByteLimit,
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+    },
+  };
+  input.manifest.sourceHashSha256 = postReviewProducerHash;
+  input.caseRecord.trustedStimulusObservation.fileName = `${fixture}.stimulus.json`;
+  input.sidecarPath = join(input.directory, `${fixture}.stimulus.json`);
+  applyBrave15585Identity(input.manifest);
+  input.manifest.status = "diagnostic-only";
+  delete input.manifest.qualification;
+  rewriteObservedSidecar(input, input.sidecar);
+  return input;
+}
+
+function applyBrave15585Identity(manifest) {
+  manifest.browser = {
+    product: "Runtime browser observation",
+    version: "155.0.8059.85",
+  };
+  manifest.browserIdentity = {
+    bundle: {
+      identifier: "com.brave.Browser",
+      shortVersion: "155.1.97.59",
+      bundleVersion: "197.59",
+      scmRevision: "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+    },
+    executableSha256:
+      "67539969b31e7579456d87ea62d9556f928f9c92af86bb3f43fe33b57d1cfad7",
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/155.0.0.0 Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  manifest.qualification = "installed-brave-schema-probe";
+  manifest.status = "installed-brave-schema-probe";
+}
+
+function applyAndroidBrave15585Identity(manifest) {
+  manifest.browser = {
+    product: "Runtime Android browser observation",
+    version: "155.0.8059.85",
+  };
+  manifest.browserIdentity = {
+    platform: { os: "Android", version: "16", apiLevel: 36 },
+    package: {
+      identifier: "com.brave.browser",
+      versionName: "1.97.59",
+      versionCode: 429705904,
+      minSdk: 32,
+      targetSdk: 37,
+      artifacts: {
+        "base.apk":
+          "b5cf4775da7b98b49061d95723d586e6fb88043131db1d940912b214b26a8c33",
+        "split_chrome.apk":
+          "055ae12ddb53aac8c7b6d9064d725111f6ab3e7a390f0b04ce01245697fb39d8",
+        "split_config.zh.apk":
+          "d151e31a957eadb09d11b85d117d8574f334de045cf1e52d7b61c26e407b6f68",
+        "split_on_demand.apk":
+          "4c4d15e114b1e5689f6d48734aa4de960c53b8918d0698b2f632534fcd1cc893",
+      },
+    },
+    runtime: {
+      version: "155.0.8059.85",
+      product: "Chrome/155.0.8059.85",
+      revision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+    },
+    chromiumSourceIdentity: "unverified",
+  };
+  manifest.qualification = "installed-android-brave-schema-probe";
+  manifest.status = "installed-android-brave-schema-probe";
+}
+
 function rewriteObservedSidecar(input, sidecar) {
   const json =
     sidecar.schemaVersion === 2
@@ -391,6 +626,169 @@ function createFifo(t, path) {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function makeInteractionGroupCliFixture(
+  t,
+  { sidecarName = "capture-calibration.json" } = {},
+) {
+  const source = JSON.parse(readFileSync(eventTimingFixturePath, "utf8"));
+  const events = [];
+  const members = [
+    {
+      type: "pointerdown",
+      modernType: "POINTER_DOWN_EVENT",
+      begin: 150000,
+      duration: 25338,
+      fallback: true,
+    },
+    {
+      type: "pointerup",
+      modernType: "POINTER_UP_EVENT",
+      begin: 160000,
+      duration: 2083,
+      fallback: true,
+    },
+    {
+      type: "click",
+      modernType: "CLICK_EVENT",
+      begin: 170000,
+      duration: 79668,
+      fallback: false,
+    },
+  ];
+  for (const [index, member] of members.entries()) {
+    const legacyBegin = structuredClone(source.traceEvents[0]);
+    const modernBegin = structuredClone(source.traceEvents[1]);
+    const modernEnd = structuredClone(source.traceEvents[2]);
+    const legacyEnd = structuredClone(source.traceEvents[3]);
+    const end = member.begin + member.duration;
+    const processingStart = member.begin + 100;
+    const processingEnd = member.begin + 200;
+    legacyBegin.id = legacyEnd.id = `0x${index + 10}`;
+    modernBegin.id2.local = modernEnd.id2.local = `0x${index + 20}`;
+    for (const event of [legacyBegin, legacyEnd, modernBegin, modernEnd]) {
+      event.pid = 101;
+      event.tid = 7;
+    }
+    legacyBegin.ts = member.begin;
+    legacyEnd.ts = end;
+    modernBegin.ts = processingStart;
+    modernEnd.ts = processingEnd;
+    Object.assign(legacyBegin.args.data, {
+      type: member.type,
+      frame: "frame-A",
+      nodeId: 311,
+      interactionId: 17,
+      interactionOffset: 18,
+      timeStamp: (member.begin - 9000) / 1000,
+      processingStart: (processingStart - 9000) / 1000,
+      processingEnd: (processingEnd - 9000) / 1000,
+    });
+    Object.assign(modernBegin.args.event_timing, {
+      type: member.modernType,
+      frame: "frame-A",
+      node_id: 311,
+      interaction_id: 17,
+      interaction_offset: 18,
+    });
+    if (member.fallback) {
+      modernBegin.args.fallback_reason = "DoesNotNeedNextPaint";
+      modernBegin.args.fallback_time = end;
+      modernBegin.args.event_timing.fallback_time_us = end - 9000;
+    } else {
+      modernBegin.args.fallback_reason = "None";
+      modernBegin.args.fallback_time = 0;
+    }
+    events.push(legacyBegin, modernBegin, modernEnd, legacyEnd);
+  }
+
+  const input = makeFixture(t, {
+    traceText: JSON.stringify({ traceEvents: events }),
+  });
+  const traceRecord = input.manifest.traces[0];
+  Object.assign(traceRecord, {
+    byteCount: input.traceBytes.byteLength,
+    sha256: sha256(input.traceBytes),
+    dataLossOccurred: false,
+  });
+  input.manifest.browser = {
+    product: "Google Chrome",
+    version: "155.0.8059.84",
+  };
+  input.manifest.status = "bounded-click-calibration";
+  input.sidecarPath = join(input.directory, sidecarName);
+  input.sidecar = {
+    schemaVersion: 1,
+    evidenceClass: "same-document-click-count-calibration",
+    documentId: "synthetic-document",
+    diagnosticOnly: true,
+    formalStatus: "unavailable",
+    status: "collected",
+    reasons: [],
+    before: {
+      timeOrigin: 1000,
+      observedAt: 100,
+      counters: {
+        click: 0,
+        pointerdown: 0,
+        pointerup: 0,
+        keydown: 0,
+        keypress: 0,
+        keyup: 0,
+        input: 0,
+      },
+    },
+    after: {
+      timeOrigin: 1000,
+      observedAt: 300,
+      counters: {
+        click: 1,
+        pointerdown: 1,
+        pointerup: 1,
+        keydown: 0,
+        keypress: 0,
+        keyup: 0,
+        input: 0,
+      },
+    },
+    clickDelta: 1,
+    clicks: [
+      {
+        type: "click",
+        isTrusted: true,
+        targetMatched: true,
+        timeStamp: 171,
+        observedAt: 171.2,
+      },
+    ],
+    overflow: false,
+  };
+  refreshInteractionGroupCalibration(input, sidecarName);
+  return input;
+}
+
+function refreshInteractionGroupCalibration(
+  input,
+  sidecarName = "capture-calibration.json",
+) {
+  const sidecarBytes = Buffer.from(
+    `${JSON.stringify(input.sidecar, null, 2)}\n`,
+  );
+  writeFileSync(input.sidecarPath, sidecarBytes, { flag: "w" });
+  const traceRecord = input.manifest.traces[0];
+  traceRecord.interactionGroupCalibration = {
+    sidecar: sidecarName,
+    sidecarByteCount: sidecarBytes.byteLength,
+    sidecarSha256: sha256(sidecarBytes),
+    documentId: "synthetic-document",
+    frame: "frame-A",
+    rendererPid: 101,
+    targetNodeId: "311",
+    traceSha256: traceRecord.sha256,
+    sourceRevision: "5869fe313571d75152b77813cf0a4ee26a4e6df0",
+  };
+  writeFileSync(input.manifestPath, JSON.stringify(input.manifest));
 }
 
 function presentedReporterEvents({ endpoint, surfaceId, displayId, localId }) {
@@ -468,6 +866,109 @@ test("prints a sanitized diagnostic summary without changing trace bytes", (t) =
     input.traceBytes.toString("utf8"),
   );
   assert.equal(sha256(readFileSync(input.tracePath)), beforeHash);
+});
+
+test("loads a trace-bound calibration and emits only sanitized interaction groups", (t) => {
+  const input = makeInteractionGroupCliFixture(t);
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const traceReport = JSON.parse(result.stdout).traces[0];
+  const [group] = traceReport.interactionGroups;
+  assert.equal(group.countClosure.status, "closed");
+  assert.equal(group.observedMaximum.rawDurationUs, 79668);
+  assert.equal(group.observedMaximum.sourceRoundedDurationMs, 80);
+  assert.equal(group.formalStatus, "unavailable");
+  for (const privateValue of [
+    "synthetic-document",
+    "frame-A",
+    "311",
+    "101",
+    "capture-calibration.json",
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false, privateValue);
+  }
+});
+
+test("rejects calibration sidecar and trace digest mismatches without a report", (t) => {
+  for (const field of ["sidecarSha256", "traceSha256"]) {
+    const input = makeInteractionGroupCliFixture(t);
+    input.manifest.traces[0].interactionGroupCalibration[field] = "b".repeat(
+      64,
+    );
+    writeObservedManifest(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0, field);
+    assert.equal(result.stdout, "", field);
+    assert.match(result.stderr, /interaction.group calibration/i, field);
+  }
+});
+
+test("rejects calibration sidecar traversal and symlink references", (t) => {
+  const traversal = makeInteractionGroupCliFixture(t);
+  traversal.manifest.traces[0].interactionGroupCalibration.sidecar =
+    "../outside.json";
+  writeObservedManifest(traversal);
+  const traversalResult = runCli([traversal.manifestPath]);
+  assert.notEqual(traversalResult.status, 0);
+  assert.equal(traversalResult.stdout, "");
+
+  const linked = makeInteractionGroupCliFixture(t);
+  const targetPath = join(linked.directory, "target.json");
+  writeFileSync(targetPath, readFileSync(linked.sidecarPath));
+  rmSync(linked.sidecarPath);
+  symlinkSync(targetPath, linked.sidecarPath);
+  const symlinkResult = runCli([linked.manifestPath]);
+  assert.notEqual(symlinkResult.status, 0);
+  assert.equal(symlinkResult.stdout, "");
+});
+
+test("rejects calibration document and source-revision mismatches", (t) => {
+  const cases = [
+    {
+      name: "document mismatch",
+      change(input) {
+        input.sidecar.documentId = "TRACE_PRIVATE_WRONG_DOCUMENT";
+        refreshInteractionGroupCalibration(input);
+      },
+    },
+    {
+      name: "wrong source pin",
+      change(input) {
+        input.manifest.traces[0].interactionGroupCalibration.sourceRevision =
+          "wrong-revision";
+        writeObservedManifest(input);
+      },
+    },
+  ];
+  for (const entry of cases) {
+    const input = makeInteractionGroupCliFixture(t);
+    entry.change(input);
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0, entry.name);
+    assert.equal(result.stdout, "", entry.name);
+    assert.doesNotMatch(result.stderr, /TRACE_PRIVATE_WRONG_DOCUMENT/);
+  }
+});
+
+test("recomputes click counts instead of trusting sidecar status or clickDelta", (t) => {
+  const input = makeInteractionGroupCliFixture(t);
+  input.sidecar.status = "invalid";
+  input.sidecar.clickDelta = 99;
+  refreshInteractionGroupCalibration(input);
+
+  const result = runCli([input.manifestPath]);
+
+  assert.equal(result.status, 0, result.stderr);
+  const [group] = JSON.parse(result.stdout).traces[0].interactionGroups;
+  assert.equal(group.status, "diagnostic-only");
+  assert.equal(group.countClosure.status, "unavailable");
+  assert.equal(group.formalStatus, "unavailable");
+  assert.equal(result.stdout.includes("synthetic-document"), false);
 });
 
 test("reports sanitized exact discrete candidates without promoting formal action samples", (t) => {
@@ -1418,6 +1919,119 @@ test("writes reports exclusively and preserves existing files and symlink target
   assert.equal(readFileSync(symlinkTarget, "utf8"), "keep symlink target");
 });
 
+test("selects a manifest-bound run cleanup receipt and leaves absent-receipt reports unchanged", (t) => {
+  const input = makeFixture(t);
+  const baselineResult = runCli([input.manifestPath]);
+  assert.equal(baselineResult.status, 0, baselineResult.stderr);
+  const baselineReport = JSON.parse(baselineResult.stdout);
+
+  const { receipt } = writeOwnedCleanupReceipt(input, {
+    primaryRunFailure: {
+      stage: "capture:100-interactive:append",
+      code: "METHOD_PILOT_FAILED",
+    },
+    context: { outcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+    browser: {
+      outcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+  });
+  const withReceiptResult = runCli([input.manifestPath]);
+
+  assert.equal(withReceiptResult.status, 0, withReceiptResult.stderr);
+  const withReceiptReport = JSON.parse(withReceiptResult.stdout);
+  assert.deepEqual(withReceiptReport.metadata.ownedCleanupReceipt, {
+    scope: "run",
+    primaryRunFailure: {
+      stage: "capture:100-interactive:append",
+      code: "METHOD_PILOT_FAILED",
+    },
+    context: { apiOutcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+    browser: {
+      apiOutcome: "closed",
+      errorCode: null,
+      descendants: "not_independently_verified",
+    },
+    ownedServer: {
+      stopHelper: "returned",
+      errorCode: null,
+      processGroupSnapshot: { outcome: "unavailable", memberCount: null },
+      childExitKnown: false,
+      exitCode: null,
+      signalCode: null,
+    },
+    cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+  });
+  const withoutSelectedReceipt = structuredClone(withReceiptReport);
+  delete withoutSelectedReceipt.metadata.ownedCleanupReceipt;
+  assert.deepEqual(withoutSelectedReceipt, baselineReport);
+  assert.doesNotMatch(
+    JSON.stringify(withReceiptReport),
+    /manifestSha256|completedAtUtc/,
+  );
+  assert.equal(
+    receipt.manifestSha256,
+    sha256(readFileSync(input.manifestPath)),
+  );
+});
+
+test("rejects malformed, oversized, mismatched, or unsafe run cleanup receipts without a report", async (t) => {
+  const scenarios = [
+    [
+      "malformed JSON",
+      (_input, path) => writeFileSync(path, "{", { flag: "wx" }),
+      /receipt/i,
+    ],
+    [
+      "oversized receipt",
+      (_input, path) =>
+        writeFileSync(path, Buffer.alloc(16 * 1024 + 1, 0x20), { flag: "wx" }),
+      /receipt/i,
+    ],
+    [
+      "manifest hash mismatch",
+      (input) =>
+        writeOwnedCleanupReceipt(input, { manifestSha256: "0".repeat(64) }),
+      /receipt/i,
+    ],
+    [
+      "unsafe receipt path field",
+      (input) =>
+        writeOwnedCleanupReceipt(input, {
+          receiptPath: "../outside.json",
+          privateValue: "PRIVATE_RECEIPT_MARKER",
+        }),
+      /receipt/i,
+    ],
+    [
+      "fixed sibling symlink",
+      (input, path) => {
+        const target = join(input.directory, "receipt-target.json");
+        writeFileSync(target, "{}", { flag: "wx" });
+        symlinkSync(target, path);
+      },
+      /receipt/i,
+    ],
+  ];
+
+  for (const [name, writeInvalid, expectedError] of scenarios) {
+    await t.test(name, (subtest) => {
+      const input = makeFixture(subtest);
+      const receiptPath = join(input.directory, "owned-cleanup-receipt.json");
+      writeInvalid(input, receiptPath);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, expectedError);
+      assert.equal(result.stderr.includes("PRIVATE_RECEIPT_MARKER"), false);
+    });
+  }
+});
+
 test("rejects trace path traversal before reading a neighboring file", (t) => {
   const input = makeFixture(t);
   const outsideTrace = join(dirname(input.directory), "outside.trace.json");
@@ -1565,6 +2179,274 @@ test("loads version-two retained-node evidence with integrity checks and sanitiz
   ]) {
     assert.equal(result.stdout.includes(privateValue), false, privateValue);
   }
+});
+
+test("analyzes the exact Brave 155.0.8059.85 tuple against the preserved version-two catalog", (t) => {
+  const input = makeVersionTwoObservedFixture(t);
+  applyBrave15585Identity(input.manifest);
+  writeObservedManifest(input);
+  const traceBefore = readFileSync(input.tracePath);
+  const sidecarBefore = readFileSync(input.sidecarPath);
+
+  const result = runCli([input.manifestPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const report = JSON.parse(result.stdout);
+  const traceReport = report.traces[0];
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.status,
+    "diagnostic-only",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.observedBrowserVersion,
+    "155.0.8059.85",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.pinnedSourceRevision,
+    "0e66b94549a8bd85f03fbdf189b752d6e7b63c32",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.observedBundleRevision,
+    "c7357bfd2a76c2467ba1ae62593a81ae92c05205",
+  );
+  assert.deepEqual(
+    traceReport.discreteEventTimingCrosswalk.methodScope
+      .protocolCatalogCompatibility,
+    {
+      protocolCatalogId: RETAINED_NODE_EVIDENCE_POLICY.protocolCatalogId,
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.chromiumSourceIdentity,
+    "unverified",
+  );
+  assert.equal(
+    traceReport.discreteEventTimingCrosswalk.methodScope.vendorPatchIdentity,
+    "unverified",
+  );
+  assert.equal(traceReport.observedDiscreteInputs.status, "diagnostic-only");
+  assert.equal(traceReport.observedDiscreteInputs.counts.accepted, 1);
+  assert.equal(
+    traceReport.observedDiscreteInputs.formalActionStatus,
+    "unavailable",
+  );
+  assert.deepEqual(traceReport.observedDiscreteInputs.formalActionSamples, []);
+  assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+  assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+
+  input.manifest.browser.version = "155.0.8059.86";
+  writeObservedManifest(input);
+  const unsupportedResult = runCli([input.manifestPath]);
+  assert.equal(unsupportedResult.status, 0, unsupportedResult.stderr);
+  const unsupportedTrace = JSON.parse(unsupportedResult.stdout).traces[0];
+  assert.equal(
+    unsupportedTrace.discreteEventTimingCrosswalk.status,
+    "unavailable",
+  );
+  assert.equal(unsupportedTrace.discreteEventTimingCrosswalk.methodScope, null);
+  assert.deepEqual(
+    unsupportedTrace.discreteEventTimingCrosswalk.gateReasonCodes,
+    ["BROWSER_SOURCE_PROFILE_UNSUPPORTED"],
+  );
+  assert.equal(unsupportedTrace.observedDiscreteInputs.status, "unavailable");
+  assert.deepEqual(
+    unsupportedTrace.observedDiscreteInputs.formalActionSamples,
+    [],
+  );
+  assert.equal(readFileSync(input.tracePath).equals(traceBefore), true);
+  assert.equal(readFileSync(input.sidecarPath).equals(sidecarBefore), true);
+});
+
+test("forwards the exact Android Brave observation into a redacted diagnostic CLI crosswalk", (t) => {
+  const input = makeFixture(t, {
+    traceText: observedTraceText(),
+    traceName: "android-brave15585-synthetic.trace.json",
+  });
+  applyAndroidBrave15585Identity(input.manifest);
+  input.manifest.privateCapturePath = "/Users/private/android/base.apk";
+  writeObservedManifest(input);
+
+  const result = runCli([input.manifestPath]);
+  assert.equal(result.status, 0, result.stderr);
+  const crosswalk = JSON.parse(result.stdout).traces[0]
+    .discreteEventTimingCrosswalk;
+  assert.equal(crosswalk.status, "diagnostic-only");
+  assert.deepEqual(crosswalk.candidates, [
+    {
+      eventType: "click",
+      durationUs: 8,
+      processingEndToPresentationUs: 3,
+      status: "diagnostic-only",
+    },
+  ]);
+  assert.deepEqual(crosswalk.methodScope, {
+    observedBrowserVersion: "155.0.8059.85",
+    platform: "Android",
+    observedPackageIdentifier: "com.brave.browser",
+    observedPackageVersion: "1.97.59",
+    observedRuntimeRevision: "@c7357bfd2a76c2467ba1ae62593a81ae92c0520",
+    chromiumSourceIdentity: "unverified",
+    protocolCatalogCompatibility: {
+      protocolCatalogId:
+        "chromium-43a195105613ac83c21d3f14de279f4a045c7da0+v8-d89479ac5446a374c55a35be19b5a23437558d99",
+      comparedChromiumSourceRevision:
+        "43a195105613ac83c21d3f14de279f4a045c7da0",
+      basis: "consumed-upstream-files-byte-identical-at-both-pins",
+      scope: "diagnostic-only",
+    },
+    evidenceClass: "installed-android-brave-schema-probe",
+    vendorPatchIdentity: "unverified",
+    navigationDocumentIdentity: "not-inferred",
+    originScope: "capture-case + renderer PID + frame",
+  });
+  assert.ok(
+    crosswalk.gateReasonCodes.includes(
+      "INSTALLED_ANDROID_BRAVE_SCHEMA_PROBE_ONLY",
+    ),
+  );
+  assert.equal(crosswalk.formalActionStatus, "unavailable");
+  assert.deepEqual(crosswalk.formalActionSamples, []);
+  assert.equal("pinnedSourceRevision" in crosswalk.methodScope, false);
+  assert.equal("observedBundleRevision" in crosswalk.methodScope, false);
+  for (const privateValue of [
+    privateMarker,
+    "/Users/private/android/base.apk",
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36",
+  ]) {
+    assert.equal(result.stdout.includes(privateValue), false, privateValue);
+  }
+});
+
+test("v3 CLI requires the actual manifest-bound run cleanup receipt before analysis", async (t) => {
+  await t.test("missing receipt blocks analysis", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /cleanup receipt.*required/i);
+  });
+
+  await t.test("matching receipt permits exact v3 association", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    const { receipt } = writeOwnedCleanupReceipt(input);
+    const manifestBytes = readFileSync(input.manifestPath);
+    assert.equal(receipt.manifestSha256, sha256(manifestBytes));
+
+    const result = runCli([input.manifestPath]);
+
+    assert.equal(result.status, 0, result.stderr);
+    const observed = JSON.parse(result.stdout).traces[0].observedDiscreteInputs;
+    assert.equal(
+      observed.status,
+      "diagnostic-only",
+      JSON.stringify(observed.rejectionCounts),
+    );
+    assert.deepEqual(observed.counts, {
+      apiEntries: 1,
+      accepted: 1,
+      rejected: 0,
+    });
+    assert.equal(observed.formalActionStatus, "unavailable");
+    assert.deepEqual(observed.formalActionSamples, []);
+    assert.equal(result.stdout.includes(observedDocumentId), false);
+    assert.equal(result.stdout.includes(observedTargetToken), false);
+  });
+
+  await t.test("failed run cleanup prevents v3 analysis", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    writeOwnedCleanupReceipt(input, {
+      primaryRunFailure: {
+        stage: "capture:100-interactive:open",
+        code: "METHOD_PILOT_FAILED",
+      },
+      context: { outcome: "failed", errorCode: "CONTEXT_CLOSE_TIMEOUT" },
+      cleanupFailures: [{ resource: "context", code: "CONTEXT_CLOSE_TIMEOUT" }],
+    });
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(
+      result.stderr,
+      /version-three.*successful run cleanup receipt/i,
+    );
+  });
+
+  await t.test(
+    "action segments cannot be attached to v3 analysis",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      input.manifest.measurementSegments = [{ trace: input.traceRecord.trace }];
+      writeObservedManifest(input);
+      writeOwnedCleanupReceipt(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(
+        result.stderr,
+        /one case and trace without action segments/i,
+      );
+    },
+  );
+
+  await t.test("changed sidecar bytes fail before report output", (subtest) => {
+    const input = makeVersionThreeObservedFixture(subtest);
+    writeOwnedCleanupReceipt(input);
+    writeFileSync(
+      input.sidecarPath,
+      Buffer.concat([readFileSync(input.sidecarPath), Buffer.from(" ")]),
+      { flag: "w" },
+    );
+
+    const result = runCli([input.manifestPath]);
+
+    assert.notEqual(result.status, 0);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /sidecar integrity check failed/i);
+  });
+
+  await t.test(
+    "receipt must bind the exact final manifest bytes",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      writeOwnedCleanupReceipt(input);
+      input.manifest.sourceHashSha256 = "f".repeat(64);
+      writeObservedManifest(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.notEqual(result.status, 0);
+      assert.equal(result.stdout, "");
+      assert.match(result.stderr, /manifest binding failed/i);
+    },
+  );
+
+  await t.test(
+    "unknown producer hash rejects the v3 association",
+    (subtest) => {
+      const input = makeVersionThreeObservedFixture(subtest);
+      input.manifest.sourceHashSha256 = "0".repeat(64);
+      writeObservedManifest(input);
+      writeOwnedCleanupReceipt(input);
+
+      const result = runCli([input.manifestPath]);
+
+      assert.equal(result.status, 0, result.stderr);
+      const observed = JSON.parse(result.stdout).traces[0]
+        .observedDiscreteInputs;
+      assert.equal(observed.status, "unavailable");
+      assert.deepEqual(observed.rejectionCounts, [
+        { code: "COLLECTOR_SOURCE_HASH_MISMATCH", count: 1 },
+      ]);
+    },
+  );
 });
 
 test("continues offline analysis with integrity-checked unavailable version-two evidence", (t) => {

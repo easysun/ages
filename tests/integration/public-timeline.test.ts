@@ -226,6 +226,62 @@ describe("Canonical public timeline SSR", () => {
     expect(html).toContain('loading="lazy"');
   });
 
+  it("renders only complete positive integer dimensions stored on each image Asset", async () => {
+    const ids = [
+      "cover",
+      "landscape",
+      "portrait",
+      "square",
+      "missing-width",
+      "missing-height",
+      "zero-width",
+      "negative-height",
+      "fractional-width",
+    ];
+    for (const id of ids) await asset(id);
+
+    const dimensions: Record<string, [number | null, number | null]> = {
+      cover: [400, 800],
+      landscape: [1600, 900],
+      portrait: [400, 800],
+      square: [1000, 1000],
+      "missing-width": [null, 800],
+      "missing-height": [800, null],
+      "zero-width": [0, 800],
+      "negative-height": [800, -1],
+      "fractional-width": [10.5, 20],
+    };
+    for (const [id, [width, height]] of Object.entries(dimensions)) {
+      await env.DB.prepare(
+        "UPDATE assets SET width = ?, height = ? WHERE id = ?",
+      )
+        .bind(width, height, id)
+        .run();
+    }
+
+    await timeline("story", "public", "Dimensions", "cover");
+    for (const [position, id] of ids.slice(1).entries())
+      await item(`item-${id}`, id, "story", position, id);
+
+    const html = await (await request("/t/story")).text();
+    const imageTag = (id: string) =>
+      (html.match(/<img\b[^>]*>/g) ?? []).find((tag) =>
+        tag.includes(`src="/t/story/media/${id}"`),
+      ) ?? "";
+    for (const [id, [width, height]] of Object.entries(dimensions).slice(
+      0,
+      4,
+    )) {
+      expect(imageTag(id)).toContain(`width="${width}"`);
+      expect(imageTag(id)).toContain(`height="${height}"`);
+    }
+    for (const id of Object.keys(dimensions).slice(4)) {
+      expect(imageTag(id)).not.toMatch(/\swidth="[^"]*"/);
+      expect(imageTag(id)).not.toMatch(/\sheight="[^"]*"/);
+    }
+    expect(html).not.toContain("r2_key");
+  });
+
   it("selects an image cover outside the item set for OG, but never labels video as og:image", async () => {
     await asset("cover");
     await asset("video", "owner_a", "video");

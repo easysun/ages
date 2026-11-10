@@ -74,6 +74,81 @@ function validFrozenObservation(
   return observer.validateTrustedStimulusObservation(payload, DOC);
 }
 
+test("version-two retained-node observations remain the default without explicit v3 selection", async () => {
+  const observer = await import("../../scripts/browser-stimulus-observer.mjs");
+  const payload = observer.createUnavailableRetainedNodeObservation(
+    "OBSERVATION_DRAIN_FAILED",
+    DOC,
+  );
+  const validated = observer.validateTrustedStimulusObservation(payload, DOC);
+
+  assert.equal(validated.schemaVersion, 2);
+  assert.equal(Object.hasOwn(validated, "sameDocumentLoadingWitness"), false);
+  assert.deepEqual(Object.keys(validated.retainedNodeEvidence).sort(), [
+    "cleanup",
+    "documentId",
+    "executionContext",
+    "lifecycle",
+    "mappings",
+    "protocolCatalogId",
+    "reasonCode",
+    "scope",
+    "snapshots",
+    "status",
+  ]);
+});
+
+test("version three observer selection is explicit and produces the closed unavailable shape", async () => {
+  const observer = await import("../../scripts/browser-stimulus-observer.mjs");
+  const installedOptions = [];
+  const page = {
+    async addInitScript(_initializer, options) {
+      installedOptions.push(options);
+    },
+  };
+
+  await observer.installTrustedStimulusObserver(page, {
+    retainInputNodes: true,
+  });
+  await observer.installTrustedStimulusObserver(page, {
+    retainInputNodes: true,
+    retainedNodeEvidenceVersion: 3,
+  });
+  assert.deepEqual(installedOptions, [
+    { retainInputNodes: true },
+    { retainInputNodes: true, retainedNodeEvidenceVersion: 3 },
+  ]);
+
+  const payload = observer.createUnavailableRetainedNodeObservation(
+    "OBSERVATION_DRAIN_FAILED",
+    DOC,
+    "RETAINED_NODE_MAPPING_FAILED",
+    3,
+  );
+  const validated = observer.validateTrustedStimulusObservation(payload, DOC);
+  assert.equal(validated.schemaVersion, 3);
+  assert.equal(validated.sameDocumentLoadingWitness.status, "unavailable");
+  assert.equal(
+    validated.sameDocumentLoadingWitness.reasonCode,
+    "RETAINED_NODE_MAPPING_FAILED",
+  );
+  assert.deepEqual(Object.keys(validated.sameDocumentLoadingWitness).sort(), [
+    "collectorCleanup",
+    "droppedCount",
+    "events",
+    "firstInvalidation",
+    "historyApiCount",
+    "loadingCount",
+    "orderingBasis",
+    "overflow",
+    "protocolCatalogId",
+    "reasonCode",
+    "retainedTargetProof",
+    "sourceOrder",
+    "status",
+  ]);
+});
+
 class FakeSession extends EventEmitter {
   constructor(name, state, options = {}) {
     super();
@@ -151,6 +226,21 @@ class FakeSession extends EventEmitter {
       });
     }
     if (method === "Runtime.evaluate") {
+      if (params.expression.includes("captureFinalReferenceProof")) {
+        return response({
+          result: {
+            type: "object",
+            value: this.options.finalReferenceProof ?? {
+              savedDocumentSame: true,
+              savedRootSame: true,
+              savedTargetSame: true,
+              targetOwnerDocumentMatches: true,
+              rootContainsTarget: true,
+              connected: true,
+            },
+          },
+        });
+      }
       const token = TOKEN;
       return response({
         result: {
@@ -502,6 +592,86 @@ function injectLifecycle(harness, injection) {
 
 async function loadTrackerModule() {
   return import("../../scripts/retained-input-node-evidence.mjs");
+}
+
+function sourceProof(overrides = {}) {
+  return {
+    sourceRecordIndex: 0,
+    documentId: DOC,
+    targetToken: TOKEN,
+    mappingIndex: null,
+    sourceCapture: {
+      targetIsNode: true,
+      ownerDocumentMatches: true,
+      rootContainsTarget: true,
+      connected: true,
+      composedPathStartsAtTarget: true,
+    },
+    baselineScope: null,
+    finalProof: null,
+    ...overrides,
+  };
+}
+
+async function createV3Tracker(harness) {
+  const { createRetainedInputNodeEvidenceTracker } = await loadTrackerModule();
+  const tracker = createRetainedInputNodeEvidenceTracker({
+    page: harness.page,
+    pageSession: harness.pageSession,
+    browserSession: harness.browserSession,
+    timeoutMs: 100,
+    retainedNodeEvidenceVersion: 3,
+  });
+  await tracker.start();
+  await tracker.snapshot("beforeArm", null);
+  tracker.setPhase("before-input");
+  await tracker.snapshot("afterArm", DOC);
+  return tracker;
+}
+
+async function captureV3FinalProof(
+  tracker,
+  harness,
+  proof = sourceProof(),
+  mappingIndex = 0,
+  historyPhase = "route-ready",
+) {
+  tracker.setPhase("primary-action");
+  harness.pageSession.emit("Page.frameStartedLoading", {
+    frameId: ROOT_FRAME,
+  });
+  tracker.setPhase(historyPhase);
+  harness.pageSession.emit("Page.navigatedWithinDocument", {
+    frameId: ROOT_FRAME,
+    navigationType: "historyApi",
+  });
+  await tracker.snapshot("afterDrain", DOC);
+  await tracker.mapTargets(DOC, [TOKEN]);
+  await tracker.snapshot("afterMapping", DOC);
+  tracker.setPhase("post-trace-analysis");
+  return tracker.captureFinalIdentityProof({
+    documentId: DOC,
+    sourceRecordIndex: 0,
+    targetToken: TOKEN,
+    mappingIndex,
+    sourceProof: proof,
+  });
+}
+
+async function finalizeV3(tracker) {
+  tracker.setPhase("cleanup");
+  return tracker.finalize({
+    documentId: DOC,
+    scope: {
+      rootIsSelectedDocument: true,
+      pointerCaptureUncertain: false,
+      shadowTreeUncertain: false,
+    },
+    observerCleanup: {
+      windowListenersRemoved: true,
+      strongReferencesCleared: true,
+    },
+  });
 }
 
 test("tracker establishes one default root context and maps only validated backend IDs", async () => {
@@ -1475,5 +1645,463 @@ test("real collector cancels pending mapping on page-session loss and settles cl
     assert.equal(harness.browser.listenerCount("disconnected"), 0);
   } finally {
     rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
+test("only the ordered root loading and historyApi pair is provisionally allowed", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  await captureV3FinalProof(tracker, harness);
+  assert.equal(tracker.isAvailable(), true);
+
+  const result = await finalizeV3(tracker);
+  assert.equal(result.sameDocumentLoadingWitness.status, "complete");
+  assert.deepEqual(
+    result.sameDocumentLoadingWitness.events.map(({ method, phase }) => ({
+      method,
+      phase,
+    })),
+    [
+      { method: "Runtime.executionContextCreated", phase: "baseline" },
+      { method: "Page.frameStartedLoading", phase: "primary-action" },
+      { method: "Page.navigatedWithinDocument", phase: "route-ready" },
+    ],
+  );
+  assert.equal(result.sameDocumentLoadingWitness.loadingCount, 1);
+  assert.equal(result.sameDocumentLoadingWitness.historyApiCount, 1);
+  assert.equal(
+    result.sameDocumentLoadingWitness.retainedTargetProof.finalProof.stage,
+    "post-trace-before-release",
+  );
+  assert.deepEqual(
+    result.sameDocumentLoadingWitness.retainedTargetProof.baselineScope,
+    {
+      frameId: ROOT_FRAME,
+      loaderId: ROOT_LOADER,
+      contextUniqueId: CONTEXT,
+      targetId: TARGET,
+      sessionId: TARGET_SESSION,
+    },
+  );
+  await tracker.close();
+});
+
+test("historyApi receipt during primary-action is allowed after root loading", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  await captureV3FinalProof(
+    tracker,
+    harness,
+    sourceProof(),
+    0,
+    "primary-action",
+  );
+
+  const result = await finalizeV3(tracker);
+  assert.equal(result.sameDocumentLoadingWitness.status, "complete");
+  assert.equal(
+    result.sameDocumentLoadingWitness.events[1].method,
+    "Page.frameStartedLoading",
+  );
+  assert.equal(
+    result.sameDocumentLoadingWitness.events[2].method,
+    "Page.navigatedWithinDocument",
+  );
+  assert.equal(
+    result.sameDocumentLoadingWitness.events[2].phase,
+    "primary-action",
+  );
+  await tracker.close();
+});
+
+test("mismatched mapping index is not claimed by the unavailable source proof", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  await assert.rejects(
+    captureV3FinalProof(tracker, harness, sourceProof(), 1),
+    { message: "RETAINED_NODE_TRACE_ASSOCIATION_INVALID" },
+  );
+
+  const result = await finalizeV3(tracker);
+  const witness = result.sameDocumentLoadingWitness;
+  assert.equal(witness.status, "unavailable");
+  assert.equal(witness.retainedTargetProof.targetToken, TOKEN);
+  assert.equal(witness.retainedTargetProof.mappingIndex, null);
+  assert.equal(witness.retainedTargetProof.finalProof, null);
+  const observer = await import("../../scripts/browser-stimulus-observer.mjs");
+  const records = [
+    {
+      kind: "dom",
+      documentId: DOC,
+      type: "click",
+      timeStamp: 12,
+      isTrusted: true,
+      targetToken: TOKEN,
+      targetLabel: "open-primary",
+      targetResolution: "registered-target",
+      phase: "primary",
+    },
+  ];
+  const validated = observer.validateTrustedStimulusObservation(
+    {
+      schemaVersion: 3,
+      status: "diagnostic",
+      reasonCode: null,
+      documentId: DOC,
+      apiStatus: "thresholded",
+      apiMetadata: {
+        entryType: "event",
+        durationThresholdMs: 16,
+        buffered: false,
+        quantized: true,
+        continuousInputExcluded: true,
+      },
+      records,
+      recordCount: records.length,
+      recordBytes: Buffer.byteLength(JSON.stringify(records)),
+      retainedNodeEvidence: result.retainedNodeEvidence,
+      sameDocumentLoadingWitness: witness,
+    },
+    DOC,
+  );
+  assert.equal(validated.sameDocumentLoadingWitness.status, "unavailable");
+  assert.equal(
+    validated.sameDocumentLoadingWitness.retainedTargetProof.mappingIndex,
+    null,
+  );
+  await tracker.close();
+});
+
+test("lifecycle witness rejects malformed, foreign, duplicate, and wrong-phase events", async (t) => {
+  const cases = [
+    {
+      name: "malformed",
+      phase: "primary-action",
+      event: "Page.frameStartedLoading",
+      payload: { frameId: 17 },
+    },
+    {
+      name: "foreign frame",
+      phase: "primary-action",
+      event: "Page.frameStartedLoading",
+      payload: { frameId: "foreign-frame-1" },
+    },
+    {
+      name: "duplicate loading",
+      phase: "primary-action",
+      events: [
+        ["Page.frameStartedLoading", { frameId: ROOT_FRAME }],
+        ["Page.frameStartedLoading", { frameId: ROOT_FRAME }],
+      ],
+    },
+    {
+      name: "wrong phase",
+      phase: "before-input",
+      event: "Page.frameStartedLoading",
+      payload: { frameId: ROOT_FRAME },
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const harness = await createHarness();
+      const tracker = await createV3Tracker(harness);
+      tracker.setPhase(entry.phase);
+      for (const [eventName, payload] of entry.events ?? [
+        [entry.event, entry.payload],
+      ]) {
+        harness.pageSession.emit(eventName, payload);
+      }
+
+      const result = await finalizeV3(tracker);
+      assert.equal(result.sameDocumentLoadingWitness.status, "unavailable");
+      assert.notEqual(
+        result.sameDocumentLoadingWitness.firstInvalidation,
+        null,
+      );
+      assert.equal(tracker.isAvailable(), false);
+      await tracker.close();
+    });
+  }
+});
+
+test("v3 rejects foreign, nondefault, and unsupported execution contexts", async (t) => {
+  const cases = [
+    {
+      name: "foreign frame",
+      context: {
+        id: 2,
+        uniqueId: "foreign-context",
+        auxData: {
+          isDefault: true,
+          type: "default",
+          frameId: "foreign-frame-1",
+        },
+      },
+    },
+    {
+      name: "nondefault root context",
+      context: {
+        id: 2,
+        uniqueId: "isolated-context",
+        auxData: { isDefault: false, type: "isolated", frameId: ROOT_FRAME },
+      },
+    },
+    {
+      name: "unknown frame scope",
+      context: {
+        id: 2,
+        uniqueId: "unknown-context",
+        auxData: { isDefault: true, type: "default" },
+      },
+    },
+    {
+      name: "different root default context",
+      context: {
+        id: 2,
+        uniqueId: "different-root-context",
+        auxData: {
+          isDefault: true,
+          type: "default",
+          frameId: ROOT_FRAME,
+        },
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const harness = await createHarness();
+      const tracker = await createV3Tracker(harness);
+      harness.pageSession.emit("Runtime.executionContextCreated", {
+        context: entry.context,
+      });
+
+      assert.equal(tracker.isAvailable(), false);
+      const result = await finalizeV3(tracker);
+      assert.equal(result.sameDocumentLoadingWitness.status, "unavailable");
+      assert.notEqual(
+        result.sameDocumentLoadingWitness.firstInvalidation,
+        null,
+      );
+      await tracker.close();
+    });
+  }
+});
+
+test("v3 rejects foreign Target callbacks and keeps selected-target changes fatal", async (t) => {
+  const cases = [
+    {
+      name: "foreign target info change",
+      eventName: "Target.targetInfoChanged",
+      payload: { targetInfo: { targetId: "foreign-target-1", type: "page" } },
+      lossReason: "UNKNOWN_EVENT_SCOPE",
+    },
+    {
+      name: "foreign target attachment",
+      eventName: "Target.attachedToTarget",
+      payload: {
+        sessionId: "foreign-session-1",
+        targetInfo: { targetId: "foreign-target-1", type: "page" },
+      },
+      lossReason: "UNKNOWN_EVENT_SCOPE",
+    },
+    {
+      name: "selected target attachment on another session",
+      eventName: "Target.attachedToTarget",
+      payload: {
+        sessionId: "foreign-session-1",
+        targetInfo: { targetId: TARGET, type: "page" },
+      },
+      lossReason: "TARGET_CHANGED",
+    },
+    {
+      name: "selected target info change remains fatal",
+      eventName: "Target.targetInfoChanged",
+      payload: { targetInfo: { targetId: TARGET, type: "page" } },
+      lossReason: "TARGET_CHANGED",
+    },
+  ];
+
+  for (const entry of cases) {
+    await t.test(entry.name, async () => {
+      const harness = await createHarness();
+      const tracker = await createV3Tracker(harness);
+      harness.browserSession.emit(entry.eventName, entry.payload);
+
+      assert.equal(tracker.isAvailable(), false);
+      const result = await finalizeV3(tracker);
+      assert.equal(result.sameDocumentLoadingWitness.status, "unavailable");
+      assert.equal(
+        result.retainedNodeEvidence.lifecycle.lossReasonCode,
+        entry.lossReason,
+      );
+      await tracker.close();
+    });
+  }
+});
+
+test("delayed lifecycle delivery never claims source-time order", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  tracker.setPhase("primary-action");
+  await Promise.resolve();
+  harness.pageSession.emit("Page.frameStartedLoading", {
+    frameId: ROOT_FRAME,
+    timestamp: 1,
+    url: "https://private.invalid/earlier-source-time",
+  });
+  tracker.setPhase("route-ready");
+  harness.pageSession.emit("Page.navigatedWithinDocument", {
+    frameId: ROOT_FRAME,
+    navigationType: "historyApi",
+    timestamp: 2,
+    url: "https://private.invalid/current-url",
+  });
+  await tracker.snapshot("afterDrain", DOC);
+  await tracker.mapTargets(DOC, [TOKEN]);
+  await tracker.snapshot("afterMapping", DOC);
+  tracker.setPhase("post-trace-analysis");
+  await tracker.captureFinalIdentityProof({
+    documentId: DOC,
+    sourceRecordIndex: 0,
+    targetToken: TOKEN,
+    mappingIndex: 0,
+    sourceProof: sourceProof(),
+  });
+
+  const result = await finalizeV3(tracker);
+  const witness = result.sameDocumentLoadingWitness;
+  assert.equal(witness.status, "complete");
+  assert.equal(witness.orderingBasis, "cdp-receipt");
+  assert.equal(witness.sourceOrder, "unknown");
+  assert.equal(
+    Object.hasOwn(witness.events[1], "timestamp") ||
+      Object.hasOwn(witness.events[1], "url"),
+    false,
+  );
+  assert.equal(
+    Object.hasOwn(witness.events[2], "timestamp") ||
+      Object.hasOwn(witness.events[2], "url"),
+    false,
+  );
+  await tracker.close();
+});
+
+test("loading witness preserves first invalidation at capacity", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  tracker.setPhase("primary-action");
+  for (let index = 0; index < 126; index += 1) {
+    harness.pageSession.emit("Runtime.executionContextCreated", {
+      context: {
+        id: 1,
+        uniqueId: CONTEXT,
+        auxData: { isDefault: true, type: "default", frameId: ROOT_FRAME },
+      },
+    });
+  }
+  harness.pageSession.emit("Page.frameStartedLoading", {
+    frameId: "foreign-frame-1",
+  });
+  tracker.setPhase("route-ready");
+  harness.pageSession.emit("Page.frameNavigated", {
+    frame: { id: ROOT_FRAME, loaderId: "new-root-loader" },
+  });
+
+  const result = await finalizeV3(tracker);
+  const witness = result.sameDocumentLoadingWitness;
+  assert.equal(witness.status, "unavailable");
+  assert.equal(witness.events.length, 128);
+  assert.equal(witness.droppedCount, 1);
+  assert.equal(witness.overflow, true);
+  assert.deepEqual(witness.firstInvalidation, {
+    sequence: 127,
+    phase: "primary-action",
+    method: "Page.frameStartedLoading",
+    reasonCode: "RETAINED_NODE_LIFECYCLE_INVALIDATED",
+  });
+  assert.equal(
+    result.retainedNodeEvidence.lifecycle.lossReasonCode,
+    "NAVIGATION",
+  );
+  await tracker.close();
+});
+
+test("late fatal and unknown lifecycle events demote provisional completion", async () => {
+  const harness = await createHarness();
+  const tracker = await createV3Tracker(harness);
+  await captureV3FinalProof(tracker, harness);
+  assert.equal(tracker.isAvailable(), true);
+
+  harness.pageSession.emit("Page.navigatedWithinDocument", {
+    frameId: ROOT_FRAME,
+    navigationType: "unexpected",
+  });
+  harness.pageSession.emit("Page.frameNavigated", {
+    frame: { id: ROOT_FRAME, loaderId: "new-loader" },
+  });
+  const result = await finalizeV3(tracker);
+  assert.equal(result.sameDocumentLoadingWitness.status, "unavailable");
+  assert.equal(
+    result.sameDocumentLoadingWitness.firstInvalidation.method,
+    "Page.navigatedWithinDocument",
+  );
+  assert.equal(
+    result.retainedNodeEvidence.lifecycle.lossReasonCode,
+    "NAVIGATION",
+  );
+  await tracker.close();
+});
+
+test("v3 late invalidation releases the object group before removing listeners", async (t) => {
+  for (const scenario of [
+    {
+      name: "fatal root navigation",
+      eventName: "Page.frameNavigated",
+      payload: {
+        frame: { id: ROOT_FRAME, loaderId: "late-root-loader" },
+      },
+    },
+    {
+      name: "unknown foreign lifecycle scope",
+      eventName: "Page.frameStartedLoading",
+      payload: { frameId: "foreign-frame-1" },
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const releasePending = deferred();
+      const harness = await createHarness({
+        pagePendingMethod: "Runtime.releaseObjectGroup",
+        onPending(pending) {
+          releasePending.resolve(pending);
+        },
+      });
+      const tracker = await createV3Tracker(harness);
+      await captureV3FinalProof(tracker, harness);
+
+      const finalizing = finalizeV3(tracker);
+      const release = await releasePending.promise;
+      assert.equal(tracker.isAvailable(), true);
+      assert.ok(harness.pageSession.listenerCount(scenario.eventName) > 0);
+      harness.pageSession.emit(scenario.eventName, scenario.payload);
+      assert.equal(tracker.isAvailable(), false);
+      release.resolve({});
+
+      const result = await finalizing;
+      assert.equal(result.sameDocumentLoadingWitness.status, "unavailable");
+      assert.equal(result.retainedNodeEvidence.status, "unavailable");
+      assert.equal(
+        result.retainedNodeEvidence.cleanup.objectGroupReleased,
+        true,
+      );
+      assert.equal(
+        result.retainedNodeEvidence.cleanup.cdpListenersRemoved,
+        true,
+      );
+      assert.equal(result.retainedNodeEvidence.snapshots.afterCleanup, null);
+      assert.equal(harness.pageSession.listenerCount(scenario.eventName), 0);
+      await tracker.close();
+    });
   }
 });

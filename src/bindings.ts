@@ -12,6 +12,8 @@ export type Bindings = Omit<WorkerBindings, "APP_ENV"> & {
   R2_BUCKET_NAME?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
+  // Explicit opt-in: prevent indexing on the isolated OKE development container.
+  ROBOTS_NOINDEX?: string;
 };
 
 export type AppContext = {
