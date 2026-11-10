@@ -61,3 +61,11 @@ jobs:
           path: test-results/**/media-fallback-diagnostic.json
           if-no-files-found: ignore
           retention-days: 3
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
