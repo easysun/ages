@@ -35,6 +35,12 @@ type Intent = {
     expires_at: string;
   };
 };
+type StorageQuota = {
+  storage_limit_bytes: number;
+  max_asset_bytes: number;
+  storage_used_bytes: number;
+  storage_reserved_bytes: number;
+};
 
 beforeEach(async () => {
   await reset();
@@ -204,6 +210,120 @@ describe("Upload capabilities and reservations", () => {
     ).run();
     expect((await intent()).status).toBe(413);
   });
+
+  it.each(["video/mp4", "video/webm"])(
+    "accepts an exact 250 MiB %s intent without uploading its body",
+    async (mime_type) => {
+      const maxVideoBytes = 250 * 1024 ** 2;
+      await env.DB.prepare(
+        "UPDATE usage_quotas SET max_asset_bytes = ?, storage_limit_bytes = ? WHERE user_id = 'owner_a'",
+      )
+        .bind(300 * 1024 ** 2, 1024 ** 3)
+        .run();
+
+      const response = await intent({
+        filename: "moment.video",
+        mime_type,
+        size_bytes: maxVideoBytes,
+      });
+      expect(response.status).toBe(201);
+      const upload = await response.json<Intent>();
+      const row = await asset(upload.asset.id);
+      expect(upload.asset).toMatchObject({
+        status: "pending",
+        visibility: "private",
+      });
+      expect(row).toMatchObject({
+        owner_id: "owner_a",
+        kind: "video",
+        status: "pending",
+        visibility: "private",
+        mime_type,
+        size_bytes: maxVideoBytes,
+      });
+
+      const me = await app.request(
+        `${origin}/api/me`,
+        { headers: { Cookie: session } },
+        bindings,
+      );
+      expect(me.status).toBe(200);
+      const quota = (await me.json<{ quota: StorageQuota }>()).quota;
+      expect(quota).toMatchObject({
+        storage_limit_bytes: 1024 ** 3,
+        max_asset_bytes: 300 * 1024 ** 2,
+        storage_used_bytes: 0,
+        storage_reserved_bytes: maxVideoBytes,
+      });
+
+      const url = new URL(upload.upload.url);
+      expect(upload.upload.method).toBe("PUT");
+      expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe(
+        "content-length;content-type;host;if-none-match",
+      );
+      expect(upload.upload.headers).toEqual({
+        "Content-Type": mime_type,
+        "If-None-Match": "*",
+      });
+      expect((await env.MEDIA.list()).objects).toHaveLength(0);
+    },
+  );
+
+  it.each(["video/mp4", "video/webm"])(
+    "rejects a 250 MiB plus one byte %s intent without changing usage",
+    async (mime_type) => {
+      const oversizeVideoBytes = 250 * 1024 ** 2 + 1;
+      await env.DB.prepare(
+        "UPDATE usage_quotas SET max_asset_bytes = ?, storage_limit_bytes = ? WHERE user_id = 'owner_a'",
+      )
+        .bind(300 * 1024 ** 2, 1024 ** 3)
+        .run();
+
+      const pendingBefore = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM assets WHERE owner_id = 'owner_a' AND status = 'pending'",
+      ).first("count");
+      const meBefore = await app.request(
+        `${origin}/api/me`,
+        { headers: { Cookie: session } },
+        bindings,
+      );
+      expect(meBefore.status).toBe(200);
+      const quotaBefore = (await meBefore.json<{ quota: StorageQuota }>())
+        .quota;
+      expect(quotaBefore).toMatchObject({
+        storage_limit_bytes: 1024 ** 3,
+        max_asset_bytes: 300 * 1024 ** 2,
+        storage_used_bytes: 0,
+        storage_reserved_bytes: 0,
+      });
+
+      const response = await intent({
+        filename: "moment.video",
+        mime_type,
+        size_bytes: oversizeVideoBytes,
+      });
+      expect(response.status).toBe(413);
+
+      const pendingAfter = await env.DB.prepare(
+        "SELECT COUNT(*) AS count FROM assets WHERE owner_id = 'owner_a' AND status = 'pending'",
+      ).first("count");
+      const meAfter = await app.request(
+        `${origin}/api/me`,
+        { headers: { Cookie: session } },
+        bindings,
+      );
+      expect(meAfter.status).toBe(200);
+      const quotaAfter = (await meAfter.json<{ quota: StorageQuota }>()).quota;
+      expect(pendingAfter).toBe(pendingBefore);
+      expect(quotaAfter.storage_reserved_bytes).toBe(
+        quotaBefore.storage_reserved_bytes,
+      );
+      expect(quotaAfter.storage_used_bytes).toBe(
+        quotaBefore.storage_used_bytes,
+      );
+      expect((await env.MEDIA.list()).objects).toHaveLength(0);
+    },
+  );
 
   it("fails closed without signing configuration and does not reserve storage", async () => {
     const response = await request(

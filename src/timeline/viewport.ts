@@ -2,6 +2,12 @@
 export type Interval = Readonly<{ start: number; end: number }>;
 export type Viewport = Readonly<{ center: number; span: number }>;
 export type SpanLimits = Readonly<{ minSpan: number; maxSpan: number }>;
+export type MarkerGroup = Readonly<{
+  bin: number;
+  first: number;
+  last: number;
+  count: number;
+}>;
 export type FitOptions = SpanLimits &
   Readonly<{ extent: number; padding: number }>;
 
@@ -65,6 +71,99 @@ export function worldToScreen(
   const result = ((coordinate - view.center) / view.span + 0.5) * extent;
   finite(result);
   return result;
+}
+
+function lowerBoundByScreen(
+  positions: readonly number[],
+  view: Viewport,
+  extent: number,
+  pixel: number,
+  start: number,
+  end: number,
+) {
+  let low = start;
+  let high = end;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (worldToScreen(view, positions[middle] as number, extent) < pixel)
+      low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function upperBoundByScreen(
+  positions: readonly number[],
+  view: Viewport,
+  extent: number,
+  pixel: number,
+) {
+  let low = 0;
+  let high = positions.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (worldToScreen(view, positions[middle] as number, extent) <= pixel)
+      low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/** Group sorted positions into occupied screen bins without scanning them. */
+export function groupPositionsByScreenBin(
+  positions: readonly number[],
+  view: Viewport,
+  extent: number,
+  binWidth = 48,
+): MarkerGroup[] {
+  checkViewport(view);
+  positive(extent);
+  positive(binWidth);
+
+  const clipEnd = extent + 12;
+  finite(clipEnd);
+  const firstVisible = lowerBoundByScreen(
+    positions,
+    view,
+    extent,
+    -12,
+    0,
+    positions.length,
+  );
+  const afterLastVisible = upperBoundByScreen(positions, view, extent, clipEnd);
+  const groups: MarkerGroup[] = [];
+
+  let index = firstVisible;
+  while (index < afterLastVisible) {
+    const screenPosition = worldToScreen(
+      view,
+      positions[index] as number,
+      extent,
+    );
+    const bin = Math.floor(screenPosition / binWidth);
+    const binEnd = (bin + 1) * binWidth;
+    finite(bin, binEnd);
+    if (binEnd <= screenPosition)
+      throw new RangeError("Screen bin width is too small for this viewport.");
+
+    const nextIndex = lowerBoundByScreen(
+      positions,
+      view,
+      extent,
+      binEnd,
+      index + 1,
+      afterLastVisible,
+    );
+    groups.push({
+      bin,
+      first: index + 1,
+      last: nextIndex,
+      count: nextIndex - index,
+    });
+    index = nextIndex;
+  }
+
+  return groups;
 }
 
 export function screenToWorld(view: Viewport, pixel: number, extent: number) {

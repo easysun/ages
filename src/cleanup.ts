@@ -1,6 +1,7 @@
 import { cleanupLimits } from "./abuse/limits";
 import { cleanupExpiredUploads } from "./assets/cleanup";
 import { purgeExpiredTrash } from "./assets/purge";
+import { reconcileUntrackedOriginals } from "./assets/reconciliation";
 import { cleanupAuth } from "./auth/session";
 import type { Bindings } from "./bindings";
 
@@ -21,4 +22,11 @@ export async function scheduledCleanup(bindings: Bindings) {
   await cleanupTrackingTickets(bindings.DB);
   await cleanupExpiredUploads(bindings);
   await purgeExpiredTrash(bindings);
+  try {
+    await reconcileUntrackedOriginals(bindings);
+  } catch {
+    console.error(
+      JSON.stringify({ event: "original_object_reconciliation_failed" }),
+    );
+  }
 }

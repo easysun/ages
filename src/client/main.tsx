@@ -11,6 +11,7 @@ import {
   type Profile,
   RequestError,
 } from "./api";
+import { ContentNodesScreen } from "./content-nodes";
 import { AssetDetails } from "./details";
 import { LinksScreen } from "./links";
 import { LocalSignIn } from "./local-sign-in";
@@ -37,6 +38,7 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [logoutError, setLogoutError] = useState("");
   const [profileRequest, setProfileRequest] = useState({ path: "/api/me" });
   const authGeneration = useRef(0);
   const [authGenerationRevision, setAuthGenerationRevision] = useState(0);
@@ -81,6 +83,7 @@ function App() {
     };
   }, [profileRequest]);
   async function logout() {
+    setLogoutError("");
     authGeneration.current++;
     setAuthGenerationRevision(authGeneration.current);
     try {
@@ -91,7 +94,7 @@ function App() {
       if (!response.ok) throw new Error();
       setProfile(null);
     } catch {
-      setError("Sign out could not be completed. Please try again.");
+      setLogoutError("Sign out could not be completed. Please try again.");
     }
   }
   const generation = authGenerationRevision;
@@ -114,6 +117,11 @@ function App() {
           <span className="private-label">Made to keep</span>
         )}
       </header>
+      {logoutError ? (
+        <p className="error logout-notice" role="alert">
+          {logoutError}
+        </p>
+      ) : null}
       {profile ? (
         <nav className="client-nav" aria-label="Your collections">
           <a
@@ -131,6 +139,13 @@ function App() {
             aria-current={path.startsWith("/timelines") ? "page" : undefined}
           >
             Timelines
+          </a>
+          <a
+            href="/content"
+            onClick={collectionLink}
+            aria-current={path === "/content" ? "page" : undefined}
+          >
+            Content
           </a>
           <a
             href="/links"
@@ -179,7 +194,7 @@ function App() {
           <ReporterScreen authenticated authGeneration={generation} />
         ) : path === "/admin/reports" ? (
           profile.user.plan === "admin" ? (
-            <ModerationScreen />
+            <ModerationScreen authGeneration={generation} />
           ) : (
             <main id="main" className="loading-page">
               <h1>Access denied</h1>
@@ -188,6 +203,7 @@ function App() {
           )
         ) : path === "/timelines" || path.startsWith("/timelines/") ? (
           <TimelineScreen
+            authGeneration={generation}
             id={
               path === "/timelines"
                 ? undefined
@@ -197,6 +213,8 @@ function App() {
           />
         ) : path === "/links" ? (
           <LinksScreen authGeneration={generation} />
+        ) : path === "/content" ? (
+          <ContentNodesScreen authGeneration={generation} />
         ) : path === "/settings/tracking" ? (
           <TrackingSettingsScreen authGeneration={generation} />
         ) : path === "/library" || path === "/" ? (

@@ -356,6 +356,44 @@ describe("isolated provider consent flow", () => {
     expect(response.status).toBe(503);
   });
 
+  it("rejects a workers.dev preview alias before reading a valid ticket", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+    const redirect = await request(`/s/${link.slug}`);
+    const ticketUrl = new URL(redirect.headers.get("Location") ?? "");
+    const ticket = ticketUrl.pathname.slice(1);
+    const configuredTrackingOrigin =
+      "https://ages-tracking-preview.account.workers.dev";
+    const appOrigin = "https://app.example.test";
+    const trackingBindings = {
+      DB: env.DB,
+      APP_ENV: "preview",
+      APP_ORIGIN: appOrigin,
+      TRACKING_ORIGIN: configuredTrackingOrigin,
+    };
+
+    const canonical = await trackingApp.request(
+      `${configuredTrackingOrigin}/${ticket}`,
+      {},
+      trackingBindings,
+    );
+    expect(canonical.status).toBe(200);
+
+    const prepare = vi.spyOn(env.DB, "prepare");
+    const alias = await trackingApp.request(
+      `https://preview-ages-tracking-preview.account.workers.dev/${ticket}`,
+      {},
+      trackingBindings,
+    );
+    const aliasHtml = await alias.text();
+    expect(alias.status).toBe(404);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(aliasHtml).not.toContain("googletagmanager.com");
+    expect(aliasHtml).not.toContain("google-analytics.com");
+    expect(aliasHtml).not.toContain("connect.facebook.net");
+    prepare.mockRestore();
+  });
+
   it("redirects a provider-enabled GET to one opaque ticket and stores only a bounded event", async () => {
     const link = await createLink();
     await configureProvider(link.id);

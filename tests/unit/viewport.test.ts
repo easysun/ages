@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   fitViewport,
+  groupPositionsByScreenBin,
+  type MarkerGroup,
   panViewport,
   resizeViewport,
   screenToWorld,
@@ -11,6 +13,28 @@ import {
 
 const limits = { minSpan: 10, maxSpan: 100_000 };
 const options = { ...limits, extent: 1000, padding: 50 };
+
+function groupsFor(
+  positions: readonly number[],
+  view: Viewport,
+  extent: number,
+  binWidth?: number,
+): MarkerGroup[] {
+  return groupPositionsByScreenBin(positions, view, extent, binWidth);
+}
+
+function countedPositions(length: number) {
+  let indexedReads = 0;
+  const values = Array.from({ length }, (_, index) => index);
+  const positions = new Proxy(values, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && /^(0|[1-9]\d*)$/.test(property))
+        indexedReads++;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  return { positions, indexedReads: () => indexedReads };
+}
 
 describe("Initial timeline framing", () => {
   it("fits story bounds with exact screen padding when within scale limits", () => {
@@ -134,6 +158,98 @@ describe("Content-independent viewport navigation", () => {
       () => panViewport(view, Number.NaN, 100),
       () => resizeViewport(view, 0, 100, limits),
     ];
+    for (const operation of invalid) expect(operation).toThrow(RangeError);
+  });
+});
+
+describe("Visible timeline marker groups", () => {
+  it("keeps all Fit all positions in only their occupied 48-pixel bins", () => {
+    const positions = Array.from({ length: 10_000 }, (_, index) => index);
+    const groups = groupsFor(positions, { center: 4999.5, span: 10_000 }, 960);
+
+    expect(groups).toHaveLength(20);
+    expect(groups[0]).toEqual({ bin: 0, first: 1, last: 500, count: 500 });
+    expect(groups[19]).toEqual({
+      bin: 19,
+      first: 9501,
+      last: 10_000,
+      count: 500,
+    });
+    expect(groups.reduce((total, group) => total + group.count, 0)).toBe(
+      10_000,
+    );
+  });
+
+  it("uses logarithmic indexed reads for a narrow visible range", () => {
+    const fixture = countedPositions(10_000);
+    const groups = groupsFor(
+      fixture.positions,
+      { center: 5000, span: 200 },
+      960,
+    );
+
+    expect(groups.reduce((total, group) => total + group.count, 0)).toBe(205);
+    expect(fixture.indexedReads()).toBeLessThan(1000);
+  });
+
+  it("uses logarithmic indexed reads when Fit all covers all 10,000 positions", () => {
+    const fixture = countedPositions(10_000);
+    const groups = groupsFor(
+      fixture.positions,
+      { center: 4999.5, span: 10_000 },
+      960,
+    );
+
+    expect(groups.reduce((total, group) => total + group.count, 0)).toBe(
+      10_000,
+    );
+    expect(groups).toHaveLength(20);
+    expect(fixture.indexedReads()).toBeLessThan(1000);
+  });
+
+  it("returns no groups for empty input and a 1-based ordinal for one point", () => {
+    expect(groupsFor([], { center: 7, span: 100 }, 100)).toEqual([]);
+    expect(groupsFor([7], { center: 7, span: 100 }, 100)).toEqual([
+      { bin: 1, first: 1, last: 1, count: 1 },
+    ]);
+  });
+
+  it("preserves inclusive clipping and half-open bin boundaries with duplicates", () => {
+    const groups = groupsFor(
+      [-61, -60, -60, -1, 0, 0, 47, 48, 48, 60, 61],
+      { center: 0, span: 96 },
+      96,
+    );
+
+    expect(groups).toEqual([
+      { bin: -1, first: 2, last: 3, count: 2 },
+      { bin: 0, first: 4, last: 4, count: 1 },
+      { bin: 1, first: 5, last: 7, count: 3 },
+      { bin: 2, first: 8, last: 10, count: 3 },
+    ]);
+    expect(groups.reduce((total, group) => total + group.count, 0)).toBe(9);
+  });
+
+  it("returns no groups when the viewport is panned outside the positions", () => {
+    expect(groupsFor([1, 2, 3], { center: 10_000, span: 100 }, 100)).toEqual(
+      [],
+    );
+  });
+
+  it("rejects invalid viewport, extent, and bin-width scalars", () => {
+    const view = { center: 100, span: 100 };
+    const invalid = [
+      () => groupsFor([], { center: Number.NaN, span: 100 }, 100),
+      () => groupsFor([], { center: 100, span: 0 }, 100),
+      () => groupsFor([], view, 0),
+      () => groupsFor([], view, -1),
+      () => groupsFor([], view, Number.POSITIVE_INFINITY),
+      () => groupsFor([], view, 100, 0),
+      () => groupsFor([], view, 100, -1),
+      () => groupsFor([], view, 100, Number.NaN),
+      () => groupsFor([], view, 100, Number.POSITIVE_INFINITY),
+    ];
+
     for (const operation of invalid) expect(operation).toThrow(RangeError);
   });
 });

@@ -30,7 +30,9 @@ export async function mutateTimeline(
   id: string,
   expectedVersion: number,
   change: Change,
+  options: { includeItems?: boolean } = {},
 ) {
+  const includeItems = options.includeItems ?? true;
   const token = crypto.randomUUID();
   const now = new Date().toISOString();
   const scope = [id, owner, expectedVersion + 1, token];
@@ -126,6 +128,9 @@ export async function mutateTimeline(
     );
   }
   // Zero-row CAS is successful SQL. Every later write and result is independently token-gated.
+  const timelineResultIndex = 1 + writes.length;
+  const itemsResultIndex = timelineResultIndex + 1;
+  const versionResultIndex = itemsResultIndex + (includeItems ? 1 : 0);
   const result = await db.batch([
     db
       .prepare(`UPDATE timelines SET version = version + 1, last_mutation_token = ?, updated_at = ?${assignments}
@@ -143,17 +148,21 @@ export async function mutateTimeline(
     db
       .prepare(`SELECT * FROM timelines WHERE id = ? AND ${gate}`)
       .bind(id, ...scope),
-    db
-      .prepare(
-        `SELECT * FROM timeline_items WHERE timeline_id = ? AND ${gate} ORDER BY position, id`,
-      )
-      .bind(id, ...scope),
+    ...(includeItems
+      ? [
+          db
+            .prepare(
+              `SELECT * FROM timeline_items WHERE timeline_id = ? AND ${gate} ORDER BY position, id`,
+            )
+            .bind(id, ...scope),
+        ]
+      : []),
     db
       .prepare("SELECT version FROM timelines WHERE id = ? AND owner_id = ?")
       .bind(id, owner),
   ]);
   if (result[0]?.meta.changes !== 1) {
-    const current = result.at(-1)?.results[0] as
+    const current = result[versionResultIndex]?.results[0] as
       | { version: number }
       | undefined;
     if (!current) throw new ApiError("NOT_FOUND");
@@ -161,8 +170,9 @@ export async function mutateTimeline(
       throw new ApiError("INVALID_REQUEST");
     throw new ApiError("CONFLICT");
   }
+  if (!includeItems) return;
   return timelinePayload(
-    result.at(-3)?.results[0] as Timeline,
-    result.at(-2)?.results as TimelineItem[],
+    result[timelineResultIndex]?.results[0] as Timeline,
+    result[itemsResultIndex]?.results as TimelineItem[],
   );
 }

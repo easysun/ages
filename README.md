@@ -82,7 +82,13 @@ Reference: [Google OpenID Connect](https://developers.google.com/identity/openid
 
 The React client is built with Vite and served through Wrangler static assets. API, auth, health, Timeline (`/t`), and short-link (`/s`) paths always reach Hono, including unknown paths in those namespaces; browser navigation falls back to the client HTML. New static output and Worker bundles stay separate. No external site hosting or deployment is part of the local build.
 
-Sign-in uses the existing Google route. The authenticated Library shows private photos/videos, exact tag filters, cursor pagination, keyboard selection, storage use, and a responsive detail dialog with tag editing, standalone Asset sharing, local QR/copy controls, and recoverable Trash/restore. Add moments sends the original File directly to the returned signed R2 PUT URL, then finalizes through JSON. Upload retries check completion first, preserving an upload whose PUT response was lost. The authenticated client navigation links the Library, Timeline editor, and owner Links workspace.
+Sign-in uses the existing Google route. The authenticated Library shows private photos/videos, exact tag filters, cursor pagination, keyboard selection, storage use, and a responsive detail dialog with tag editing, standalone Asset sharing, local QR/copy controls, and recoverable Trash/restore. Add moments sends the original File directly to the returned signed R2 PUT URL, then finalizes through JSON. Upload retries check completion first, preserving an upload whose PUT response was lost. The authenticated client navigation links the Library, Timeline editor, Content workspace, and owner Links workspace.
+
+### Content references
+
+The authenticated Content workspace creates stable references to owned Timelines or external pages, shows effective visibility after Timeline policy is applied, and supports editing, reversible removal, and restore. A reference has its own `/c/:id` URL, so editing its title or visibility does not change its identity. Public and unlisted references resolve without sign-in; unlisted pages send `noindex` and all reference pages use no-store caching. Removing a reference leaves its Timeline, original Assets, and independent Links intact.
+
+Content relationships are directed source-owner assertions: adding one does not create a reverse relation or imply endorsement by the target owner. Public references can show bounded backlinks. Unlisted relations require target-owner acceptance and appear only when the viewer already has both reference URLs; private cross-owner relations are unavailable. Every read checks current effective visibility and moderation state. Link expiry or removal does not delete the stable relationship identity.
 
 ### Owner Links and click analytics
 
@@ -91,6 +97,24 @@ The authenticated Links workspace is available at `/links` and lists existing Li
 Owners can replace each Link’s exact tags, channel labels, five UTM values, and up to ten custom query parameters. UTM and custom parameters apply to external URL destinations only. Aggregate history stays available while its Link exists, including when it is inactive; there is no automatic analytics expiry. The report does not store visitor records or estimate unique visitors.
 
 Before running `npm run check` for the first time, install the browser with `npx playwright install chromium` (CI installs Chromium and system dependencies). Browser tests run the built client through actual HTTP at `http://127.0.0.1:8791`, with `.wrangler/e2e` persistence and synthetic users, hashed sessions, and PNG media seeded by local Wrangler CLI commands. Session cookies are injected only by Playwright fixtures, with no production authentication or fixture endpoint. Tests cover anonymous gating, foreign asset isolation, real media, tag persistence, pagination, desktop keyboard controls, 375-pixel touch layouts, request races (including upload/filter and upload/sign-out), upload recovery, focus restoration after tag edits, Timeline create/edit/append/share flows, 100-item ordering, stale-version recovery, viewport navigation, and API/client routing. Test screenshots and traces are written to ignored `test-results/`.
+
+The local Chromium method pilot can optionally record bounded synthetic input observations with installed Brave:
+
+```sh
+node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run --browser=installed-brave --observe-inputs
+```
+
+This opt-in writes diagnostic sidecars under `.superpowers/sdd/trusted-stimulus-discovery/runs/`. The events come from synthetic Playwright actions; DOM `isTrusted` only identifies browser-dispatched events and does not prove human input. Input-to-next-paint remains unproven.
+
+To include bounded retained input-node evidence for offline diagnostics, use this exact opt-in:
+
+```sh
+node --experimental-strip-types scripts/capture-chromium-method-pilot.mjs --run --browser=installed-brave --observe-inputs --retain-input-nodes
+```
+
+Retained-node results remain diagnostic-only and do not qualify formal performance samples.
+
+Offline trace analysis verifies the manifest-declared trace and sidecar bytes, then reports bounded, sanitized discrete-input diagnostics. Formal action samples and input-to-next-paint measurements remain unavailable.
 
 Local upload browser scenarios simulate only the signed R2 transport: Playwright intercepts the synthetic S3 hostname, checks the PUT headers and binary body, seeds that object into local R2, and calls the real completion API. These are **simulated upload transport** checks, not evidence of cloud signature enforcement or CORS. Actual Google sign-in and live browser PUT remain the existing credentialed cloud smoke gates.
 
@@ -205,6 +229,10 @@ Trash purge claims the exact internal deletion generation in D1 before R2 deleti
 `npm run preflight -- preview` performs read-only checks against the explicitly named Wrangler environment. Build the client first with `npm run build:client`; the preflight verifies the Worker entry point, static-asset path, required route precedence, configured and live 15-minute cleanup schedule, canonical HTTPS origin, account and resource isolation, platform secret names, and an exact match between the local and remote D1 migration ledgers. Set `CLOUDFLARE_API_TOKEN` in the process environment with read access to the selected account's D1, R2, KV, and Worker scripts. The command does not apply migrations or deploy.
 
 `npm run deploy:preview` and `npm run deploy:production` run the complete local check, repeat the remote read-only preflight, then deploy only to the selected named environment. Configure real IDs, distinct resources and origins, routes, and secret values in Cloudflare before using either command. The checked-in environment IDs are placeholders, so release commands intentionally stop until provisioning is complete. Live OAuth, browser-to-R2 CORS/signatures, large uploads, the scheduled trigger, and backup recovery still require separate cloud smoke and operations checks.
+
+## Local recovery rehearsal
+
+Run `npm run recovery:drill` to apply migrations to a fresh synthetic local D1 database, export schema and data separately, restore them into a second local D1 database, and independently back up and restore a synthetic PNG in local R2. During the offline restore, the drill captures and drops all application triggers before loading exported rows, then reinstalls and compares their exact definitions. It checks live links and retained slug reservations, probes that the restored reservation trigger rejects reuse, and runs D1 `quick_check` and `foreign_key_check` before reporting success. Each run keeps its configs, SQL exports, object copies, command log, and report under the ignored `.wrangler/recovery-drills/<run-id>/` directory; the command does not access Cloudflare or production resources. A failure stops the run and preserves its evidence. The restored R2 PUT uses the source D1 `mime_type`, but the installed Wrangler CLI cannot read back stored R2 HTTP metadata, so that value is not independently verified. Run `npm run test:recovery-drill` for the local safety and comparison guards. This synthetic rehearsal does not close the Cloudflare recovery gate.
 
 ## Content reports and reversible moderation
 

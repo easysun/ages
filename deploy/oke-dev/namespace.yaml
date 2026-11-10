@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ages-dev
+  labels:
+    app.kubernetes.io/part-of: ages
+    app.kubernetes.io/managed-by: kustomize

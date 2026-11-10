@@ -1,4 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildChronologicalIndex,
+  type ChronologicalIndex,
+} from "../timeline/chronological";
 import type { timelinePayload } from "../timeline/model";
 import type { EventAt } from "../timeline/validation";
 import {
@@ -16,22 +20,206 @@ type Summary = Omit<ReturnType<typeof timelinePayload>, "items">;
 type Item = NonNullable<ReturnType<typeof timelinePayload>["items"]>[number];
 type Story = Summary & { items: Item[] };
 type Page = { timelines: Summary[]; next_cursor: string | null };
+type OverviewItem = { id: string; position: number };
+type ChronologicalOverviewItem = OverviewItem & { event_at: EventAt | null };
+type MomentAsset = {
+  id: string;
+  kind: "image" | "video";
+  original_name: string;
+  width: number | null;
+  height: number | null;
+  duration_ms: number | null;
+};
+type ItemDetail = {
+  id: string;
+  asset_id: string;
+  position: number;
+  caption: string;
+  event_at: EventAt | null;
+  asset: MomentAsset;
+};
+type OverviewPage = {
+  timeline: Summary;
+  total_items: number;
+  items: OverviewItem[];
+  next_cursor: string | null;
+};
+type ChronologicalOverviewPage = Omit<OverviewPage, "items"> & {
+  items: ChronologicalOverviewItem[];
+};
+type DetailsPage = { version: number; items: ItemDetail[] };
+type TimelineMutationRecord = {
+  operationId: string;
+  timelineId: string;
+  authGeneration: number;
+  expectedVersion: number;
+  status: "pending" | "committed";
+  committedVersion?: number;
+};
+type MutationOutcome = {
+  saved: boolean;
+  operationId?: string;
+  expectedVersion?: number;
+  committedVersion?: number;
+};
+type TimelineDraft = {
+  caption: string;
+  eventKind: "none" | "date" | "instant";
+  eventValue: string;
+  timeZone: string;
+  dirty: { caption: boolean; event: boolean };
+};
 type Navigate = (path: string) => void;
+
+function isAuthorizationFailureResponse(reason: unknown) {
+  return (
+    reason instanceof RequestError &&
+    (reason.status === 401 ||
+      reason.status === 403 ||
+      reason.code === "UNAUTHENTICATED" ||
+      reason.code === "FORBIDDEN")
+  );
+}
+
+function normalizeEventAt(value: EventAt | null): EventAt | null {
+  return value?.kind === "instant"
+    ? { ...value, instant: new Date(value.instant).toISOString() }
+    : value;
+}
 
 export function TimelineScreen({
   id,
   navigate,
+  authGeneration,
 }: {
   id?: string;
   navigate: Navigate;
+  authGeneration: number;
 }) {
+  const mutationRecords = useRef(new Map<string, TimelineMutationRecord>());
+  const authGenerationRef = useRef(authGeneration);
+  const timelineIdRef = useRef(id);
+  const [, setMutationRevision] = useState(0);
+  if (authGenerationRef.current !== authGeneration) {
+    authGenerationRef.current = authGeneration;
+    mutationRecords.current.clear();
+  }
+  timelineIdRef.current = id;
+  const updateMutationRevision = useCallback(
+    () => setMutationRevision((revision) => revision + 1),
+    [],
+  );
+  const registerMutation = useCallback(
+    (record: TimelineMutationRecord) => {
+      if (record.authGeneration !== authGenerationRef.current) return;
+      mutationRecords.current.set(record.operationId, { ...record });
+      updateMutationRevision();
+    },
+    [updateMutationRevision],
+  );
+  const acknowledgeMutation = useCallback(
+    (operationId: string, committedVersion: number) => {
+      const record = mutationRecords.current.get(operationId);
+      if (
+        !record ||
+        record.authGeneration !== authGenerationRef.current ||
+        committedVersion !== record.expectedVersion + 1
+      )
+        return;
+      record.status = "committed";
+      record.committedVersion = committedVersion;
+      updateMutationRevision();
+    },
+    [updateMutationRevision],
+  );
+  const finishMutation = useCallback(
+    (operationId: string) => {
+      const record = mutationRecords.current.get(operationId);
+      if (record?.status === "pending") {
+        mutationRecords.current.delete(operationId);
+        updateMutationRevision();
+      }
+    },
+    [updateMutationRevision],
+  );
+  const applyMutation = useCallback(
+    (operationId: string) => {
+      const record = mutationRecords.current.get(operationId);
+      if (record?.status === "committed") {
+        mutationRecords.current.delete(operationId);
+        updateMutationRevision();
+      }
+    },
+    [updateMutationRevision],
+  );
+  const reconcileMutations = useCallback(
+    (timelineId: string, requestAuthGeneration: number, version: number) => {
+      if (authGenerationRef.current !== requestAuthGeneration) return;
+      let changed = false;
+      for (const [operationId, record] of mutationRecords.current) {
+        if (
+          record.timelineId === timelineId &&
+          record.authGeneration === requestAuthGeneration &&
+          record.status === "committed" &&
+          (record.committedVersion ?? Number.POSITIVE_INFINITY) <= version
+        ) {
+          mutationRecords.current.delete(operationId);
+          changed = true;
+        }
+      }
+      if (changed) updateMutationRevision();
+    },
+    [updateMutationRevision],
+  );
+  const authorizationFailure = useCallback(
+    (timelineId: string, requestAuthGeneration: number) => {
+      if (
+        authGenerationRef.current !== requestAuthGeneration ||
+        timelineIdRef.current !== timelineId
+      )
+        return false;
+      let changed = false;
+      for (const [operationId, record] of mutationRecords.current) {
+        if (record.authGeneration === requestAuthGeneration) {
+          mutationRecords.current.delete(operationId);
+          changed = true;
+        }
+      }
+      if (changed) updateMutationRevision();
+      return true;
+    },
+    [updateMutationRevision],
+  );
+  const currentMutationRecords = id
+    ? [...mutationRecords.current.values()].filter(
+        (record) =>
+          record.timelineId === id && record.authGeneration === authGeneration,
+      )
+    : [];
   return id ? (
-    <TimelineEditor key={id} id={id} />
+    <TimelineEditor
+      key={id}
+      id={id}
+      authGeneration={authGeneration}
+      mutationRecords={currentMutationRecords}
+      registerMutation={registerMutation}
+      acknowledgeMutation={acknowledgeMutation}
+      finishMutation={finishMutation}
+      applyMutation={applyMutation}
+      reconcileMutations={reconcileMutations}
+      authorizationFailure={authorizationFailure}
+    />
   ) : (
-    <TimelineList navigate={navigate} />
+    <TimelineList navigate={navigate} authGeneration={authGeneration} />
   );
 }
-function TimelineList({ navigate }: { navigate: Navigate }) {
+function TimelineList({
+  navigate,
+  authGeneration,
+}: {
+  navigate: Navigate;
+  authGeneration: number;
+}) {
   const [stories, setStories] = useState<Summary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,54 +228,65 @@ function TimelineList({ navigate }: { navigate: Navigate }) {
   const [creating, setCreating] = useState(false);
   const [request, setRequest] = useState({ path: "/api/timelines?limit=30" });
   const live = useRef(true);
+  const authGenerationRef = useRef(authGeneration);
+  authGenerationRef.current = authGeneration;
   useEffect(() => {
     live.current = true;
+    const requestAuthGeneration = authGeneration;
+    const ownsRequest = () =>
+      live.current && authGenerationRef.current === requestAuthGeneration;
     const controller = new AbortController();
     setLoading(true);
     setError("");
     api<Page>(request.path, { signal: controller.signal })
       .then((page) => {
-        if (!controller.signal.aborted) {
+        if (ownsRequest() && !controller.signal.aborted) {
           setStories(page.timelines);
           setCursor(page.next_cursor);
         }
       })
       .catch((reason) => {
-        if (!controller.signal.aborted) setError(errorMessage(reason));
+        if (ownsRequest() && !controller.signal.aborted)
+          setError(errorMessage(reason));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false);
+        if (ownsRequest() && !controller.signal.aborted) setLoading(false);
       });
     return () => {
       live.current = false;
       controller.abort();
     };
-  }, [request]);
+  }, [request, authGeneration]);
   async function create(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setCreating(true);
     setError("");
+    const requestAuthGeneration = authGenerationRef.current;
     try {
       const result = await api<{ timeline: Story }>("/api/timelines", {
         method: "POST",
         ...jsonBody({ title }),
       });
-      if (live.current)
+      if (live.current && authGenerationRef.current === requestAuthGeneration)
         navigate(`/timelines/${encodeURIComponent(result.timeline.id)}`);
     } catch (reason) {
-      if (live.current) setError(errorMessage(reason));
+      if (live.current && authGenerationRef.current === requestAuthGeneration)
+        setError(errorMessage(reason));
     } finally {
-      if (live.current) setCreating(false);
+      if (live.current && authGenerationRef.current === requestAuthGeneration)
+        setCreating(false);
     }
   }
   async function more() {
     if (!cursor || loading) return;
+    const requestAuthGeneration = authGenerationRef.current;
     setLoading(true);
     try {
       const page = await api<Page>(
         `/api/timelines?limit=30&cursor=${encodeURIComponent(cursor)}`,
       );
-      if (!live.current) return;
+      if (!live.current || authGenerationRef.current !== requestAuthGeneration)
+        return;
       setStories((current) => [
         ...current,
         ...page.timelines.filter(
@@ -96,9 +295,11 @@ function TimelineList({ navigate }: { navigate: Navigate }) {
       ]);
       setCursor(page.next_cursor);
     } catch (reason) {
-      if (live.current) setError(errorMessage(reason));
+      if (live.current && authGenerationRef.current === requestAuthGeneration)
+        setError(errorMessage(reason));
     } finally {
-      if (live.current) setLoading(false);
+      if (live.current && authGenerationRef.current === requestAuthGeneration)
+        setLoading(false);
     }
   }
   return (
@@ -183,55 +384,634 @@ function TimelineList({ navigate }: { navigate: Navigate }) {
   );
 }
 
-function TimelineEditor({ id }: { id: string }) {
-  const [story, setStory] = useState<Story | null>(null);
+function TimelineEditor({
+  id,
+  authGeneration,
+  mutationRecords,
+  registerMutation,
+  acknowledgeMutation,
+  finishMutation,
+  applyMutation,
+  reconcileMutations,
+  authorizationFailure,
+}: {
+  id: string;
+  authGeneration: number;
+  mutationRecords: TimelineMutationRecord[];
+  registerMutation: (record: TimelineMutationRecord) => void;
+  acknowledgeMutation: (operationId: string, committedVersion: number) => void;
+  finishMutation: (operationId: string) => void;
+  applyMutation: (operationId: string) => void;
+  reconcileMutations: (
+    timelineId: string,
+    authGeneration: number,
+    version: number,
+  ) => void;
+  authorizationFailure: (timelineId: string, authGeneration: number) => boolean;
+}) {
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [indexItems, setIndexItems] = useState<OverviewItem[]>([]);
+  const [chronologicalSnapshot, setChronologicalSnapshot] = useState<{
+    version: number;
+    items: ChronologicalOverviewItem[];
+    index: ChronologicalIndex;
+  } | null>(null);
+  const [chronologicalLoading, setChronologicalLoading] = useState(false);
+  const [chronologicalError, setChronologicalError] = useState("");
+  const [authorizationFailed, setAuthorizationFailed] = useState(false);
+  const [totalItems, setTotalItems] = useState(0);
+  const [snapshotVersion, setSnapshotVersion] = useState<number | null>(null);
+  const [itemDetails, setItemDetails] = useState<ItemDetail[]>([]);
+  const [itemDetailsVersion, setItemDetailsVersion] = useState<number | null>(
+    null,
+  );
+  const [rangeStart, setRangeStart] = useState(0);
+  const [goToValue, setGoToValue] = useState("1");
+  const [drafts, setDrafts] = useState<Record<string, TimelineDraft>>({});
+  const [itemNotices, setItemNotices] = useState<Record<string, string>>({});
   const [assets, setAssets] = useState<Record<string, LibraryAsset>>({});
   const [library, setLibrary] = useState<LibraryAsset[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [libraryError, setLibraryError] = useState("");
   const [assetError, setAssetError] = useState("");
   const [libraryLoading, setLibraryLoading] = useState(false);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [overviewProgress, setOverviewProgress] = useState(0);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [writePaused, setWritePaused] = useState(mutationRecords.length > 0);
   const [picker, setPicker] = useState(false);
-  const [request, setRequest] = useState({ id });
+  const [overviewRequest, setOverviewRequest] = useState(0);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const [focusRequestVersion, setFocusRequestVersion] = useState(0);
+  const [focusHeadingRequested, setFocusHeadingRequested] = useState(false);
   const live = useRef(true);
   const writing = useRef(false);
-  const current = useRef<Story | null>(null);
+  const writeVersion = useRef<number | null>(null);
+  const overviewGeneration = useRef(0);
+  const detailGeneration = useRef(0);
+  const mutationGeneration = useRef(0);
+  const mutationController = useRef<AbortController | null>(null);
+  const reconciliationPending = useRef(false);
+  const authGenerationRef = useRef(authGeneration);
+  const previousAuthGeneration = useRef(authGeneration);
+  const overviewAuthGeneration = useRef(authGeneration);
+  const overviewRequestRef = useRef(overviewRequest);
+  const detailRetryRef = useRef(detailRetry);
+  const chronologicalSnapshotRef = useRef(chronologicalSnapshot);
+  const mutationRecordsRef = useRef(mutationRecords);
+  const authorizationFailedRef = useRef(authorizationFailed);
+  const snapshotVersionRef = useRef(snapshotVersion);
+  const itemDetailsRef = useRef(itemDetails);
+  const itemDetailsVersionRef = useRef(itemDetailsVersion);
+  const visibleIdsRef = useRef<string[]>([]);
+  const reconciliationRequestedVersion = useRef<number | null>(null);
+  const detailsReadyRef = useRef(false);
+  const writePausedRef = useRef(writePaused);
+  const indexItemsRef = useRef(indexItems);
+  const totalItemsRef = useRef(totalItems);
+  const readinessWaiters = useRef<Array<() => void>>([]);
+  const pendingFocus = useRef<{ id: string; field: string } | null>(null);
+  const focusedFieldsById = useRef(new Map<string, string>());
+  const heading = useRef<HTMLHeadingElement>(null);
   const pickerOpener = useRef<HTMLButtonElement>(null);
-  const receive = useCallback((next: Story) => {
-    if (current.current && next.version < current.current.version) return;
-    current.current = next;
-    setStory(next);
+
+  const releaseReadinessWaiters = useCallback(() => {
+    for (const resolve of readinessWaiters.current.splice(0)) resolve();
   }, []);
+  const refreshOverview = useCallback(() => {
+    overviewGeneration.current++;
+    detailGeneration.current++;
+    reconciliationPending.current = true;
+    writePausedRef.current = true;
+    setWritePaused(true);
+    chronologicalSnapshotRef.current = null;
+    setChronologicalSnapshot(null);
+    setChronologicalError("");
+    setOverviewRequest((current) => current + 1);
+  }, []);
+  const visibleIndexItems = indexItems.slice(rangeStart, rangeStart + 100);
+  overviewRequestRef.current = overviewRequest;
+  detailRetryRef.current = detailRetry;
+  chronologicalSnapshotRef.current = chronologicalSnapshot;
+  mutationRecordsRef.current = mutationRecords;
+  authorizationFailedRef.current = authorizationFailed;
+  snapshotVersionRef.current = snapshotVersion;
+  itemDetailsRef.current = itemDetails;
+  itemDetailsVersionRef.current = itemDetailsVersion;
+  visibleIdsRef.current = visibleIndexItems.map((item) => item.id);
+
+  const viewportPositions = useMemo(
+    () => indexItems.map((item) => item.position),
+    [indexItems],
+  );
+  const indexedIds = new Set(indexItems.map((item) => item.id));
+  const unresolvedDrafts = Object.entries(drafts).filter(
+    ([itemId, draft]) =>
+      !indexedIds.has(itemId) && (draft.dirty.caption || draft.dirty.event),
+  );
+  const outstandingMutations = mutationRecords.filter(
+    (record) =>
+      record.timelineId === id && record.authGeneration === authGeneration,
+  );
+  const requiredCommitVersion = outstandingMutations.reduce(
+    (latest, record) =>
+      record.status === "committed"
+        ? Math.max(latest, record.committedVersion ?? latest)
+        : latest,
+    0,
+  );
+  const detailsReady =
+    previousAuthGeneration.current === authGeneration &&
+    snapshotVersion !== null &&
+    itemDetailsVersion === snapshotVersion &&
+    itemDetails.length === visibleIndexItems.length &&
+    itemDetails.every(
+      (item, index) => item.id === visibleIndexItems[index]?.id,
+    );
+  authGenerationRef.current = authGeneration;
+  const authGenerationIsCurrent =
+    previousAuthGeneration.current === authGeneration;
+  const editorWritePaused =
+    writePaused || !authGenerationIsCurrent || outstandingMutations.length > 0;
+  detailsReadyRef.current = detailsReady && authGenerationIsCurrent;
+  writePausedRef.current = editorWritePaused;
+  indexItemsRef.current = indexItems;
+  totalItemsRef.current = totalItems;
+
+  const clearPrivateState = useCallback(
+    (reason: unknown, requestAuthGeneration: number) => {
+      if (
+        authGenerationRef.current !== requestAuthGeneration ||
+        !authorizationFailure(id, requestAuthGeneration)
+      )
+        return;
+      authorizationFailedRef.current = true;
+      overviewGeneration.current++;
+      detailGeneration.current++;
+      mutationGeneration.current++;
+      mutationController.current?.abort();
+      writing.current = false;
+      writeVersion.current = null;
+      reconciliationRequestedVersion.current = null;
+      indexItemsRef.current = [];
+      totalItemsRef.current = 0;
+      releaseReadinessWaiters();
+      setAuthorizationFailed(true);
+      setSummary(null);
+      setIndexItems([]);
+      setChronologicalSnapshot(null);
+      setChronologicalLoading(false);
+      setChronologicalError("");
+      setItemDetails([]);
+      setItemDetailsVersion(null);
+      setTotalItems(0);
+      setRangeStart(0);
+      setGoToValue("1");
+      setDrafts({});
+      setItemNotices({});
+      setAssets({});
+      setLibrary([]);
+      setCursor(null);
+      setLibraryError("");
+      setAssetError("");
+      setLibraryLoading(false);
+      setOverviewLoading(false);
+      setDetailLoading(false);
+      setDetailError("");
+      setError(
+        reason instanceof RequestError && reason.status === 403
+          ? "You no longer have access to this private timeline."
+          : errorMessage(reason),
+      );
+      setNotice("");
+      setBusy(false);
+      writePausedRef.current = true;
+      setWritePaused(true);
+      setPicker(false);
+      pendingFocus.current = null;
+    },
+    [authorizationFailure, id, releaseReadinessWaiters],
+  );
+
   useEffect(() => {
     live.current = true;
-    const controller = new AbortController();
-    setError("");
-    api<{ timeline: Story }>(
-      `/api/timelines/${encodeURIComponent(request.id)}`,
-      {
-        signal: controller.signal,
-      },
-    )
-      .then((result) => {
-        if (!controller.signal.aborted) receive(result.timeline);
-      })
-      .catch((reason) => {
-        if (!controller.signal.aborted) setError(errorMessage(reason));
-      });
     return () => {
       live.current = false;
-      controller.abort();
+      overviewGeneration.current++;
+      detailGeneration.current++;
+      mutationGeneration.current++;
+      releaseReadinessWaiters();
     };
-  }, [request, receive]);
+  }, [releaseReadinessWaiters]);
+
   useEffect(() => {
+    if (previousAuthGeneration.current === authGeneration) return;
+    previousAuthGeneration.current = authGeneration;
+    overviewGeneration.current++;
+    detailGeneration.current++;
+    mutationGeneration.current++;
+    mutationController.current?.abort();
+    writing.current = false;
+    reconciliationPending.current = mutationRecords.length > 0;
+    releaseReadinessWaiters();
+    authorizationFailedRef.current = false;
+    writeVersion.current = null;
+    indexItemsRef.current = [];
+    totalItemsRef.current = 0;
+    chronologicalSnapshotRef.current = null;
+    reconciliationRequestedVersion.current = null;
+    setAuthorizationFailed(false);
+    setSummary(null);
+    setIndexItems([]);
+    setChronologicalSnapshot(null);
+    setChronologicalLoading(false);
+    setChronologicalError("");
+    setItemDetails([]);
+    setItemDetailsVersion(null);
+    setTotalItems(0);
+    setRangeStart(0);
+    setGoToValue("1");
+    setDrafts({});
+    setItemNotices({});
+    setAssets({});
+    setLibrary([]);
+    setCursor(null);
+    setLibraryError("");
+    setAssetError("");
+    setPicker(false);
+    setBusy(false);
+    setError("");
+    setWritePaused(mutationRecords.length > 0);
+    setSnapshotVersion(null);
+    setOverviewRequest((current) => current + 1);
+  }, [authGeneration, mutationRecords.length, releaseReadinessWaiters]);
+
+  useEffect(() => {
+    if (!detailsReady || editorWritePaused) return;
+    for (const resolve of readinessWaiters.current.splice(0)) resolve();
+  }, [detailsReady, editorWritePaused]);
+
+  useEffect(() => {
+    if (
+      !requiredCommitVersion ||
+      snapshotVersion === null ||
+      snapshotVersion < requiredCommitVersion ||
+      !detailsReady ||
+      chronologicalSnapshot?.version !== snapshotVersion
+    )
+      return;
+    reconcileMutations(id, authGeneration, snapshotVersion);
+  }, [
+    authGeneration,
+    chronologicalSnapshot?.version,
+    detailsReady,
+    id,
+    reconcileMutations,
+    requiredCommitVersion,
+    snapshotVersion,
+  ]);
+
+  useEffect(() => {
+    if (authorizationFailed) return;
+    const generation = ++overviewGeneration.current;
+    const requestOverviewRevision = overviewRequest;
+    const requestAuthGeneration = authGeneration;
     const controller = new AbortController();
+    const ownsRequest = () =>
+      live.current &&
+      !authorizationFailedRef.current &&
+      authGenerationRef.current === requestAuthGeneration &&
+      generation === overviewGeneration.current &&
+      overviewRequestRef.current === requestOverviewRevision &&
+      !controller.signal.aborted;
+    setOverviewLoading(true);
+    setChronologicalLoading(true);
+    setOverviewProgress(0);
+    setChronologicalError("");
+    async function fetchPage(params: URLSearchParams) {
+      for (let pageAttempt = 0; pageAttempt < 2; pageAttempt++) {
+        try {
+          return await api<ChronologicalOverviewPage>(
+            `/api/timelines/${encodeURIComponent(id)}/overview?${params}`,
+            { signal: controller.signal },
+          );
+        } catch (reason) {
+          if (
+            isAuthorizationFailureResponse(reason) &&
+            authGenerationRef.current === requestAuthGeneration
+          )
+            clearPrivateState(reason, requestAuthGeneration);
+          if (
+            pageAttempt === 0 &&
+            !(
+              reason instanceof RequestError &&
+              (reason.code === "CONFLICT" || reason.status === 409)
+            ) &&
+            !isAuthorizationFailureResponse(reason) &&
+            ownsRequest()
+          )
+            continue;
+          throw reason;
+        }
+      }
+      throw new Error("The chronological timeline index could not be loaded.");
+    }
+    async function load() {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          let version: number | null = null;
+          let firstPage: ChronologicalOverviewPage | null = null;
+          let cursorValue: string | null = null;
+          const allItems: ChronologicalOverviewItem[] = [];
+          do {
+            const params = new URLSearchParams({
+              limit: "1000",
+              projection: "chronological",
+            });
+            if (version !== null) params.set("version", String(version));
+            if (cursorValue) params.set("cursor", cursorValue);
+            const page = await fetchPage(params);
+            if (!ownsRequest()) return;
+            if (!firstPage) {
+              if (page.timeline.id !== id)
+                throw new Error("The timeline index belongs to another story.");
+              firstPage = page;
+              version = page.timeline.version;
+            } else if (
+              page.timeline.id !== id ||
+              page.timeline.version !== version ||
+              page.total_items !== firstPage.total_items
+            ) {
+              throw new RequestError(
+                "CONFLICT",
+                "The timeline changed while its chronological index was loading.",
+                409,
+              );
+            }
+            allItems.push(...page.items);
+            cursorValue = page.next_cursor;
+            setOverviewProgress(allItems.length);
+          } while (cursorValue);
+          if (!ownsRequest() || !firstPage || version === null) return;
+          const latestCommit = mutationRecordsRef.current.reduce(
+            (latest, record) =>
+              record.timelineId === id &&
+              record.authGeneration === requestAuthGeneration &&
+              record.status === "committed"
+                ? Math.max(latest, record.committedVersion ?? latest)
+                : latest,
+            0,
+          );
+          if (
+            allItems.length !== firstPage.total_items ||
+            new Set(allItems.map((item) => item.id)).size !== allItems.length ||
+            version < latestCommit
+          )
+            throw new RequestError(
+              "CONFLICT",
+              "The timeline changed while its index was loading.",
+              409,
+            );
+          const storyItems = allItems.map(({ id: itemId, position }) => ({
+            id: itemId,
+            position,
+          }));
+          const chronologicalSnapshot = {
+            version,
+            items: allItems,
+            index: buildChronologicalIndex(allItems),
+          };
+          overviewAuthGeneration.current = requestAuthGeneration;
+          if (
+            pendingFocus.current &&
+            !storyItems.some((item) => item.id === pendingFocus.current?.id)
+          )
+            pendingFocus.current = null;
+          setSummary(firstPage.timeline);
+          setIndexItems(storyItems);
+          indexItemsRef.current = storyItems;
+          setTotalItems(firstPage.total_items);
+          totalItemsRef.current = firstPage.total_items;
+          setSnapshotVersion(version);
+          snapshotVersionRef.current = version;
+          writeVersion.current = version;
+          chronologicalSnapshotRef.current = chronologicalSnapshot;
+          setChronologicalSnapshot(chronologicalSnapshot);
+          setRangeStart((current) => {
+            const focused = pendingFocus.current;
+            if (focused) {
+              const index = storyItems.findIndex(
+                (item) => item.id === focused.id,
+              );
+              if (index >= 0) return Math.floor(index / 100) * 100;
+            }
+            if (!storyItems.length) return 0;
+            const lastPageStart =
+              Math.floor((storyItems.length - 1) / 100) * 100;
+            return Math.min(current, lastPageStart);
+          });
+          setGoToValue((current) => {
+            if (!storyItems.length) return "1";
+            return String(
+              Math.min(Math.max(Number(current) || 1, 1), storyItems.length),
+            );
+          });
+          setChronologicalError("");
+          return;
+        } catch (reason) {
+          if (
+            isAuthorizationFailureResponse(reason) &&
+            authGenerationRef.current === requestAuthGeneration
+          )
+            clearPrivateState(reason, requestAuthGeneration);
+          if (!ownsRequest()) return;
+          if (
+            attempt === 0 &&
+            reason instanceof RequestError &&
+            reason.code === "CONFLICT"
+          ) {
+            setOverviewProgress(0);
+            continue;
+          }
+          setError(errorMessage(reason));
+          setChronologicalError(errorMessage(reason));
+          setWritePaused(true);
+          writePausedRef.current = true;
+          releaseReadinessWaiters();
+          return;
+        }
+      }
+    }
+    void load().finally(() => {
+      if (ownsRequest()) {
+        setOverviewLoading(false);
+        setChronologicalLoading(false);
+      }
+    });
+    return () => controller.abort();
+  }, [
+    id,
+    overviewRequest,
+    authGeneration,
+    authorizationFailed,
+    clearPrivateState,
+    releaseReadinessWaiters,
+  ]);
+
+  const firstVisibleItem = indexItems[rangeStart];
+
+  useEffect(() => {
+    if (
+      !summary?.id ||
+      snapshotVersion === null ||
+      overviewAuthGeneration.current !== authGeneration
+    )
+      return;
+    const generation = ++detailGeneration.current;
+    const requestAuthGeneration = authGeneration;
+    const controller = new AbortController();
+    const requestedVersion = snapshotVersion;
+    const requestedRetryGeneration = detailRetry;
+    const first = firstVisibleItem;
+    const ownsRequest = () =>
+      live.current &&
+      authGenerationRef.current === requestAuthGeneration &&
+      generation === detailGeneration.current &&
+      requestedVersion === snapshotVersion &&
+      detailRetryRef.current === requestedRetryGeneration &&
+      !controller.signal.aborted;
+    setDetailError("");
+    if (!first) {
+      setItemDetails([]);
+      setItemDetailsVersion(requestedVersion);
+      setDetailLoading(false);
+      setFocusRequestVersion((current) => current + 1);
+      if (reconciliationPending.current) {
+        reconciliationPending.current = false;
+        setWritePaused(false);
+      }
+      return () => controller.abort();
+    }
+    setDetailLoading(true);
+    const params = new URLSearchParams({
+      version: String(requestedVersion),
+      limit: "100",
+      from_position: String(first.position),
+      from_id: first.id,
+    });
+    api<DetailsPage>(
+      `/api/timelines/${encodeURIComponent(id)}/items?${params}`,
+      { signal: controller.signal },
+    )
+      .then((page) => {
+        if (!ownsRequest()) return;
+        if (page.version !== requestedVersion) return;
+        setItemDetails(page.items);
+        setItemDetailsVersion(page.version);
+        setFocusRequestVersion((current) => current + 1);
+        if (reconciliationPending.current) {
+          reconciliationPending.current = false;
+          setWritePaused(false);
+        }
+      })
+      .catch((reason) => {
+        if (!ownsRequest()) return;
+        if (isAuthorizationFailureResponse(reason)) {
+          clearPrivateState(reason, requestAuthGeneration);
+          return;
+        }
+        if (reason instanceof RequestError && reason.code === "CONFLICT") {
+          reconciliationPending.current = true;
+          setWritePaused(true);
+          setOverviewRequest((current) => current + 1);
+        } else {
+          setDetailError(errorMessage(reason));
+          releaseReadinessWaiters();
+        }
+      })
+      .finally(() => {
+        if (ownsRequest()) setDetailLoading(false);
+      });
+    return () => controller.abort();
+  }, [
+    id,
+    summary?.id,
+    snapshotVersion,
+    firstVisibleItem,
+    detailRetry,
+    authGeneration,
+    clearPrivateState,
+    releaseReadinessWaiters,
+  ]);
+
+  useEffect(() => {
+    if (focusHeadingRequested && !detailLoading) {
+      heading.current?.focus();
+      setFocusHeadingRequested(false);
+    }
+  }, [focusHeadingRequested, detailLoading]);
+
+  useEffect(() => {
+    if (!focusRequestVersion || !detailsReady || !pendingFocus.current) return;
+    const focus = pendingFocus.current;
+    const focusedField = document.getElementById(
+      `item-${focus.id}-${focus.field}`,
+    );
+    const target =
+      focusedField instanceof HTMLElement
+        ? focusedField
+        : document.getElementById(`item-${focus.id}-caption`);
+    pendingFocus.current = null;
+    if (target instanceof HTMLElement) target.focus();
+  }, [detailsReady, focusRequestVersion]);
+
+  useEffect(() => {
+    const coverId = summary?.cover_asset_id;
+    if (!coverId || assets[coverId]) {
+      setAssetError("");
+      return;
+    }
+    const requestAuthGeneration = authGeneration;
+    const controller = new AbortController();
+    const ownsRequest = () =>
+      live.current &&
+      authGenerationRef.current === requestAuthGeneration &&
+      previousAuthGeneration.current === requestAuthGeneration &&
+      !controller.signal.aborted;
+    api<{ asset: LibraryAsset }>(`/api/assets/${encodeURIComponent(coverId)}`, {
+      signal: controller.signal,
+    })
+      .then((result) => {
+        if (ownsRequest())
+          setAssets((current) => ({ ...current, [coverId]: result.asset }));
+      })
+      .catch((reason) => {
+        if (!ownsRequest()) return;
+        if (isAuthorizationFailureResponse(reason)) {
+          clearPrivateState(reason, requestAuthGeneration);
+          return;
+        }
+        setAssetError(errorMessage(reason));
+      });
+    return () => controller.abort();
+  }, [summary?.cover_asset_id, assets, authGeneration, clearPrivateState]);
+
+  useEffect(() => {
+    const requestAuthGeneration = authGeneration;
+    const controller = new AbortController();
+    const ownsRequest = () =>
+      live.current &&
+      authGenerationRef.current === requestAuthGeneration &&
+      previousAuthGeneration.current === requestAuthGeneration &&
+      !controller.signal.aborted;
     setLibraryLoading(true);
     api<LibraryPage>("/api/assets?limit=100", { signal: controller.signal })
       .then((page) => {
-        if (controller.signal.aborted) return;
+        if (!ownsRequest()) return;
         setLibrary(page.assets);
         setCursor(page.next_cursor);
         setAssets(
@@ -239,59 +1019,39 @@ function TimelineEditor({ id }: { id: string }) {
         );
       })
       .catch((reason) => {
-        if (!controller.signal.aborted) setLibraryError(errorMessage(reason));
+        if (!ownsRequest()) return;
+        if (isAuthorizationFailureResponse(reason)) {
+          clearPrivateState(reason, requestAuthGeneration);
+          return;
+        }
+        setLibraryError(errorMessage(reason));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLibraryLoading(false);
+        if (ownsRequest()) setLibraryLoading(false);
       });
     return () => controller.abort();
-  }, []);
-  useEffect(() => {
-    const missing = [
-      ...new Set([
-        ...(story?.items.map((item) => item.asset_id) ?? []),
-        ...(story?.cover_asset_id ? [story.cover_asset_id] : []),
-      ]),
-    ].filter((assetId) => !assets[assetId]);
-    if (!missing.length) {
-      setAssetError("");
-      return;
-    }
-    setAssetError("");
-    const controller = new AbortController();
-    Promise.allSettled(
-      missing.map((assetId) =>
-        api<{ asset: LibraryAsset }>(
-          `/api/assets/${encodeURIComponent(assetId)}`,
-          { signal: controller.signal },
-        ),
-      ),
-    ).then((results) => {
-      if (controller.signal.aborted) return;
-      if (results.some((result) => result.status === "rejected"))
-        setAssetError(
-          "Some media details could not be loaded. Your story is still saved.",
-        );
-      const found = results.flatMap((result) =>
-        result.status === "fulfilled" ? [result.value.asset] : [],
-      );
-      if (found.length)
-        setAssets((existing) => ({
-          ...existing,
-          ...Object.fromEntries(found.map((asset) => [asset.id, asset])),
-        }));
-    });
-    return () => controller.abort();
-  }, [story, assets]);
+  }, [authGeneration, clearPrivateState]);
+
   async function libraryPage(next?: string) {
     if (libraryLoading) return;
+    const requestAuthGeneration = authGenerationRef.current;
+    if (
+      requestAuthGeneration !== authGeneration ||
+      previousAuthGeneration.current !== requestAuthGeneration
+    )
+      return;
     setLibraryLoading(true);
     setLibraryError("");
     try {
       const page = await api<LibraryPage>(
         `/api/assets?limit=100${next ? `&cursor=${encodeURIComponent(next)}` : ""}`,
       );
-      if (!live.current) return;
+      if (
+        !live.current ||
+        authGenerationRef.current !== requestAuthGeneration ||
+        previousAuthGeneration.current !== requestAuthGeneration
+      )
+        return;
       setLibrary((existing) =>
         next
           ? [
@@ -308,84 +1068,637 @@ function TimelineEditor({ id }: { id: string }) {
         ...Object.fromEntries(page.assets.map((asset) => [asset.id, asset])),
       }));
     } catch (reason) {
-      if (live.current) setLibraryError(errorMessage(reason));
+      if (
+        live.current &&
+        authGenerationRef.current === requestAuthGeneration &&
+        previousAuthGeneration.current === requestAuthGeneration
+      ) {
+        if (isAuthorizationFailureResponse(reason))
+          clearPrivateState(reason, requestAuthGeneration);
+        else setLibraryError(errorMessage(reason));
+      }
     } finally {
-      if (live.current) setLibraryLoading(false);
+      if (
+        live.current &&
+        authGenerationRef.current === requestAuthGeneration &&
+        previousAuthGeneration.current === requestAuthGeneration
+      )
+        setLibraryLoading(false);
     }
   }
+
+  function baselineDraft(item: ItemDetail): TimelineDraft {
+    return {
+      caption: item.caption,
+      eventKind: item.event_at?.kind ?? "none",
+      eventValue:
+        item.event_at?.kind === "date"
+          ? item.event_at.date
+          : item.event_at?.kind === "instant"
+            ? item.event_at.instant
+            : "",
+      timeZone:
+        item.event_at?.time_zone ??
+        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      dirty: { caption: false, event: false },
+    };
+  }
+
+  function rebaseDraft(
+    item: ItemDetail,
+    draft: TimelineDraft | undefined,
+  ): TimelineDraft {
+    const baseline = baselineDraft(item);
+    if (!draft) return baseline;
+    return {
+      caption: draft.dirty.caption ? draft.caption : baseline.caption,
+      eventKind: draft.dirty.event ? draft.eventKind : baseline.eventKind,
+      eventValue: draft.dirty.event ? draft.eventValue : baseline.eventValue,
+      timeZone: draft.dirty.event ? draft.timeZone : baseline.timeZone,
+      dirty: draft.dirty,
+    };
+  }
+
+  function draftFor(item: ItemDetail): TimelineDraft {
+    return rebaseDraft(item, drafts[item.id]);
+  }
+
+  function changeDraft(
+    item: ItemDetail,
+    patch: Partial<Omit<TimelineDraft, "dirty">>,
+    field: "caption" | "event",
+  ) {
+    setItemNotices((current) => {
+      if (!current[item.id]) return current;
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+    setDrafts((current) => {
+      const previous = rebaseDraft(item, current[item.id]);
+      return {
+        ...current,
+        [item.id]: {
+          ...previous,
+          ...patch,
+          dirty: { ...previous.dirty, [field]: true },
+        },
+      };
+    });
+  }
+
+  function waitUntilReady(requestAuthGeneration: number) {
+    if (
+      !live.current ||
+      authGenerationRef.current !== requestAuthGeneration ||
+      previousAuthGeneration.current !== requestAuthGeneration
+    )
+      return Promise.resolve(false);
+    if (detailsReadyRef.current && !writePausedRef.current)
+      return Promise.resolve(true);
+    return new Promise<boolean>((resolve) => {
+      readinessWaiters.current.push(() =>
+        resolve(
+          live.current &&
+            authGenerationRef.current === requestAuthGeneration &&
+            previousAuthGeneration.current === requestAuthGeneration &&
+            detailsReadyRef.current &&
+            !writePausedRef.current,
+        ),
+      );
+    });
+  }
+
+  function beginDetailReconciliation() {
+    reconciliationPending.current = true;
+    writePausedRef.current = true;
+    setWritePaused(true);
+  }
+
+  function requestFieldFocus(itemId: string, field: string) {
+    focusedFieldsById.current.set(itemId, field);
+    pendingFocus.current = { id: itemId, field };
+  }
+
+  function selectChronologicalItem(itemId: string) {
+    const ordinal =
+      chronologicalSnapshotRef.current?.index.storyOrdinalById.get(itemId);
+    if (!ordinal) return;
+    const field = focusedFieldsById.current.get(itemId) ?? "caption";
+    pendingFocus.current = { id: itemId, field };
+    setGoToValue(String(ordinal));
+    setRangeStart(Math.floor((ordinal - 1) / 100) * 100);
+    setFocusHeadingRequested(false);
+    setFocusRequestVersion((current) => current + 1);
+  }
+
   async function mutation(
     path: string,
     method: string,
     change: Record<string, unknown>,
-  ) {
-    if (writing.current || !current.current) return false;
+    updateDisplayedSnapshot = path === "" && method === "PATCH",
+  ): Promise<MutationOutcome> {
+    if (
+      writing.current ||
+      writePausedRef.current ||
+      !summary ||
+      !detailsReadyRef.current ||
+      authGenerationRef.current !== authGeneration ||
+      previousAuthGeneration.current !== authGeneration ||
+      writeVersion.current === null
+    )
+      return { saved: false };
     writing.current = true;
+    const operation = ++mutationGeneration.current;
+    const operationId = crypto.randomUUID();
+    const requestAuthGeneration = authGenerationRef.current;
+    const expectedVersion = writeVersion.current;
+    registerMutation({
+      operationId,
+      timelineId: id,
+      authGeneration: requestAuthGeneration,
+      expectedVersion,
+      status: "pending",
+    });
+    const controller = new AbortController();
+    mutationController.current = controller;
+    const ownsEditor = () =>
+      live.current &&
+      authGenerationRef.current === requestAuthGeneration &&
+      previousAuthGeneration.current === requestAuthGeneration &&
+      !controller.signal.aborted;
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const result = await api<{ timeline: Story }>(
-        `/api/timelines/${encodeURIComponent(id)}${path}`,
-        {
-          method,
-          ...jsonBody({ expected_version: current.current.version, ...change }),
-        },
+      const body = jsonBody({ expected_version: expectedVersion, ...change });
+      await api<void>(`/api/timelines/${encodeURIComponent(id)}${path}`, {
+        method,
+        ...body,
+        headers: { ...body.headers, Prefer: "return=minimal" },
+        signal: controller.signal,
+      });
+      const committedVersion = expectedVersion + 1;
+      acknowledgeMutation(operationId, committedVersion);
+      writePausedRef.current = true;
+      overviewGeneration.current++;
+      detailGeneration.current++;
+      if (!ownsEditor())
+        return {
+          saved: true,
+          operationId,
+          expectedVersion,
+          committedVersion,
+        };
+      writeVersion.current = committedVersion;
+      setSummary((current) =>
+        current ? { ...current, version: committedVersion } : current,
       );
-      if (!live.current) return false;
-      receive(result.timeline);
-      return true;
-    } catch (reason) {
-      if (!live.current) return false;
-      if (reason instanceof RequestError && reason.code === "CONFLICT") {
-        try {
-          const result = await api<{ timeline: Story }>(
-            `/api/timelines/${encodeURIComponent(id)}`,
-          );
-          if (!live.current) return false;
-          receive(result.timeline);
-          setError(
-            "This timeline changed elsewhere. The latest story is loaded and your unsaved drafts are kept. Review them and try again.",
-          );
-        } catch (refreshError) {
-          if (live.current)
-            setError(
-              `The timeline changed elsewhere. ${errorMessage(refreshError)} Retry loading before saving again.`,
-            );
+      if (path === "" && method === "PATCH")
+        setSummary((current) =>
+          current
+            ? { ...current, ...change, version: committedVersion }
+            : current,
+        );
+      if (
+        updateDisplayedSnapshot &&
+        snapshotVersionRef.current === expectedVersion
+      ) {
+        snapshotVersionRef.current = committedVersion;
+        setSnapshotVersion(committedVersion);
+        if (itemDetailsVersionRef.current === expectedVersion) {
+          itemDetailsVersionRef.current = committedVersion;
+          setItemDetailsVersion(committedVersion);
         }
+        const currentChronology = chronologicalSnapshotRef.current;
+        if (currentChronology?.version === expectedVersion) {
+          const nextChronology = {
+            ...currentChronology,
+            version: committedVersion,
+          };
+          chronologicalSnapshotRef.current = nextChronology;
+          setChronologicalSnapshot(nextChronology);
+          if (
+            itemDetailsVersionRef.current === committedVersion &&
+            detailsReadyRef.current
+          ) {
+            applyMutation(operationId);
+            writePausedRef.current = writePaused;
+          }
+        }
+      } else if (updateDisplayedSnapshot && ownsEditor()) refreshOverview();
+      return {
+        saved: true,
+        operationId,
+        expectedVersion,
+        committedVersion,
+      };
+    } catch (reason) {
+      finishMutation(operationId);
+      if (isAuthorizationFailureResponse(reason)) {
+        clearPrivateState(reason, requestAuthGeneration);
+        return { saved: false, operationId, expectedVersion };
+      }
+      if (!ownsEditor()) return { saved: false, operationId, expectedVersion };
+      if (reason instanceof RequestError && reason.code === "CONFLICT") {
+        setError(
+          "This timeline changed elsewhere. The latest story is loading and your unsaved drafts are kept. Review them and try again.",
+        );
+        refreshOverview();
       } else setError(errorMessage(reason));
-      return false;
+      return { saved: false, operationId, expectedVersion };
     } finally {
-      writing.current = false;
-      if (live.current) setBusy(false);
+      if (
+        operation === mutationGeneration.current &&
+        authGenerationRef.current === requestAuthGeneration &&
+        previousAuthGeneration.current === requestAuthGeneration
+      ) {
+        writing.current = false;
+        mutationController.current = null;
+        if (live.current) setBusy(false);
+      }
     }
   }
-  async function append(ids: string[]) {
+
+  function sameEventDraft(left: TimelineDraft, right: TimelineDraft) {
+    return (
+      left.eventKind === right.eventKind &&
+      left.eventValue === right.eventValue &&
+      left.timeZone === right.timeZone
+    );
+  }
+
+  function patchChronologicalEvent(
+    itemId: string,
+    expectedVersion: number,
+    committedVersion: number,
+    eventAt: EventAt | null,
+  ) {
+    const current = chronologicalSnapshotRef.current;
+    if (!current || current.version !== expectedVersion) return false;
+    let found = false;
+    const items = current.items.map((item) => {
+      if (item.id !== itemId) return item;
+      found = true;
+      return { ...item, event_at: eventAt };
+    });
+    if (!found) return false;
+    const next = {
+      version: committedVersion,
+      items,
+      index: buildChronologicalIndex(items),
+    };
+    chronologicalSnapshotRef.current = next;
+    setChronologicalSnapshot(next);
+    return true;
+  }
+
+  async function saveMoment(
+    item: ItemDetail,
+    change: Record<string, unknown>,
+    submitted: TimelineDraft,
+    focusedField: string,
+  ) {
+    requestFieldFocus(item.id, focusedField);
+    const outcome = await mutation(
+      `/items/${encodeURIComponent(item.id)}`,
+      "PATCH",
+      change,
+      false,
+    );
+    const activeElement = document.activeElement;
+    const fieldPrefix = `item-${item.id}-`;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement.id.startsWith(fieldPrefix)
+    )
+      requestFieldFocus(item.id, activeElement.id.slice(fieldPrefix.length));
+    if (!outcome.saved) return false;
+    const expectedVersion = outcome.expectedVersion;
+    const nextVersion = outcome.committedVersion;
+    const canonicalEventAt = Object.hasOwn(change, "event_at")
+      ? normalizeEventAt(change.event_at as EventAt | null)
+      : undefined;
+    const ownsDisplayedEditor =
+      live.current &&
+      authGenerationRef.current === authGeneration &&
+      previousAuthGeneration.current === authGeneration;
+    const canPatchDetails =
+      ownsDisplayedEditor &&
+      expectedVersion !== undefined &&
+      nextVersion !== undefined &&
+      snapshotVersionRef.current === expectedVersion &&
+      itemDetailsVersionRef.current === expectedVersion &&
+      visibleIdsRef.current.length === itemDetailsRef.current.length &&
+      visibleIdsRef.current.every(
+        (itemId, index) => itemId === itemDetailsRef.current[index]?.id,
+      ) &&
+      itemDetailsRef.current.some((detail) => detail.id === item.id);
+    if (
+      canPatchDetails &&
+      expectedVersion !== undefined &&
+      nextVersion !== undefined
+    ) {
+      const nextDetails = itemDetailsRef.current.map((detail) =>
+        detail.id === item.id
+          ? {
+              ...detail,
+              ...(typeof change.caption === "string"
+                ? { caption: change.caption }
+                : {}),
+              ...(Object.hasOwn(change, "event_at")
+                ? { event_at: canonicalEventAt as EventAt | null }
+                : {}),
+            }
+          : detail,
+      );
+      itemDetailsRef.current = nextDetails;
+      itemDetailsVersionRef.current = nextVersion;
+      snapshotVersionRef.current = nextVersion;
+      setItemDetails(nextDetails);
+      setSnapshotVersion(nextVersion);
+      setItemDetailsVersion(nextVersion);
+      let chronologyPatched = false;
+      if (Object.hasOwn(change, "event_at")) {
+        chronologyPatched = patchChronologicalEvent(
+          item.id,
+          expectedVersion,
+          nextVersion,
+          canonicalEventAt as EventAt | null,
+        );
+      } else {
+        const current = chronologicalSnapshotRef.current;
+        if (current?.version === expectedVersion) {
+          const next = { ...current, version: nextVersion };
+          chronologicalSnapshotRef.current = next;
+          setChronologicalSnapshot(next);
+          chronologyPatched = true;
+        }
+      }
+      if (chronologyPatched && outcome.operationId) {
+        applyMutation(outcome.operationId);
+        writePausedRef.current = writePaused || !authGenerationIsCurrent;
+      } else refreshOverview();
+    } else if (ownsDisplayedEditor) refreshOverview();
+    setFocusRequestVersion((current) => current + 1);
+    setDrafts((current) => {
+      const latest = current[item.id];
+      if (!latest) return current;
+      const next = {
+        ...latest,
+        dirty: {
+          caption:
+            latest.dirty.caption &&
+            (!("caption" in change) || latest.caption !== submitted.caption),
+          event:
+            latest.dirty.event &&
+            (!("event_at" in change) || !sameEventDraft(latest, submitted)),
+        },
+      };
+      if (!next.dirty.caption && !next.dirty.event) {
+        const result = { ...current };
+        delete result[item.id];
+        return result;
+      }
+      return { ...current, [item.id]: next };
+    });
+    return true;
+  }
+
+  async function append(ids: string[], onCommitted: (assetId: string) => void) {
     const added: string[] = [];
+    const requestAuthGeneration = authGenerationRef.current;
     for (const assetId of ids) {
       if (
         !live.current ||
-        !(await mutation("/items", "POST", { asset_id: assetId }))
+        authGenerationRef.current !== requestAuthGeneration ||
+        previousAuthGeneration.current !== requestAuthGeneration
       )
         return added;
+      const previousItems = indexItemsRef.current;
+      const previousCount = totalItemsRef.current;
+      const outcome = await mutation(
+        "/items",
+        "POST",
+        { asset_id: assetId },
+        false,
+      );
+      if (!outcome.saved) return added;
+      if (
+        !live.current ||
+        authGenerationRef.current !== requestAuthGeneration ||
+        previousAuthGeneration.current !== requestAuthGeneration
+      )
+        return added;
+      const expectedVersion = outcome.committedVersion;
+      if (expectedVersion === undefined) return added;
       added.push(assetId);
+      onCommitted(assetId);
+      beginDetailReconciliation();
+      const params = new URLSearchParams({
+        limit: "2",
+        version: String(expectedVersion),
+      });
+      const anchor = previousItems.at(-1);
+      if (anchor) {
+        params.set("from_position", String(anchor.position));
+        params.set("from_id", anchor.id);
+      }
+      try {
+        const tail = await api<OverviewPage>(
+          `/api/timelines/${encodeURIComponent(id)}/overview?${params}`,
+        );
+        if (
+          !live.current ||
+          authGenerationRef.current !== requestAuthGeneration ||
+          previousAuthGeneration.current !== requestAuthGeneration ||
+          writeVersion.current !== expectedVersion
+        )
+          return added;
+        const newRow = anchor ? tail.items[1] : tail.items[0];
+        const validTail =
+          tail.timeline.id === id &&
+          tail.timeline.version === expectedVersion &&
+          tail.total_items === previousCount + 1 &&
+          tail.items.length === (anchor ? 2 : 1) &&
+          tail.next_cursor === null &&
+          (!anchor ||
+            (tail.items[0]?.id === anchor.id &&
+              tail.items[0].position === anchor.position)) &&
+          !!newRow &&
+          !previousItems.some((row) => row.id === newRow.id) &&
+          (!anchor || newRow.position === anchor.position + 1) &&
+          (anchor || newRow.position === 0);
+        if (!validTail || !newRow)
+          throw new Error("The timeline tail could not be verified.");
+        const nextItems = [...previousItems, newRow];
+        if (
+          nextItems.length !== tail.total_items ||
+          new Set(nextItems.map((row) => row.id)).size !== nextItems.length
+        )
+          throw new Error("The timeline index could not be verified.");
+        setSummary(tail.timeline);
+        setIndexItems(nextItems);
+        indexItemsRef.current = nextItems;
+        setTotalItems(tail.total_items);
+        totalItemsRef.current = tail.total_items;
+        snapshotVersionRef.current = expectedVersion;
+        setSnapshotVersion(expectedVersion);
+        setGoToValue((current) =>
+          String(
+            Math.min(Math.max(Number(current) || 1, 1), tail.total_items || 1),
+          ),
+        );
+        refreshOverview();
+      } catch (reason) {
+        if (
+          !live.current ||
+          authGenerationRef.current !== requestAuthGeneration ||
+          previousAuthGeneration.current !== requestAuthGeneration
+        )
+          return added;
+        if (isAuthorizationFailureResponse(reason)) {
+          clearPrivateState(reason, requestAuthGeneration);
+          return added;
+        }
+        setError(
+          "A moment was added, but the timeline could not confirm its latest order. Reloading the timeline before more changes.",
+        );
+        refreshOverview();
+        return added;
+      }
+      if (!(await waitUntilReady(requestAuthGeneration))) return added;
     }
-    if (live.current) {
+    if (live.current)
       setNotice(
         `${added.length} ${added.length === 1 ? "moment" : "moments"} added`,
       );
-    }
     return added;
   }
-  async function move(index: number, direction: number) {
-    const next = current.current?.items.map((item) => item.id);
-    if (!next?.[index] || !next[index + direction]) return;
-    const [item] = next.splice(index, 1);
-    if (!item) return;
-    next.splice(index + direction, 0, item);
-    if (await mutation("/order", "PUT", { item_ids: next }))
-      setNotice("Story order saved");
+
+  async function move(itemId: string, direction: number) {
+    const currentItems = indexItemsRef.current;
+    if (currentItems.length > 1000 || writeVersion.current === null) return;
+    const nextIds = currentItems.map((item) => item.id);
+    const index = nextIds.indexOf(itemId);
+    if (index < 0 || !nextIds[index + direction]) return;
+    const [moved] = nextIds.splice(index, 1);
+    if (!moved) return;
+    nextIds.splice(index + direction, 0, moved);
+    requestFieldFocus(itemId, "caption");
+    const outcome = await mutation(
+      "/order",
+      "PUT",
+      { item_ids: nextIds },
+      false,
+    );
+    if (!outcome.saved || !live.current) return;
+    const nextItems = nextIds.map((idValue, position) => ({
+      id: idValue,
+      position,
+    }));
+    const movedTo = nextIds.indexOf(itemId);
+    beginDetailReconciliation();
+    setIndexItems(nextItems);
+    indexItemsRef.current = nextItems;
+    setTotalItems(nextItems.length);
+    totalItemsRef.current = nextItems.length;
+    setRangeStart(Math.floor(movedTo / 100) * 100);
+    const nextVersion = outcome.committedVersion;
+    if (nextVersion !== undefined) {
+      snapshotVersionRef.current = nextVersion;
+      setSnapshotVersion(nextVersion);
+    }
+    refreshOverview();
+    setNotice("Story order saved");
   }
-  if (!story)
+
+  async function removeMoment(item: ItemDetail) {
+    const draft = draftFor(item);
+    if (
+      (draft.dirty.caption || draft.dirty.event) &&
+      !window.confirm("Remove this moment and discard its unsaved changes?")
+    )
+      return;
+    const currentItems = indexItemsRef.current;
+    const index = currentItems.findIndex((row) => row.id === item.id);
+    if (index < 0) return;
+    const target = currentItems[index + 1] ?? currentItems[index - 1];
+    if (target) requestFieldFocus(target.id, "caption");
+    else pendingFocus.current = null;
+    const outcome = await mutation(
+      `/items/${encodeURIComponent(item.id)}`,
+      "DELETE",
+      {},
+      false,
+    );
+    if (!outcome.saved || !live.current) return;
+    setDrafts((current) => {
+      const latest = current[item.id];
+      if (!latest) return current;
+      const changedCaption =
+        latest.dirty.caption && latest.caption !== draft.caption;
+      const changedEvent = latest.dirty.event && !sameEventDraft(latest, draft);
+      if (!changedCaption && !changedEvent) {
+        const next = { ...current };
+        delete next[item.id];
+        return next;
+      }
+      return {
+        ...current,
+        [item.id]: {
+          caption: changedCaption ? latest.caption : "",
+          eventKind: changedEvent ? latest.eventKind : "none",
+          eventValue: changedEvent ? latest.eventValue : "",
+          timeZone: latest.timeZone,
+          dirty: { caption: changedCaption, event: changedEvent },
+        },
+      };
+    });
+    setItemNotices((current) => {
+      const next = { ...current };
+      delete next[item.id];
+      return next;
+    });
+    const nextItems = currentItems.filter((row) => row.id !== item.id);
+    const nextCount = Math.max(0, totalItemsRef.current - 1);
+    const maxStart = Math.floor(Math.max(0, nextCount - 1) / 100) * 100;
+    beginDetailReconciliation();
+    setIndexItems(nextItems);
+    indexItemsRef.current = nextItems;
+    setTotalItems(nextCount);
+    totalItemsRef.current = nextCount;
+    setRangeStart((current) => Math.min(current, maxStart));
+    setGoToValue((current) =>
+      String(Math.min(Math.max(Number(current) || 1, 1), nextCount || 1)),
+    );
+    const nextVersion = outcome.committedVersion;
+    if (nextVersion !== undefined) {
+      snapshotVersionRef.current = nextVersion;
+      setSnapshotVersion(nextVersion);
+    }
+    refreshOverview();
+    if (!target) pickerOpener.current?.focus();
+  }
+
+  function goToMoment(event: React.SubmitEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const ordinal = Number(goToValue);
+    if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > totalItems)
+      return;
+    setFocusHeadingRequested(true);
+    setRangeStart(Math.floor((ordinal - 1) / 100) * 100);
+  }
+
+  function navigateRange(nextStart: number) {
+    if (nextStart < 0 || nextStart >= totalItems || nextStart === rangeStart)
+      return;
+    setFocusHeadingRequested(true);
+    setRangeStart(nextStart);
+    setGoToValue(String(nextStart + 1));
+  }
+
+  if (!summary)
     return (
       <main id="main" className="timeline-page">
         {error ? (
@@ -396,30 +1709,38 @@ function TimelineEditor({ id }: { id: string }) {
             <button
               className="button secondary"
               type="button"
-              onClick={() => setRequest({ id })}
+              onClick={() => {
+                setError("");
+                setOverviewRequest((current) => current + 1);
+              }}
             >
               Retry timeline
             </button>
           </>
         ) : (
-          <p role="status">Opening your story…</p>
+          <p role="status">
+            {overviewLoading
+              ? `Loading timeline index… ${overviewProgress} moments`
+              : "Opening your story…"}
+          </p>
         )}
       </main>
     );
+
   return (
     <main id="main" className="timeline-page">
       <div className="timeline-intro editor-intro">
         <div>
           <p className="eyebrow">
             Living timeline ·{" "}
-            {story.visibility === "private"
+            {summary.visibility === "private"
               ? "Private"
-              : story.visibility === "unlisted"
+              : summary.visibility === "unlisted"
                 ? "Anyone with the link"
                 : "Public"}
           </p>
-          <h1>{story.title}</h1>
-          <p>{story.items.length} moments, with more to come.</p>
+          <h1>{summary.title}</h1>
+          <p>{totalItems} moments, with more to come.</p>
         </div>
         <button
           className="button primary"
@@ -436,7 +1757,10 @@ function TimelineEditor({ id }: { id: string }) {
           <button
             type="button"
             className="text-button"
-            onClick={() => setRequest({ id })}
+            onClick={() => {
+              setError("");
+              refreshOverview();
+            }}
           >
             Reload timeline
           </button>
@@ -446,6 +1770,63 @@ function TimelineEditor({ id }: { id: string }) {
         <p role="status" className="editor-notice">
           {notice}
         </p>
+      ) : null}
+      {unresolvedDrafts.length ? (
+        <section className="editor-notice" aria-label="Unresolved drafts">
+          <h2>Unresolved drafts</h2>
+          <p>
+            These moments were removed from the timeline elsewhere. Copy or
+            discard each local draft; it cannot be saved to a removed moment.
+          </p>
+          <ul>
+            {unresolvedDrafts.map(([itemId, draft]) => {
+              const eventDescription =
+                draft.eventKind === "none"
+                  ? "No event date"
+                  : `${draft.eventKind === "date" ? "Event date" : "Event time"}: ${draft.eventValue}\nTime zone: ${draft.timeZone}`;
+              const copyText = `Caption: ${draft.caption}\n${eventDescription}`;
+              return (
+                <li key={itemId}>
+                  <h3>Removed moment draft</h3>
+                  <p>{draft.caption || "No caption"}</p>
+                  <p>{eventDescription}</p>
+                  <button type="button" disabled>
+                    Save draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(copyText)
+                        .catch((reason: unknown) =>
+                          setError(errorMessage(reason)),
+                        );
+                    }}
+                  >
+                    Copy draft
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDrafts((current) => {
+                        const next = { ...current };
+                        delete next[itemId];
+                        return next;
+                      });
+                      setItemNotices((current) => {
+                        const next = { ...current };
+                        delete next[itemId];
+                        return next;
+                      });
+                    }}
+                  >
+                    Discard draft
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ) : null}
       {assetError ? (
         <div role="alert" className="error editor-notice">
@@ -459,31 +1840,138 @@ function TimelineEditor({ id }: { id: string }) {
           </button>
         </div>
       ) : null}
-      <StoryViewport positions={story.items.map((item) => item.position)} />
+      <StoryViewport
+        positions={viewportPositions}
+        index={
+          chronologicalSnapshot?.version === snapshotVersion
+            ? chronologicalSnapshot.index
+            : null
+        }
+        snapshotVersion={snapshotVersion}
+        chronologicalLoading={
+          chronologicalLoading ||
+          (snapshotVersion !== null &&
+            chronologicalSnapshot?.version !== snapshotVersion &&
+            !chronologicalError)
+        }
+        chronologicalError={chronologicalError}
+        retryChronological={refreshOverview}
+        onSelectItem={selectChronologicalItem}
+      />
+      {totalItems > 0 ? (
+        <section className="moment-range" aria-label="Moment range navigation">
+          <h2 ref={heading} tabIndex={-1} id="moment-range-heading">
+            Moments {rangeStart + 1}–{Math.min(rangeStart + 100, totalItems)} of{" "}
+            {totalItems}
+          </h2>
+          <form onSubmit={goToMoment}>
+            <label htmlFor="go-to-moment">Go to moment</label>
+            <input
+              id="go-to-moment"
+              type="number"
+              min={1}
+              max={totalItems}
+              value={goToValue}
+              onChange={(event) => setGoToValue(event.target.value)}
+            />
+            <button className="button secondary" type="submit">
+              Go
+            </button>
+          </form>
+          <div className="range-actions">
+            <button
+              className="button secondary"
+              type="button"
+              disabled={rangeStart === 0}
+              onClick={() => navigateRange(rangeStart - 100)}
+            >
+              Previous 100 moments
+            </button>
+            <button
+              className="button secondary"
+              type="button"
+              disabled={rangeStart + 100 >= totalItems}
+              onClick={() => navigateRange(rangeStart + 100)}
+            >
+              Next 100 moments
+            </button>
+          </div>
+        </section>
+      ) : null}
+      {detailError ? (
+        <div className="error editor-notice" role="alert">
+          {detailError}
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => setDetailRetry((current) => current + 1)}
+          >
+            Retry moments
+          </button>
+        </div>
+      ) : null}
+      {overviewLoading ? (
+        <p role="status">
+          Refreshing timeline index… {overviewProgress} moments
+        </p>
+      ) : null}
       <div className="editor-layout">
         <div className="story-items">
-          {story.items.length ? (
-            <ol>
-              {story.items.map((item, index) => (
-                <li key={item.id}>
-                  <Moment
-                    item={item}
-                    index={index}
-                    asset={assets[item.asset_id]}
-                    busy={busy}
-                    last={index === story.items.length - 1}
-                    save={(change) =>
-                      mutation(
-                        `/items/${encodeURIComponent(item.id)}`,
-                        "PATCH",
-                        change,
+          {totalItems ? (
+            detailsReady ? (
+              <ol>
+                {itemDetails.map((item, index) => (
+                  <li
+                    key={item.id}
+                    aria-posinset={rangeStart + index + 1}
+                    aria-setsize={totalItems}
+                    onFocusCapture={(event) => {
+                      const target = event.target;
+                      const prefix = `item-${item.id}-`;
+                      if (
+                        target instanceof HTMLElement &&
+                        target.id.startsWith(prefix)
                       )
-                    }
-                    move={(direction) => move(index, direction)}
-                  />
-                </li>
-              ))}
-            </ol>
+                        focusedFieldsById.current.set(
+                          item.id,
+                          target.id.slice(prefix.length),
+                        );
+                    }}
+                  >
+                    <Moment
+                      item={item}
+                      index={rangeStart + index}
+                      asset={item.asset}
+                      draft={draftFor(item)}
+                      changeDraft={(patch, field) =>
+                        changeDraft(item, patch, field)
+                      }
+                      busy={busy || editorWritePaused || !detailsReady}
+                      last={rangeStart + index + 1 === totalItems}
+                      notice={itemNotices[item.id] ?? ""}
+                      setNotice={(value) => {
+                        setItemNotices((current) => ({
+                          ...current,
+                          [item.id]: value,
+                        }));
+                      }}
+                      save={(change, submitted, focusedField) =>
+                        saveMoment(item, change, submitted, focusedField)
+                      }
+                      move={(direction) => void move(item.id, direction)}
+                      remove={() => void removeMoment(item)}
+                      showMoveControls={totalItems <= 1000}
+                    />
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p role="status">
+                {detailLoading
+                  ? "Loading moments…"
+                  : "Moments are not available yet."}
+              </p>
+            )
           ) : (
             <div className="empty-state">
               <h2>A first moment, then another.</h2>
@@ -493,12 +1981,12 @@ function TimelineEditor({ id }: { id: string }) {
         </div>
         <aside className="story-settings">
           <Settings
-            story={story}
+            story={summary}
             assets={Object.values(assets)}
-            busy={busy}
-            save={(change) => mutation("", "PATCH", change)}
+            busy={busy || editorWritePaused || !detailsReady}
+            save={async (change) => (await mutation("", "PATCH", change)).saved}
           />
-          <ShareLink id={id} visibility={story.visibility} />
+          <ShareLink id={id} visibility={summary.visibility} />
         </aside>
       </div>
       {picker ? (
@@ -507,7 +1995,7 @@ function TimelineEditor({ id }: { id: string }) {
           loading={libraryLoading}
           error={libraryError}
           writeError={error}
-          busy={busy}
+          busy={busy || editorWritePaused || !detailsReady}
           cursor={cursor}
           more={() => void libraryPage(cursor ?? undefined)}
           retry={() => void libraryPage()}
@@ -522,86 +2010,156 @@ function TimelineEditor({ id }: { id: string }) {
   );
 }
 
+function momentMediaUrl(asset: MomentAsset) {
+  return `/api/assets/${encodeURIComponent(asset.id)}/media`;
+}
+
 function Moment({
   item,
   index,
   asset,
+  draft,
+  changeDraft,
   busy,
   last,
+  notice,
+  setNotice,
   save,
   move,
+  remove,
+  showMoveControls,
 }: {
-  item: Item;
+  item: ItemDetail;
   index: number;
-  asset?: LibraryAsset;
+  asset?: MomentAsset;
+  draft: TimelineDraft;
+  changeDraft: (
+    patch: Partial<Omit<TimelineDraft, "dirty">>,
+    field: "caption" | "event",
+  ) => void;
   busy: boolean;
   last: boolean;
-  save: (change: Record<string, unknown>) => Promise<boolean>;
-  move: (direction: number) => Promise<void>;
+  notice: string;
+  setNotice: (value: string) => void;
+  save: (
+    change: Record<string, unknown>,
+    submitted: TimelineDraft,
+    focusedField: string,
+  ) => Promise<boolean>;
+  move: (direction: number) => void;
+  remove: () => void;
+  showMoveControls: boolean;
 }) {
-  const [caption, setCaption] = useState(item.caption);
-  const [captionDirty, setCaptionDirty] = useState(false);
-  const [dateDirty, setDateDirty] = useState(false);
-  const [kind, setKind] = useState<"none" | "date" | "instant">(
-    item.event_at?.kind ?? "none",
-  );
-  const [date, setDate] = useState(
-    item.event_at?.kind === "date" ? item.event_at.date : "",
-  );
-  const [instant, setInstant] = useState(
-    item.event_at?.kind === "instant" ? item.event_at.instant : "",
-  );
-  const [zone, setZone] = useState(
-    item.event_at?.time_zone ??
-      Intl.DateTimeFormat().resolvedOptions().timeZone,
-  );
-  const [notice, setNotice] = useState("");
+  const mediaPlaceholder = useRef<HTMLDivElement>(null);
+  const [mediaInBand, setMediaInBand] = useState(false);
+  const [explicitMediaLoad, setExplicitMediaLoad] = useState(false);
+  const lastFocusedField = useRef("caption");
+  const assetId = asset?.id;
+  const observerSupported =
+    typeof window !== "undefined" &&
+    typeof window.IntersectionObserver === "function";
+
   useEffect(() => {
-    if (!captionDirty) setCaption(item.caption);
-  }, [item.caption, captionDirty]);
-  useEffect(() => {
-    if (dateDirty) return;
-    setKind(item.event_at?.kind ?? "none");
-    setDate(item.event_at?.kind === "date" ? item.event_at.date : "");
-    setInstant(item.event_at?.kind === "instant" ? item.event_at.instant : "");
-    setZone(
-      item.event_at?.time_zone ??
-        Intl.DateTimeFormat().resolvedOptions().timeZone,
-    );
-  }, [item.event_at, dateDirty]);
+    const node = mediaPlaceholder.current;
+    if (!node || !assetId || !observerSupported) return;
+    let observer: IntersectionObserver | null = null;
+    const observeWithViewportOverscan = () => {
+      observer?.disconnect();
+      const overscan = window.innerHeight;
+      observer = new IntersectionObserver(
+        (entries) => {
+          setMediaInBand(entries.some((entry) => entry.isIntersecting));
+        },
+        { rootMargin: `${overscan}px 0px ${overscan}px 0px` },
+      );
+      observer.observe(node);
+    };
+    observeWithViewportOverscan();
+    window.addEventListener("resize", observeWithViewportOverscan);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", observeWithViewportOverscan);
+    };
+  }, [assetId, observerSupported]);
+
   async function submit(event: React.SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
     setNotice("");
     const eventAt: EventAt | null =
-      kind === "date"
-        ? { kind, date, time_zone: zone, calendar: "iso8601" }
-        : kind === "instant"
-          ? { kind, instant, time_zone: zone }
+      draft.eventKind === "date"
+        ? {
+            kind: "date",
+            date: draft.eventValue,
+            time_zone: draft.timeZone,
+            calendar: "iso8601",
+          }
+        : draft.eventKind === "instant"
+          ? {
+              kind: "instant",
+              instant: draft.eventValue,
+              time_zone: draft.timeZone,
+            }
           : null;
-    if (await save({ caption, event_at: eventAt })) {
-      setCaptionDirty(false);
-      setDateDirty(false);
-      setNotice("Moment saved");
+    const change = {
+      ...(draft.dirty.caption ? { caption: draft.caption } : {}),
+      ...(draft.dirty.event ? { event_at: eventAt } : {}),
+    };
+    if (!Object.keys(change).length) {
+      setNotice("Moment is up to date");
+      return;
     }
+    const saved = await save(change, draft, lastFocusedField.current);
+    if (saved) setNotice("Moment saved");
   }
   const field = `item-${item.id}`;
+  const hasDimensions =
+    asset !== undefined &&
+    asset.width !== null &&
+    asset.height !== null &&
+    Number.isFinite(asset.width) &&
+    Number.isFinite(asset.height) &&
+    asset.width > 0 &&
+    asset.height > 0;
+  const aspectRatio =
+    hasDimensions && asset ? `${asset.width} / ${asset.height}` : undefined;
+  const mountMedia = observerSupported ? mediaInBand : explicitMediaLoad;
   return (
     <fieldset className="moment" aria-label={`Moment ${index + 1}`}>
       <legend>Moment {index + 1}</legend>
-      <div className="moment-media">
-        {asset?.kind === "image" ? (
-          <img src={mediaUrl(asset)} alt={asset.original_name} loading="lazy" />
-        ) : asset?.kind === "video" ? (
+      <div
+        ref={mediaPlaceholder}
+        className={`moment-media${aspectRatio ? " has-aspect-ratio" : ""}`}
+        style={aspectRatio ? { aspectRatio } : undefined}
+      >
+        {asset?.kind === "image" && mountMedia ? (
+          <img
+            src={momentMediaUrl(asset)}
+            alt={asset.original_name}
+            loading="lazy"
+          />
+        ) : asset?.kind === "video" && mountMedia ? (
           <video
-            src={mediaUrl(asset)}
+            src={momentMediaUrl(asset)}
             controls
             preload="none"
             aria-label={asset.original_name}
           >
             <track kind="captions" />
           </video>
+        ) : asset && !observerSupported && !explicitMediaLoad ? (
+          <button
+            className="button secondary moment-media-load"
+            type="button"
+            onClick={() => setExplicitMediaLoad(true)}
+          >
+            Load media
+          </button>
         ) : (
-          <p>Loading this moment’s media…</p>
+          <span className="sr-only">
+            {asset
+              ? "Media loads when this moment approaches the viewport."
+              : "Loading this moment’s media…"}
+          </span>
         )}
       </div>
       <div className="moment-content">
@@ -610,16 +2168,23 @@ function Moment({
           This caption and date belong to this story. The original media stays
           unchanged.
         </p>
-        <form onSubmit={submit}>
+        <form
+          onSubmit={submit}
+          onFocusCapture={(event) => {
+            const target = event.target;
+            const prefix = `${field}-`;
+            if (target instanceof HTMLElement && target.id.startsWith(prefix))
+              lastFocusedField.current = target.id.slice(prefix.length);
+          }}
+        >
           <label htmlFor={`${field}-caption`}>Caption</label>
           <textarea
             id={`${field}-caption`}
-            value={caption}
+            value={draft.caption}
             maxLength={10000}
             rows={3}
             onChange={(event) => {
-              setCaption(event.target.value);
-              setCaptionDirty(true);
+              changeDraft({ caption: event.target.value }, "caption");
               setNotice("");
             }}
           />
@@ -628,10 +2193,15 @@ function Moment({
               <label htmlFor={`${field}-kind`}>Date type</label>
               <select
                 id={`${field}-kind`}
-                value={kind}
+                value={draft.eventKind}
                 onChange={(event) => {
-                  setKind(event.target.value as typeof kind);
-                  setDateDirty(true);
+                  changeDraft(
+                    {
+                      eventKind: event.target
+                        .value as TimelineDraft["eventKind"],
+                    },
+                    "event",
+                  );
                   setNotice("");
                 }}
               >
@@ -640,53 +2210,50 @@ function Moment({
                 <option value="instant">Exact time</option>
               </select>
             </div>
-            {kind === "date" ? (
+            {draft.eventKind === "date" ? (
               <div>
                 <label htmlFor={`${field}-date`}>Event date</label>
                 <input
                   id={`${field}-date`}
                   type="date"
-                  value={date}
+                  value={draft.eventValue}
                   required
                   onChange={(event) => {
-                    setDate(event.target.value);
-                    setDateDirty(true);
+                    changeDraft({ eventValue: event.target.value }, "event");
                   }}
                 />
               </div>
-            ) : kind === "instant" ? (
+            ) : draft.eventKind === "instant" ? (
               <div>
                 <label htmlFor={`${field}-instant`}>Event instant</label>
                 <input
                   id={`${field}-instant`}
-                  value={instant}
+                  value={draft.eventValue}
                   required
                   placeholder="2026-10-04T10:30:00+08:00"
                   onChange={(event) => {
-                    setInstant(event.target.value);
-                    setDateDirty(true);
+                    changeDraft({ eventValue: event.target.value }, "event");
                   }}
                 />
               </div>
             ) : null}
-            {kind !== "none" ? (
+            {draft.eventKind !== "none" ? (
               <div>
                 <label htmlFor={`${field}-zone`}>Time zone</label>
                 <input
                   id={`${field}-zone`}
-                  value={zone}
+                  value={draft.timeZone}
                   required
                   maxLength={100}
                   placeholder="Asia/Taipei"
                   onChange={(event) => {
-                    setZone(event.target.value);
-                    setDateDirty(true);
+                    changeDraft({ timeZone: event.target.value }, "event");
                   }}
                 />
               </div>
             ) : null}
           </div>
-          {kind === "instant" ? (
+          {draft.eventKind === "instant" ? (
             <p className="field-help">
               Use an ISO timestamp with an explicit offset. The named time zone
               controls presentation.
@@ -696,27 +2263,37 @@ function Moment({
             <button className="button secondary" type="submit" disabled={busy}>
               Save moment
             </button>
+            <button
+              className="text-button"
+              type="button"
+              disabled={busy}
+              onClick={remove}
+            >
+              Remove moment
+            </button>
             {notice ? <p role="status">{notice}</p> : null}
           </div>
         </form>
-        <div className="order-actions">
-          <button
-            className="text-button"
-            type="button"
-            disabled={busy || index === 0}
-            onClick={() => void move(-1)}
-          >
-            Move earlier
-          </button>
-          <button
-            className="text-button"
-            type="button"
-            disabled={busy || last}
-            onClick={() => void move(1)}
-          >
-            Move later
-          </button>
-        </div>
+        {showMoveControls ? (
+          <div className="order-actions">
+            <button
+              className="text-button"
+              type="button"
+              disabled={busy || index === 0}
+              onClick={() => void move(-1)}
+            >
+              Move earlier
+            </button>
+            <button
+              className="text-button"
+              type="button"
+              disabled={busy || last}
+              onClick={() => void move(1)}
+            >
+              Move later
+            </button>
+          </div>
+        ) : null}
       </div>
     </fieldset>
   );
@@ -728,7 +2305,7 @@ function Settings({
   busy,
   save,
 }: {
-  story: Story;
+  story: Summary;
   assets: LibraryAsset[];
   busy: boolean;
   save: (change: Record<string, unknown>) => Promise<boolean>;
@@ -926,7 +2503,10 @@ function LibraryPicker({
   cursor: string | null;
   more: () => void;
   retry: () => void;
-  append: (ids: string[]) => Promise<string[]>;
+  append: (
+    ids: string[],
+    onCommitted: (assetId: string) => void,
+  ) => Promise<string[]>;
   close: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -953,7 +2533,14 @@ function LibraryPicker({
   async function add() {
     setAdding(true);
     const ids = [...selected];
-    const added = await append(ids);
+    const added = await append(ids, (assetId) => {
+      if (!mounted.current) return;
+      setSelected((current) => {
+        const next = new Set(current);
+        next.delete(assetId);
+        return next;
+      });
+    });
     if (!mounted.current) return;
     setSelected(
       (current) => new Set([...current].filter((id) => !added.includes(id))),
