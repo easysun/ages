@@ -24,7 +24,7 @@ async function createLink(request: APIRequestContext, context: BrowserContext) {
   return (await response.json()).link as { id: string; slug: string };
 }
 
-test("tracking and moderation navigation fits the mobile viewport", async ({
+test("primary navigation includes plans, settings, and moderation without overflow", async ({
   page,
   context,
 }) => {
@@ -32,10 +32,11 @@ test("tracking and moderation navigation fits the mobile viewport", async ({
   executeFixtureSql(`UPDATE users SET plan='admin' WHERE id='${owner}';`);
 
   await page.goto("/admin/reports");
-  const nav = page.getByRole("navigation", { name: "Your collections" });
+  const nav = page.getByRole("navigation", { name: "Primary navigation" });
   await expect(
     nav.getByRole("link", { name: "Tracking settings" }),
   ).toBeVisible();
+  await expect(nav.getByRole("link", { name: "Plans" })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Moderation" })).toBeVisible();
   await expect
     .poll(() => nav.evaluate((element) => element.scrollWidth))
