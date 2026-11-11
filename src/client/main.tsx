@@ -123,7 +123,7 @@ function App() {
         </p>
       ) : null}
       {profile ? (
-        <nav className="client-nav" aria-label="Your collections">
+        <nav className="client-nav" aria-label="Primary navigation">
           <a
             href="/library"
             onClick={collectionLink}
@@ -161,6 +161,13 @@ function App() {
           >
             Tracking settings
           </a>
+          <a
+            href="/pricing"
+            onClick={collectionLink}
+            aria-current={path === "/pricing" ? "page" : undefined}
+          >
+            Plans
+          </a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -189,6 +196,8 @@ function App() {
             Try again
           </button>
         </main>
+      ) : path === "/pricing" ? (
+        <Pricing />
       ) : profile ? (
         path === "/report" ? (
           <ReporterScreen authenticated authGeneration={generation} />
@@ -260,6 +269,7 @@ function Landing() {
           Your library starts private. Your memories stay yours.
         </p>
         <LocalSignIn />
+        <a href="/pricing">Explore plans</a>
         <a className="landing-report-link" href="/report">
           Report an Ages Link
         </a>
@@ -287,6 +297,63 @@ function Landing() {
         <span>ONE MOMENT AT A TIME</span>
         <span>Ages — a living library</span>
       </div>
+    </main>
+  );
+}
+function Pricing() {
+  return (
+    <main id="main" className="loading-page pricing-page">
+      <p className="eyebrow">Ages beta</p>
+      <h1>Plans for your memories</h1>
+      <p>
+        Plan prices and creator-support fees are proposals. Paid subscriptions
+        and creator-support payments are not available yet.
+      </p>
+      <table className="pricing-table">
+        <caption>
+          Proposed monthly plans and creator-support platform fees
+        </caption>
+        <thead>
+          <tr>
+            <th className="pricing-table-header" scope="col">
+              Plan
+            </th>
+            <th className="pricing-table-header" scope="col">
+              Monthly price
+            </th>
+            <th className="pricing-table-header" scope="col">
+              Creator-support platform fee
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">Free</th>
+            <td>NT$0 / month</td>
+            <td>20%</td>
+          </tr>
+          <tr>
+            <th scope="row">Plus</th>
+            <td>NT$99 / month</td>
+            <td>10%</td>
+          </tr>
+          <tr>
+            <th scope="row">Creator</th>
+            <td>NT$299 / month</td>
+            <td>5%</td>
+          </tr>
+          <tr>
+            <th scope="row">Pro</th>
+            <td>NT$599 / month</td>
+            <td>2.5%</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>
+        Plan features, storage limits, and annual pricing have not been
+        finalized.
+      </p>
+      <a href="/library">Return to Ages</a>
     </main>
   );
 }
