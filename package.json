@@ -55,7 +55,7 @@
     "jsqr": "1.4.0",
     "typescript": "6.0.3",
     "vite": "8.3.2",
-    "vitest": "4.1.11",
+    "vitest": "4.1.12",
     "wrangler": "4.150.0"
   }
 }
