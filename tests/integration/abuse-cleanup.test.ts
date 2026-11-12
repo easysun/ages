@@ -15,6 +15,7 @@ const day = 24 * 60 * 60 * 1000;
 let session: string;
 const infoLog = vi.fn();
 const errorLog = vi.fn();
+const warnLog = vi.fn();
 beforeEach(async () => {
   await reset();
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -23,6 +24,7 @@ beforeEach(async () => {
   session = await seedUser();
   vi.spyOn(console, "info").mockImplementation(infoLog);
   vi.spyOn(console, "error").mockImplementation(errorLog);
+  vi.spyOn(console, "warn").mockImplementation(warnLog);
 });
 afterEach(() => vi.useRealTimers());
 function request(
@@ -102,6 +104,29 @@ async function cleanup() {
 }
 
 describe("Durable endpoint limits", () => {
+  it("reports blocked authentication floods without leaking client identity", async () => {
+    const ip = "203.0.113.199";
+    for (let n = 0; n < 30; n++) {
+      expect((await request("/auth/google", "GET", "", ip)).status).toBe(503);
+    }
+    const rejected = await request("/auth/google", "GET", "", ip);
+    expect(rejected.status).toBe(429);
+    const events = warnLog.mock.calls
+      .flat()
+      .map((entry: string) => JSON.parse(entry));
+    expect(events).toContainEqual({
+      event: "security_event",
+      type: "rate_limit_exceeded",
+      action: "blocked",
+      request_id: rejected.headers.get("X-Request-ID"),
+      policy: "auth",
+      limit_per_minute: 30,
+    });
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain(ip);
+    expect(serialized).not.toContain("203.0.113");
+    expect(serialized).not.toContain("CF-Connecting-IP");
+  });
   it("allows exactly thirty concurrent auth requests and returns correlated 429 with the exact remaining seconds", async () => {
     const responses = await Promise.all(
       Array.from({ length: 40 }, () => request("/auth/google", "GET", "")),
