@@ -36,7 +36,7 @@ UI must be responsive and accessible across desktop, tablet, and phone, with mou
 
 ## Build, Test, and Development Commands
 
-Use Node.js 22 and npm with the committed lockfile. Run `npm ci`, `npm run db:migrate:local`, then `npm run dev`. Before committing, run `npm run check` (lint, typecheck, unit/integration tests, build). Use `npm run format` for Biome formatting. `npm run build` only creates a local Worker bundle. See the README for environment setup.
+Use Node.js 26 and npm with the committed lockfile. Run `npm ci`, `npm run db:migrate:local`, then `npm run dev`. Before committing, run `npm run check` (lint, typecheck, unit/integration tests, build). Use `npm run format` for Biome formatting. `npm run build` only creates a local Worker bundle. See the README for environment setup.
 
 ## Coding Style & Language
 
