@@ -30,6 +30,18 @@ async function consume(
       .bind(scope, bucket, bucket + windowMs + 3_600_000, limits[policy])
       .first();
   if (allowed) return null;
+  // Emit an actionable, privacy-preserving signal for security monitoring.
+  // Edge IPs, account identifiers, tokens, and request URLs are not logged.
+  console.warn(
+    JSON.stringify({
+      event: "security_event",
+      type: "rate_limit_exceeded",
+      action: "blocked",
+      request_id: context.get("requestId"),
+      policy,
+      limit_per_minute: limits[policy],
+    }),
+  );
   context.header(
     "Retry-After",
     String(Math.max(1, Math.ceil((bucket + windowMs - now) / 1000))),
