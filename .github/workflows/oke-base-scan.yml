@@ -1,0 +1,95 @@
+name: OKE base image security
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile.oke-dev
+      - .node-version
+      - .github/workflows/oke-base-scan.yml
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.oke-dev
+      - .node-version
+      - .github/workflows/oke-base-scan.yml
+  schedule:
+    - cron: "47 2 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-runtime-cves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify the immutable runtime reference
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref=$(awk '$1 == "FROM" { print $2 }' Dockerfile.oke-dev)
+          if [[ ! "$ref" =~ ^node:22\.[0-9]+\.[0-9]+-bookworm-slim@sha256:[0-9a-f]{64}$ ]]; then
+            echo "OKE runtime must use a reviewed Node 22 immutable digest" >&2
+            exit 1
+          fi
+          printf 'ref=%s\n' "docker.io/library/$ref" >> "$GITHUB_OUTPUT"
+      - name: Block fixable Critical base image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          scan-type: image
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Report residual High base image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        env:
+          TRIVY_PLATFORM: linux/arm64
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}
+          scan-type: image
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+
+  native-arm64-smoke:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build the OKE runtime natively on ARM64
+        run: docker build --file Dockerfile.oke-dev --tag ages-security-smoke .
+      - name: Verify offline Wrangler startup, local D1 and noindex
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --name ages-security-smoke \
+            --publish 127.0.0.1:18787:8787 \
+            ages-security-smoke
+          trap 'docker logs --tail 60 ages-security-smoke; docker rm --force ages-security-smoke' EXIT
+          healthy=false
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --show-error --max-time 3 \
+              http://127.0.0.1:18787/health/ready > /tmp/ages-health.json 2>/dev/null; then
+              healthy=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$healthy" != true ]]; then
+            echo "OKE Worker did not become ready within the smoke window" >&2
+            exit 1
+          fi
+          grep -q '"status":"ready"' /tmp/ages-health.json
+          curl --fail --silent --show-error --max-time 10 \
+            --dump-header /tmp/ages-headers \
+            http://127.0.0.1:18787/health >/dev/null
+          grep -iEq '^X-Robots-Tag: .*noindex' /tmp/ages-headers

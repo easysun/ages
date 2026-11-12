@@ -8,7 +8,7 @@ Foundation, Google authentication, direct upload, owner-scoped Asset Library and
 
 ## Local development
 
-Install Node.js 22.22.2 (see `.node-version`) and npm. Foundation and automated tests need no Cloudflare account or secrets. Interactive Google sign-in needs the configuration below.
+Install Node.js 22.23.5 (see `.node-version`) and npm. Foundation and automated tests need no Cloudflare account or secrets. Interactive Google sign-in needs the configuration below.
 
 ```sh
 npm ci
