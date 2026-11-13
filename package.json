@@ -36,7 +36,7 @@
   "dependencies": {
     "aws4fetch": "1.0.20",
     "file-type": "22.1.1",
-    "hono": "4.13.12",
+    "hono": "4.13.16",
     "image-size": "2.0.4",
     "jose": "6.2.12",
     "qrcode-generator": "2.0.4",
