@@ -300,6 +300,13 @@ function Landing() {
     </main>
   );
 }
+const proposedPlans = [
+  { name: "Free", monthly: 0, supportFee: "20%" },
+  { name: "Plus", monthly: 99, supportFee: "10%" },
+  { name: "Creator", monthly: 299, supportFee: "5%" },
+  { name: "Pro", monthly: 599, supportFee: "2.5%" },
+] as const;
+
 function Pricing() {
   return (
     <main id="main" className="loading-page pricing-page">
@@ -309,50 +316,67 @@ function Pricing() {
         Plan prices and creator-support fees are proposals. Paid subscriptions
         and creator-support payments are not available yet.
       </p>
-      <table className="pricing-table">
-        <caption>
-          Proposed monthly plans and creator-support platform fees
-        </caption>
-        <thead>
-          <tr>
-            <th className="pricing-table-header" scope="col">
-              Plan
-            </th>
-            <th className="pricing-table-header" scope="col">
-              Monthly price
-            </th>
-            <th className="pricing-table-header" scope="col">
-              Creator-support platform fee
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <th scope="row">Free</th>
-            <td>NT$0 / month</td>
-            <td>20%</td>
-          </tr>
-          <tr>
-            <th scope="row">Plus</th>
-            <td>NT$99 / month</td>
-            <td>10%</td>
-          </tr>
-          <tr>
-            <th scope="row">Creator</th>
-            <td>NT$299 / month</td>
-            <td>5%</td>
-          </tr>
-          <tr>
-            <th scope="row">Pro</th>
-            <td>NT$599 / month</td>
-            <td>2.5%</td>
-          </tr>
-        </tbody>
-      </table>
-      <p>
-        Plan features, storage limits, and annual pricing have not been
-        finalized.
-      </p>
+      <section className="pricing-section" aria-labelledby="monthly-plans">
+        <h2 id="monthly-plans">Monthly plans</h2>
+        <p>
+          The monthly price is what a member would pay for their own Ages plan.
+          Prices are shown in New Taiwan dollars.
+        </p>
+        <table className="pricing-table">
+          <caption>Proposed monthly prices</caption>
+          <thead>
+            <tr>
+              <th className="pricing-table-header" scope="col">
+                Plan
+              </th>
+              <th className="pricing-table-header" scope="col">
+                Monthly price
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {proposedPlans.map(({ name, monthly }) => (
+              <tr key={name}>
+                <th scope="row">{name}</th>
+                <td>NT${monthly} / month</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p>
+          Plan features, storage limits, and annual pricing have not been
+          finalized.
+        </p>
+      </section>
+      <section className="pricing-section" aria-labelledby="support-fees">
+        <h2 id="support-fees">Creator-support fees</h2>
+        <p>
+          Creator support is a separate payment from a fan to a creator. The
+          platform fee would apply to each support payment at the rate for the
+          creator's plan.
+        </p>
+        <table className="pricing-table">
+          <caption>Proposed platform fees on creator support</caption>
+          <thead>
+            <tr>
+              <th className="pricing-table-header" scope="col">
+                Creator's plan
+              </th>
+              <th className="pricing-table-header" scope="col">
+                Ages platform fee
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {proposedPlans.map(({ name, supportFee }) => (
+              <tr key={name}>
+                <th scope="row">{name}</th>
+                <td>{supportFee}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
       <a href="/library">Return to Ages</a>
     </main>
   );

@@ -9,18 +9,29 @@ test("visitors can review proposed plans without starting a paid subscription", 
     page.getByRole("heading", { name: "Plans for your memories" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("table", {
-      name: "Proposed monthly plans and creator-support platform fees",
-    }),
+    page.getByRole("heading", { name: "Monthly plans" }),
   ).toBeVisible();
+  const plans = page.getByRole("table", { name: "Proposed monthly prices" });
   for (const row of [
-    "Free NT$0 / month 20%",
-    "Plus NT$99 / month 10%",
-    "Creator NT$299 / month 5%",
-    "Pro NT$599 / month 2.5%",
+    "Free NT$0 / month",
+    "Plus NT$99 / month",
+    "Creator NT$299 / month",
+    "Pro NT$599 / month",
   ]) {
-    await expect(page.getByRole("row", { name: row })).toBeVisible();
+    await expect(plans.getByRole("row", { name: row })).toBeVisible();
   }
+
+  await expect(
+    page.getByRole("heading", { name: "Creator-support fees" }),
+  ).toBeVisible();
+  const fees = page.getByRole("table", {
+    name: "Proposed platform fees on creator support",
+  });
+  for (const row of ["Free 20%", "Plus 10%", "Creator 5%", "Pro 2.5%"]) {
+    await expect(fees.getByRole("row", { name: row })).toBeVisible();
+  }
+  await expect(plans.getByText(/%/)).toHaveCount(0);
+  await expect(fees.getByText(/NT\$/)).toHaveCount(0);
   await expect(
     page.getByText(
       "Plan prices and creator-support fees are proposals. Paid subscriptions and creator-support payments are not available yet.",
