@@ -161,13 +161,7 @@ function App() {
           >
             Tracking settings
           </a>
-          <a
-            href="/pricing"
-            onClick={collectionLink}
-            aria-current={path === "/pricing" ? "page" : undefined}
-          >
-            Plans
-          </a>
+          <a href="https://ages.tw/pricing">Plans</a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -197,7 +191,7 @@ function App() {
           </button>
         </main>
       ) : path === "/pricing" ? (
-        <Pricing />
+        <PricingNotice />
       ) : profile ? (
         path === "/report" ? (
           <ReporterScreen authenticated authGeneration={generation} />
@@ -269,7 +263,7 @@ function Landing() {
           Your library starts private. Your memories stay yours.
         </p>
         <LocalSignIn />
-        <a href="/pricing">Explore plans</a>
+        <a href="https://ages.tw/pricing">Explore plans</a>
         <a className="landing-report-link" href="/report">
           Report an Ages Link
         </a>
@@ -300,87 +294,20 @@ function Landing() {
     </main>
   );
 }
-const proposedPlans = [
-  { name: "Free", monthly: 0, supportFee: "20%" },
-  { name: "Plus", monthly: 99, supportFee: "10%" },
-  { name: "Creator", monthly: 299, supportFee: "5%" },
-  { name: "Pro", monthly: 599, supportFee: "2.5%" },
-] as const;
-
-function Pricing() {
+function PricingNotice() {
   return (
-    <main id="main" className="loading-page pricing-page">
-      <p className="eyebrow">Ages beta</p>
-      <h1>Plans for your memories</h1>
+    <main id="main" className="loading-page pricing-page" lang="zh-Hant-TW">
+      <p className="eyebrow">AGES 方案資訊</p>
+      <h1>價格方案已移至 AGES 官網</h1>
       <p>
-        Plan prices and creator-support fees are proposals. Paid subscriptions
-        and creator-support payments are not available yet.
+        為了確保訂閱月費與創作者贊助費率資訊一致，所有公開方案將統一在
+        AGES 官方網站公告。目前仍屬 Beta 規劃，尚未開放訂閱或贊助付款。
       </p>
-      <section className="pricing-section" aria-labelledby="monthly-plans">
-        <h2 id="monthly-plans">Monthly plans</h2>
-        <p>
-          The monthly price is what a member would pay for their own Ages plan.
-          Prices are shown in New Taiwan dollars.
-        </p>
-        <table className="pricing-table">
-          <caption>Proposed monthly prices</caption>
-          <thead>
-            <tr>
-              <th className="pricing-table-header" scope="col">
-                Plan
-              </th>
-              <th className="pricing-table-header" scope="col">
-                Monthly price
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {proposedPlans.map(({ name, monthly }) => (
-              <tr key={name}>
-                <th scope="row">{name}</th>
-                <td>NT${monthly} / month</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p>
-          Plan features, storage limits, and annual pricing have not been
-          finalized.
-        </p>
-      </section>
-      <section className="pricing-section" aria-labelledby="support-fees">
-        <h2 id="support-fees">Creator-support fees</h2>
-        <p>
-          Creator support is a separate payment from a fan to a creator. The
-          platform fee would apply to each support payment at the rate for the
-          creator's plan.
-        </p>
-        <table className="pricing-table">
-          <caption>Proposed platform fees on creator support</caption>
-          <thead>
-            <tr>
-              <th className="pricing-table-header" scope="col">
-                Creator's plan
-              </th>
-              <th className="pricing-table-header" scope="col">
-                Ages platform fee
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {proposedPlans.map(({ name, supportFee }) => (
-              <tr key={name}>
-                <th scope="row">{name}</th>
-                <td>{supportFee}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-      <a href="/library">Return to Ages</a>
+      <a href="https://ages.tw/pricing">查看官方價格方案</a>
     </main>
   );
 }
+
 function query(filter: string, next?: string, trash = false) {
   const params = new URLSearchParams({ limit: "30" });
   if (filter && !trash) params.set("tag", filter);
