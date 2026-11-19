@@ -28,6 +28,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run test:recovery-drill
+      - run: npm run test:state-drill
       - run: npm run build:worker
       - run: npm run build:tracking-worker
 
