@@ -16,6 +16,7 @@ test("OKE uses the intended Node 26 patch version pinned by image digest", () =>
     dockerfile,
     /^FROM node:26\.13\.1-bookworm-slim@sha256:[a-f0-9]{64}$/m,
   );
+  assert.match(dockerfile, /apt-get install --no-install-recommends -y ca-certificates/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^RUN npm ci --no-audit --no-fund$/m);
   assert.doesNotMatch(dockerfile, /node:latest|bookworm-slim\s*$/m);

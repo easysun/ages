@@ -79,6 +79,7 @@ jobs:
             --publish 127.0.0.1:18787:8787 \
             ages-security-smoke
           trap 'docker logs --tail 60 ages-security-smoke; docker rm --force ages-security-smoke' EXIT
+          docker exec ages-security-smoke test -s /etc/ssl/certs/ca-certificates.crt
           healthy=false
           for attempt in $(seq 1 90); do
             if curl --fail --silent --show-error --max-time 3 \
