@@ -64,14 +64,23 @@ jobs:
           exit-code: "0"
 
   native-arm64-smoke:
-    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Build the OKE runtime natively on ARM64
         run: docker build --file Dockerfile.oke-dev --tag ages-security-smoke .
+      - name: Block fixable Critical runtime image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ages-security-smoke
+          scan-type: image
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Verify offline Wrangler startup, local D1 and noindex
+        if: github.event_name != 'schedule'
         shell: bash
         run: |
           set -euo pipefail

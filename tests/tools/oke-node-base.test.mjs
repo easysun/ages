@@ -24,3 +24,17 @@ test("OKE uses the intended Node 26 patch version pinned by image digest", () =>
   assert.match(dockerfile, /^RUN npm ci --no-audit --no-fund$/m);
   assert.doesNotMatch(dockerfile, /node:latest|bookworm-slim\s*$/m);
 });
+
+test("the built OKE image receives a blocking vulnerability scan on scheduled runs", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/oke-base-scan.yml", import.meta.url),
+    "utf8",
+  );
+  const nativeJob = workflow.split("  native-arm64-smoke:")[1];
+  assert.ok(nativeJob);
+  assert.doesNotMatch(nativeJob, /^    if: github\.event_name != 'schedule'$/m);
+  assert.match(
+    nativeJob,
+    /docker build --file Dockerfile\.oke-dev --tag ages-security-smoke \.[\s\S]*?image-ref: ages-security-smoke[\s\S]*?severity: CRITICAL[\s\S]*?ignore-unfixed: true[\s\S]*?exit-code: "1"/,
+  );
+});
