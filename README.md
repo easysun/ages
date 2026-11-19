@@ -140,7 +140,7 @@ Live pending/failed intents reserve quota until their capability expires; ready 
 
 Keep the bucket private: disable public `r2.dev` access and do not expose a public bucket domain. Configure `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY` for an isolated cloud environment whose `MEDIA` binding refers to that same bucket. Store keys through platform secrets. Bucket CORS must allow the exact app origin, PUT, Content-Type, If-None-Match, and Content-Length; optionally expose ETag. Do not use wildcard origins as a substitute for configuration.
 
-Local tests use real simulated D1/R2 and synthetic signing credentials. Wrangler's local R2 binding is not a public S3 endpoint; the app intentionally has no binary proxy fallback. A real browser direct-upload smoke test needs isolated cloud bindings, credentials, and CORS. Before release, verify a 250 MB PUT, signed-header tampering rejection, duplicate PUT rejection, expiry, and completion against real R2.
+Local tests use real simulated D1/R2 and synthetic signing credentials. The OKE development launcher enables Wrangler’s local S3 endpoint on the loopback app origin with temporary simulator credentials. A real browser direct-upload smoke test needs isolated cloud bindings, credentials, and CORS. Before release, verify a 250 MB PUT, signed-header tampering rejection, duplicate PUT rejection, expiry, and completion against real R2.
 
 References: [R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/), [conditional PutObject support](https://developers.cloudflare.com/r2/api/s3/api/), and [bucket CORS](https://developers.cloudflare.com/r2/buckets/cors/).
 
@@ -178,15 +178,18 @@ All `/api/timelines` routes require authentication and scope reads to the owner,
 | `POST /api/timelines` | `{title}` creates a private timeline at version 1, subject to the account timeline quota |
 | `GET /api/timelines?limit=50&cursor=...` | Owner list in creation-time/ID descending order; `limit` is 1–100; returns `timelines` and nullable `next_cursor` |
 | `GET /api/timelines/:id` | Return `timeline` including story items in narrative position order |
+| `GET /api/timelines/:id/items?version=...` | Return a page of items at the requested version. Media items include an `asset` summary. Text moments return `asset_id: null` and `asset: null`. |
 | `PATCH /api/timelines/:id` | `expected_version` plus one or more of `title`, `visibility`, nullable `cover_asset_id` |
-| `POST /api/timelines/:id/items` | `expected_version`, `asset_id`, optional `caption` and nullable `event_at`; append with a new independent item ID |
+| `POST /api/timelines/:id/items` | Append media with `asset_id` and an optional `caption`, or append a text moment with `"kind": "text"` and a nonblank `caption`. Both forms require `expected_version` and accept nullable `event_at`. |
 | `PATCH /api/timelines/:id/items/:itemId` | `expected_version` plus `caption` and/or nullable `event_at` |
 | `DELETE /api/timelines/:id/items/:itemId` | JSON `{expected_version}` removes only that item, never its asset |
 | `PUT /api/timelines/:id/order` | `expected_version` and the complete unique `item_ids` list, up to 1,000 IDs |
 
 Mutations return the updated `timeline` and advance its version once. Stale/concurrent versions and unavailable associations return 409; malformed or incomplete reorder sets return 400 without changes. Owner mismatches return 404. Every dependent D1 write and returned result is gated by a fresh internal mutation token; a zero-row version comparison cannot modify item rows. The response reads belong to that same transaction. Tokens and owner IDs are not returned.
 
-An asset may appear in multiple timelines or multiple items with independent captions and event dates. Covers and items require owned, ready, undeleted assets. Database ownership constraints and reference triggers protect assets from trash, purge, or physical deletion while referenced. Item removal leaves narrative position gaps; a complete reorder assigns positions from zero. No timeline deletion endpoint, interactive editor, or Link resolver is implemented.
+Clients may supply an `item_id` made from `ti_client_` followed by a lowercase UUIDv4 when appending either kind of moment. If the response is lost, resend the same body, including the original `expected_version`. A matching replay returns the current timeline without advancing its version. With `Prefer: return=minimal`, it returns 204. Conflicting requests and retries for changed or removed items return 409.
+
+An asset may appear in multiple timelines or multiple items with independent captions and event dates. Media items and covers require owned, ready, undeleted assets. A standalone text moment stores its plain text in the item caption, preserving whitespace and line breaks up to 10,000 UTF-16 code units. Its caption must contain a non-whitespace character on creation and after every edit. Database ownership constraints and reference triggers protect assets from trash, purge, or physical deletion while referenced. Item removal leaves narrative position gaps. A complete reorder assigns positions from zero across both media and text.
 
 `event_at` is either null, `{"kind":"date","date":"2024-02-29","time_zone":"Asia/Taipei","calendar":"iso8601"}`, or `{"kind":"instant","instant":"2026-10-04T08:30:00.000Z","time_zone":"Asia/Taipei"}`. Calendar dates retain their precision and named timezone without conversion to midnight UTC. Offset-qualified instants normalize to UTC millisecond timestamps while retaining the named presentation timezone. Numeric offset strings are not timezone names. These values never rewrite asset capture timestamps.
 

@@ -24,6 +24,7 @@ const supported = new Set([
 export async function uploadFile(
   job: UploadJob,
   update: (change: Partial<UploadJob>) => void,
+  signal: AbortSignal | null = null,
 ) {
   const file = job.file;
   if (!supported.has(file.type))
@@ -44,7 +45,7 @@ export async function uploadFile(
       return (
         await api<{ asset: LibraryAsset }>(
           `/api/assets/${intent.asset.id}/complete`,
-          { method: "POST", ...jsonBody({}) },
+          { method: "POST", signal, ...jsonBody({}) },
         )
       ).asset;
     } catch (error) {
@@ -56,6 +57,7 @@ export async function uploadFile(
     }
     const current = await api<{ asset: LibraryAsset }>(
       `/api/assets/${intent.asset.id}`,
+      { signal },
     );
     if (
       current.asset.status !== "pending" ||
@@ -66,6 +68,7 @@ export async function uploadFile(
   if (!intent) {
     intent = await api<UploadIntent>("/api/assets/upload-intent", {
       method: "POST",
+      signal,
       ...jsonBody({
         filename: file.name,
         mime_type: file.type,
@@ -74,6 +77,7 @@ export async function uploadFile(
     });
     update({ intent });
   }
+  signal?.throwIfAborted();
   update({ phase: "uploading" });
   let response: Response;
   try {
@@ -81,6 +85,7 @@ export async function uploadFile(
       method: intent.upload.method,
       headers: intent.upload.headers,
       body: file,
+      signal,
     });
   } catch {
     throw new RequestError(
@@ -93,11 +98,12 @@ export async function uploadFile(
       "UPLOAD_INTERRUPTED",
       "Upload interrupted. Retry checks for a saved upload before sending the file again.",
     );
+  signal?.throwIfAborted();
   update({ phase: "checking" });
   return (
     await api<{ asset: LibraryAsset }>(
       `/api/assets/${intent.asset.id}/complete`,
-      { method: "POST", ...jsonBody({}) },
+      { method: "POST", signal, ...jsonBody({}) },
     )
   ).asset;
 }

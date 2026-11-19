@@ -9,6 +9,7 @@ export type Bindings = Omit<WorkerBindings, "APP_ENV"> & {
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   LOCAL_LOGIN_ENABLED?: string;
+  LOCAL_R2_UPLOADS_ENABLED?: string;
   R2_ACCOUNT_ID?: string;
   R2_BUCKET_NAME?: string;
   R2_ACCESS_KEY_ID?: string;

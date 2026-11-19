@@ -15,7 +15,7 @@ export type TimelineItem = {
   id: string;
   timeline_id: string;
   owner_id: string;
-  asset_id: string;
+  asset_id: string | null;
   position: number;
   caption: string;
   event_at: string | null;
