@@ -300,8 +300,8 @@ function PricingNotice() {
       <p className="eyebrow">AGES 方案資訊</p>
       <h1>價格方案已移至 AGES 官網</h1>
       <p>
-        為了確保訂閱月費與創作者贊助費率資訊一致，所有公開方案將統一在
-        AGES 官方網站公告。目前仍屬 Beta 規劃，尚未開放訂閱或贊助付款。
+        為了確保訂閱月費與創作者贊助費率資訊一致，所有公開方案將統一在 AGES
+        官方網站公告。目前仍屬 Beta 規劃，尚未開放訂閱或贊助付款。
       </p>
       <a href="https://ages.tw/pricing">查看官方價格方案</a>
     </main>
