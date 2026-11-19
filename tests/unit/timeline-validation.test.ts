@@ -91,6 +91,54 @@ describe("Timeline calendar and instant semantics", () => {
   });
 });
 
+describe("Standalone text moment input", () => {
+  it("reserves a bounded UUIDv4 namespace for retryable append IDs", () => {
+    const body = { kind: "text", caption: "A memory", expected_version: 1 };
+    expect(
+      validation.appendItemSchema.safeParse({
+        ...body,
+        item_id: "ti_client_1d9e45b8-2992-4ece-bceb-a81ed393da2d",
+      }).success,
+    ).toBe(true);
+    for (const item_id of [
+      "",
+      "ti_client_123",
+      "ti_1d9e45b8-2992-4ece-bceb-a81ed393da2d",
+      "ti_client_1d9e45b8-2992-1ece-bceb-a81ed393da2d",
+      "x".repeat(400),
+    ]) {
+      expect(
+        validation.appendItemSchema.safeParse({ ...body, item_id }).success,
+      ).toBe(false);
+    }
+  });
+  it("accepts literal nonblank text without requiring an asset or altering its formatting", () => {
+    const value = {
+      expected_version: 1,
+      kind: "text",
+      caption: "  A memory\n<3  ",
+    };
+    expect(validation.appendItemSchema.safeParse(value).success).toBe(true);
+    expect(validation.appendItemSchema.parse(value).caption).toBe(
+      value.caption,
+    );
+    for (const invalid of [
+      { kind: "text" },
+      { caption: "Missing kind" },
+      { kind: "text", caption: " \t\r\n\u3000" },
+      { kind: "text", caption: "x".repeat(10001) },
+      { kind: "text", caption: "Ambiguous", asset_id: "asset_a" },
+    ]) {
+      expect(
+        validation.appendItemSchema.safeParse({
+          expected_version: 1,
+          ...invalid,
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
+
 describe("Timeline read query validation", () => {
   it("defaults to bounded overview and detail pages and accepts pinned selectors", () => {
     const overview = querySchema("timelineOverviewQuerySchema");

@@ -202,6 +202,47 @@ describe("S3 upload signing", () => {
   };
   const now = new Date("2026-10-03T01:00:00.999Z");
 
+  it("signs only the loopback simulator when local R2 uploads are explicitly enabled", async () => {
+    const local = {
+      ...bindings,
+      LOCAL_R2_UPLOADS_ENABLED: "true",
+      APP_ORIGIN: "http://127.0.0.1:8787",
+    };
+    const url = new URL(
+      (await signUpload(local, "originals/a", "image/png", 100, now)).url,
+    );
+    expect(url.origin + url.pathname).toBe(
+      "http://127.0.0.1:8787/cdn-cgi/local/r2/s3/ages-test/originals/a",
+    );
+    expect(url.searchParams.get("X-Amz-SignedHeaders")).toBe(
+      "content-length;content-type;host;if-none-match",
+    );
+    for (const override of [
+      { APP_ENV: "production" },
+      { APP_ENV: "preview" },
+      { APP_ENV: "development" },
+      { APP_ORIGIN: "http://127.0.0.1.example.test:8787" },
+      { APP_ORIGIN: "https://example.test" },
+      { APP_ORIGIN: "http://localhost:8787/path" },
+    ] as const) {
+      await expect(
+        signUpload(
+          { ...local, ...override },
+          "originals/a",
+          "image/png",
+          100,
+          now,
+        ),
+      ).rejects.toThrow();
+    }
+    const cloud = new URL(
+      (await signUpload(bindings, "originals/a", "image/png", 100, now)).url,
+    );
+    expect(cloud.origin).toBe(
+      `https://${bindings.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+    );
+  });
+
   it("signs size, MIME and create-only conditions with second-accurate expiration", async () => {
     const upload = await signUpload(
       bindings,
