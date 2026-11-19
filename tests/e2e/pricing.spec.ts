@@ -21,10 +21,9 @@ test("visitors can navigate from the landing page to official pricing", async ({
   page,
 }) => {
   await page.goto("/");
-  await expect(page.getByRole("link", { name: "Explore plans" })).toHaveAttribute(
-    "href",
-    "https://ages.tw/pricing",
-  );
+  await expect(
+    page.getByRole("link", { name: "Explore plans" }),
+  ).toHaveAttribute("href", "https://ages.tw/pricing");
 });
 
 test("signed-in owners find official plan link without quota changes", async ({
@@ -34,10 +33,9 @@ test("signed-in owners find official plan link without quota changes", async ({
   await seedLibrary(context);
   const before = await (await context.request.get("/api/me")).json();
   await page.goto("/library");
-  await expect(page.getByRole("link", { name: "Plans", exact: true })).toHaveAttribute(
-    "href",
-    "https://ages.tw/pricing",
-  );
+  await expect(
+    page.getByRole("link", { name: "Plans", exact: true }),
+  ).toHaveAttribute("href", "https://ages.tw/pricing");
   const after = await (await context.request.get("/api/me")).json();
   expect(after.quota).toEqual(before.quota);
 });
