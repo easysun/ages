@@ -57,16 +57,34 @@ export const updateTimelineSchema = z
       value.visibility !== undefined ||
       value.cover_asset_id !== undefined,
   );
-export const appendItemSchema = z.strictObject({
+const caption = z.string().max(10000);
+const appendFields = {
+  item_id: z
+    .string()
+    .regex(
+      /^ti_client_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    )
+    .length(46)
+    .optional(),
   expected_version: expectedVersion,
-  asset_id: id,
-  caption: z.string().max(10000).default(""),
   event_at: eventAtSchema.nullable().default(null),
-});
+};
+export const appendItemSchema = z.union([
+  z.strictObject({
+    ...appendFields,
+    asset_id: id,
+    caption: caption.default(""),
+  }),
+  z.strictObject({
+    ...appendFields,
+    kind: z.literal("text"),
+    caption: caption.refine((value) => value.trim().length > 0),
+  }),
+]);
 export const updateItemSchema = z
   .strictObject({
     expected_version: expectedVersion,
-    caption: z.string().max(10000).optional(),
+    caption: caption.optional(),
     event_at: eventAtSchema.nullable().optional(),
   })
   .refine(

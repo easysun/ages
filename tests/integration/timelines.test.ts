@@ -12,7 +12,7 @@ let session: string;
 let other: string;
 type Item = {
   id: string;
-  asset_id: string;
+  asset_id: string | null;
   position: number;
   caption: string;
   event_at: unknown;
@@ -35,7 +35,7 @@ type DetailPage = {
   version: number;
   items: {
     id: string;
-    asset_id: string;
+    asset_id: string | null;
     position: number;
     caption: string;
     event_at: unknown;
@@ -46,7 +46,7 @@ type DetailPage = {
       width: number | null;
       height: number | null;
       duration_ms: number | null;
-    };
+    } | null;
   }[];
   next_cursor: string | null;
 };
@@ -221,7 +221,7 @@ function expectDetailBatch(sql: string[]) {
     /SELECT \* FROM timelines WHERE id = \? AND owner_id = \?/,
   );
   expect(sql[1]).toMatch(
-    /FROM timeline_items i JOIN assets a ON a\.id = i\.asset_id AND a\.owner_id = i\.owner_id/,
+    /FROM timeline_items i LEFT JOIN assets a ON a\.id = i\.asset_id AND a\.owner_id = i\.owner_id/,
   );
 }
 
@@ -1494,6 +1494,282 @@ describe("Independent story items", () => {
       ).status,
     ).toBe(500);
     expect(await snapshot(timeline.id)).toEqual(before);
+  });
+});
+
+describe("Retryable appends", () => {
+  it("acknowledges the original append at the current version without duplicating media or text", async () => {
+    await ready();
+    const timeline = await create();
+    const path = `/${timeline.id}/items`;
+    for (const source of [{ asset_id: "asset_a" }, { kind: "text" }]) {
+      const expected_version = (await get(timeline.id)).version;
+      const item_id = `ti_client_${crypto.randomUUID()}`;
+      const body = {
+        ...source,
+        item_id,
+        expected_version,
+        caption: "Original",
+      };
+      const concurrent = await Promise.all([
+        request(path, "POST", body),
+        request(path, "POST", body),
+      ]);
+      expect(concurrent.map((row) => row.status)).toEqual([201, 201]);
+      const written = await get(timeline.id);
+      expect(written.items.filter((row) => row.id === item_id)).toHaveLength(1);
+      expect(written.version).toBe(expected_version + 1);
+      const unrelated = await request(`/${timeline.id}`, "PATCH", {
+        expected_version: written.version,
+        title: "Updated title",
+      });
+      expect(unrelated.status).toBe(200);
+      const before = await snapshot(timeline.id);
+      const replay = await request(path, "POST", body);
+      expect(replay.status).toBe(201);
+      expect(await replay.json()).toMatchObject({
+        timeline: { version: written.version + 1, title: "Updated title" },
+      });
+      expect(
+        (
+          await request(path, "POST", body, session, origin, {
+            Prefer: "return=minimal",
+          })
+        ).status,
+      ).toBe(204);
+      expect(
+        (await request(path, "POST", { ...body, caption: "Different" })).status,
+      ).toBe(409);
+      expect(
+        (
+          await request(path, "POST", {
+            ...body,
+            expected_version: written.version + 1,
+          })
+        ).status,
+      ).toBe(409);
+      expect((await request(path, "POST", body, other)).status).toBe(404);
+      expect(await snapshot(timeline.id)).toEqual(before);
+    }
+  });
+  it("never resurrects an edited or deleted moment or acknowledges another owner's item", async () => {
+    const timeline = await create();
+    const foreign = await create("Other", other);
+    const item_id = `ti_client_${crypto.randomUUID()}`;
+    const path = `/${timeline.id}/items`;
+    const body = {
+      kind: "text",
+      item_id,
+      expected_version: 1,
+      caption: "Private original",
+    };
+    expect((await request(path, "POST", body)).status).toBe(201);
+    const foreignCollision = await request(
+      `/${foreign.id}/items`,
+      "POST",
+      body,
+      other,
+    );
+    expect(foreignCollision.status).toBe(409);
+    const collisionBody = await foreignCollision.json();
+    expect(collisionBody).not.toHaveProperty("timeline");
+    expect(collisionBody).toMatchObject({ error: { code: "CONFLICT" } });
+    expect(
+      (
+        await request(`${path}/${item_id}`, "PATCH", {
+          expected_version: 2,
+          caption: "Changed",
+        })
+      ).status,
+    ).toBe(200);
+    const changed = await request(path, "POST", body);
+    expect(changed.status).toBe(409);
+    expect(await changed.json()).toMatchObject({
+      error: { code: "APPEND_ALREADY_APPLIED" },
+    });
+    expect(
+      (await request(path, "POST", { ...body, caption: "Changed" })).status,
+    ).toBe(409);
+    expect(
+      (
+        await request(`${path}/${item_id}`, "PATCH", {
+          expected_version: 3,
+          caption: "Private original",
+        })
+      ).status,
+    ).toBe(200);
+    const restored = await request(path, "POST", body);
+    expect(restored.status).toBe(409);
+    expect(await restored.json()).toMatchObject({
+      error: { code: "APPEND_ALREADY_APPLIED" },
+    });
+    expect(
+      (await request(`${path}/${item_id}`, "DELETE", { expected_version: 4 }))
+        .status,
+    ).toBe(200);
+    expect((await request(path, "POST", body)).status).toBe(409);
+    expect(
+      (await request(path, "POST", { ...body, expected_version: 5 })).status,
+    ).toBe(409);
+    expect(await get(timeline.id)).toMatchObject({ version: 5, items: [] });
+  });
+});
+
+describe("Standalone text moments", () => {
+  it("persists, pages, edits, reorders and removes text alongside existing media", async () => {
+    await ready();
+    const media = await append(await create());
+    const caption = "  At the station\nWe waved <goodbye>.  ";
+    const event_at = {
+      kind: "date",
+      date: "2026-08-12",
+      time_zone: "UTC",
+      calendar: "iso8601",
+    };
+    const path = `/${media.id}`;
+    const body = {
+      kind: "text",
+      caption,
+      event_at,
+      expected_version: media.version,
+    };
+    expect((await request(`${path}/items`, "POST", body, other)).status).toBe(
+      404,
+    );
+    const added = await request(`${path}/items`, "POST", body);
+    expect(added.status).toBe(201);
+    const { timeline } = await added.json<{ timeline: Timeline }>();
+    const text = timeline.items[1];
+    if (!text) throw new Error("Expected the appended text moment");
+    expect(text).toMatchObject({
+      asset_id: null,
+      position: 1,
+      caption,
+      event_at,
+    });
+    expect((await get(media.id)).items).toEqual(timeline.items);
+    const cursorPage = await request(
+      `${path}/items?version=${timeline.version}&limit=1`,
+    );
+    const first = await cursorPage.json<DetailPage>();
+    expect(first.items[0]?.asset?.id).toBe("asset_a");
+    const next = await request(
+      `${path}/items?version=${timeline.version}&limit=1&cursor=${first.next_cursor}`,
+    );
+    expect(await next.json()).toMatchObject({
+      items: [
+        {
+          id: text.id,
+          position: 1,
+          asset_id: null,
+          asset: null,
+          caption,
+          event_at,
+        },
+      ],
+      next_cursor: null,
+    });
+    const overview = await request(`${path}/overview?projection=chronological`);
+    expect(await overview.json()).toMatchObject({
+      total_items: 2,
+      items: [{ position: 0 }, { id: text.id, position: 1, event_at }],
+    });
+    const before = await snapshot(media.id);
+    expect((await request(`${path}/items`, "POST", body)).status).toBe(409);
+    expect(
+      (
+        await request(`${path}/items/${text.id}`, "PATCH", {
+          expected_version: timeline.version,
+          caption: "\n\u3000\t",
+        })
+      ).status,
+    ).toBe(400);
+    expect(await snapshot(media.id)).toEqual(before);
+    const edit = await request(`${path}/items/${text.id}`, "PATCH", {
+      expected_version: timeline.version,
+      caption: "Changed",
+      event_at: null,
+    });
+    expect(edit.status).toBe(200);
+    const reordered = await request(`${path}/order`, "PUT", {
+      expected_version: timeline.version + 1,
+      item_ids: [text.id, media.items[0]?.id],
+    });
+    expect(reordered.status).toBe(200);
+    expect((await get(media.id)).items).toMatchObject([
+      {
+        id: text.id,
+        asset_id: null,
+        caption: "Changed",
+        event_at: null,
+        position: 0,
+      },
+      { asset_id: "asset_a", position: 1 },
+    ]);
+    const removed = await request(`${path}/items/${text.id}`, "DELETE", {
+      expected_version: timeline.version + 2,
+    });
+    expect(removed.status).toBe(200);
+    expect((await get(media.id)).items).toMatchObject([
+      { asset_id: "asset_a" },
+    ]);
+    expect(
+      await env.DB.prepare("SELECT count(*) FROM assets").first("count(*)"),
+    ).toBe(1);
+  });
+
+  it("upgrades existing items with their identity, order, metadata and media protections intact", async () => {
+    await reset();
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.slice(0, 19));
+    session = await seedUser();
+    await ready();
+    const media = await append(await create(), "asset_a", {
+      caption: "Original caption",
+    });
+    await env.DB.prepare(
+      "UPDATE timeline_items SET position = 2, event_at = ? WHERE id = ?",
+    )
+      .bind(
+        JSON.stringify({
+          kind: "date",
+          date: "2025-09-29",
+          calendar: "iso8601",
+          time_zone: "Asia/Taipei",
+        }),
+        media.items[0]?.id,
+      )
+      .run();
+    const before = await snapshot(media.id);
+    await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+    expect(await snapshot(media.id)).toEqual(before);
+    const insert = env.DB.prepare(`INSERT INTO timeline_items
+      (id, timeline_id, owner_id, asset_id, position, caption, created_at, updated_at)
+      VALUES ('text', ?, 'owner_a', NULL, 3, ?, 'now', 'now')`);
+    await insert.bind(media.id, "Separate moment").run();
+    for (const statement of [
+      env.DB.prepare(
+        "UPDATE timeline_items SET caption = ? WHERE id = 'text'",
+      ).bind(" \t\n\u3000"),
+      env.DB.prepare(
+        "UPDATE timeline_items SET asset_id = 'asset_a' WHERE id = 'text'",
+      ),
+      env.DB.prepare(
+        "UPDATE timeline_items SET asset_id = NULL WHERE id = ?",
+      ).bind(media.items[0]?.id),
+      env.DB.prepare(
+        "UPDATE assets SET status = 'deleted' WHERE id = 'asset_a'",
+      ),
+      env.DB.prepare("DELETE FROM assets WHERE id = 'asset_a'"),
+    ])
+      await expect(statement.run()).rejects.toThrow();
+    expect((await get(media.id)).items).toMatchObject([
+      {
+        id: media.items[0]?.id,
+        asset_id: "asset_a",
+        caption: "Original caption",
+      },
+      { id: "text", asset_id: null, caption: "Separate moment" },
+    ]);
   });
 });
 

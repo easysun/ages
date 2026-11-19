@@ -1,4 +1,5 @@
 import { AwsV4Signer } from "aws4fetch";
+import { appOrigin } from "../auth/config";
 import type { Bindings } from "../bindings";
 import { ApiError } from "../http/errors";
 
@@ -9,17 +10,24 @@ export async function signUpload(
   size: number,
   now: Date,
 ) {
+  const local = bindings.LOCAL_R2_UPLOADS_ENABLED === "true";
   if (
-    !/^[a-f0-9]{32}$/.test(bindings.R2_ACCOUNT_ID ?? "") ||
+    (!local && !/^[a-f0-9]{32}$/.test(bindings.R2_ACCOUNT_ID ?? "")) ||
     !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(bindings.R2_BUCKET_NAME ?? "") ||
     !bindings.R2_ACCESS_KEY_ID ||
     !bindings.R2_SECRET_ACCESS_KEY
   ) {
     throw new ApiError("SERVICE_UNAVAILABLE");
   }
-  const url = new URL(
-    `https://${bindings.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${bindings.R2_BUCKET_NAME}/${key}`,
-  );
+  let endpoint = `https://${bindings.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  if (local) {
+    // appOrigin allows HTTP only on exact loopback hosts in the local environment.
+    const origin = appOrigin(bindings);
+    if (bindings.APP_ENV !== "local" || !origin.startsWith("http://"))
+      throw new ApiError("SERVICE_UNAVAILABLE");
+    endpoint = `${origin}/cdn-cgi/local/r2/s3`;
+  }
+  const url = new URL(`${endpoint}/${bindings.R2_BUCKET_NAME}/${key}`);
   url.searchParams.set("X-Amz-Expires", "600");
   const headers = { "Content-Type": mime, "If-None-Match": "*" };
   const signed = await new AwsV4Signer({

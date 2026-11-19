@@ -11,6 +11,11 @@ const errors = {
     status: 409,
     message: "The request conflicts with current state.",
   },
+  APPEND_ALREADY_APPLIED: {
+    status: 409,
+    message:
+      "This moment was already added and has since changed. Review the latest timeline.",
+  },
   PAYLOAD_TOO_LARGE: { status: 413, message: "Request body is too large." },
   ASSET_TOO_LARGE: { status: 413, message: "Asset exceeds the size limit." },
   TIMELINE_QUOTA_EXCEEDED: { status: 403, message: "Timeline quota exceeded." },
