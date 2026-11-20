@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import type { Locale } from "./locale";
+import { browserLocale, type Locale, supportedLocale } from "./locale";
 
 export type { Locale } from "./locale";
 
@@ -70,13 +70,6 @@ type LocaleContextValue = {
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 const key = "ages_locale";
 
-export function supportedLocale(
-  value: string | null | undefined,
-): Locale | null {
-  if (value === "en" || value === "zh-Hant") return value;
-  return null;
-}
-
 function initialLocale(): Locale {
   try {
     const saved = supportedLocale(window.localStorage.getItem(key));
@@ -94,7 +87,7 @@ function initialLocale(): Locale {
   } catch {
     // Fall back to the browser language when cookies are unavailable.
   }
-  return navigator.language.toLowerCase().startsWith("zh") ? "zh-Hant" : "en";
+  return browserLocale(navigator.languages, navigator.language);
 }
 
 export function LocaleProvider({ children }: { children: ReactNode }) {

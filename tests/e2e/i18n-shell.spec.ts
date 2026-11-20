@@ -36,6 +36,36 @@ test("language selection persists across reload and updates the document and nav
   await expect(language).toHaveValue("en");
 });
 
+test("a saved Taiwan locale takes precedence and survives reload", async ({
+  page,
+  context,
+}) => {
+  await context.addCookies([
+    { name: "ages_locale", value: "en", url: e2eOrigin },
+  ]);
+  await page.addInitScript(() => {
+    if (!window.localStorage.getItem("ages_locale")) {
+      window.localStorage.setItem("ages_locale", "zh-TW");
+    }
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByLabel("Language / 語言")).toHaveValue("zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("ages_locale")))
+    .toBe("zh-Hant");
+  expect(
+    (await context.cookies()).find((cookie) => cookie.name === "ages_locale")
+      ?.value,
+  ).toBe("zh-Hant");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByLabel("Language / 語言")).toHaveValue("zh-Hant");
+});
+
 test("first-time visitors can select Chinese before signing in", async ({
   page,
 }) => {
@@ -184,4 +214,43 @@ test("Chinese conflict notice preserves an unsaved caption", async ({
   await expect(first.getByRole("textbox", { name: "照片說明" })).toHaveValue(
     "保留我的草稿",
   );
+});
+
+test("first-time language selection honors supported browser preferences after an unsupported language", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "language", { get: () => "fr-FR" });
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["fr-FR", "zh-TW", "en-US"],
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+});
+
+test("browser preferences work when storage is blocked and no cookie exists", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    });
+    Object.defineProperty(navigator, "language", { get: () => "fr-FR" });
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["fr-FR", "zh-TW"],
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
 });

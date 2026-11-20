@@ -3,6 +3,7 @@ import { getCookie } from "hono/cookie";
 import type { Asset } from "../assets/model";
 import { appOrigin } from "../auth/config";
 import type { AppContext } from "../bindings";
+import { supportedLocale } from "../client/locale";
 import { ApiError } from "../http/errors";
 import { streamAssetMedia } from "../media/stream";
 import { visibleTimelineSql } from "../moderation/availability";
@@ -66,11 +67,8 @@ publicTimeline.get("/:id", async (context) => {
     .filter(({ tag, quality }) => /^(en|zh)(-|$)/.test(tag) && quality > 0)
     .sort((a, b) => b.quality - a.quality || a.index - b.index);
   const locale =
-    preference === "zh-Hant" || preference === "en"
-      ? preference
-      : orderedLanguages[0]?.tag.startsWith("zh")
-        ? "zh-Hant"
-        : "en";
+    supportedLocale(preference) ??
+    (orderedLanguages[0]?.tag.startsWith("zh") ? "zh-Hant" : "en");
   return context.html(
     renderTimeline(
       timeline,

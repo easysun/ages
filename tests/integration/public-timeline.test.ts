@@ -133,6 +133,10 @@ describe("Canonical public timeline SSR", () => {
       headers: { Cookie: "ages_locale=en", "Accept-Language": "zh-TW" },
     });
     expect(await en.text()).toContain('<html lang="en">');
+    const savedTaiwanLocale = await request("/t/story", {
+      headers: { Cookie: "ages_locale=zh-TW", "Accept-Language": "en" },
+    });
+    expect(await savedTaiwanLocale.text()).toContain('<html lang="zh-Hant">');
     await timeline("private-story", "private", "A secret");
     const hidden = await request("/t/private-story", {
       headers: { Cookie: "ages_locale=zh-Hant" },
