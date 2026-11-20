@@ -17,6 +17,7 @@ import { type Locale, LocaleProvider, useLocale } from "./i18n";
 import { LinksScreen } from "./links";
 import { LocalSignIn } from "./local-sign-in";
 import { ModerationScreen } from "./moderation";
+import { officialPricingUrl } from "./pricing-url";
 import { ReporterScreen } from "./reporter";
 import { TimelineScreen } from "./timelines";
 import { TrackingSettingsScreen } from "./tracking-settings";
@@ -177,13 +178,7 @@ function App() {
           >
             {t("tracking")}
           </a>
-          <a
-            href="/pricing"
-            onClick={collectionLink}
-            aria-current={path === "/pricing" ? "page" : undefined}
-          >
-            {t("plans")}
-          </a>
+          <a href={officialPricingUrl(locale)}>{t("plans")}</a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -266,7 +261,7 @@ function App() {
   );
 }
 function Landing() {
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   return (
     <main id="main" className="landing">
       <div className="landing-copy">
@@ -282,7 +277,7 @@ function Landing() {
         </a>
         <p className="privacy-copy">{t("privateStart")}</p>
         <LocalSignIn />
-        <a href="/pricing">{t("explorePlans")}</a>
+        <a href={officialPricingUrl(locale)}>{t("explorePlans")}</a>
         <a className="landing-report-link" href="/report">
           {t("reportLink")}
         </a>
@@ -313,97 +308,25 @@ function Landing() {
     </main>
   );
 }
-const proposedPlans = [
-  { name: "Free", monthly: 0, supportFee: "20%" },
-  { name: "Plus", monthly: 99, supportFee: "10%" },
-  { name: "Creator", monthly: 299, supportFee: "5%" },
-  { name: "Pro", monthly: 599, supportFee: "2.5%" },
-] as const;
-
 function Pricing() {
   const { locale } = useLocale();
   const zh = locale === "zh-Hant";
   return (
     <main id="main" className="loading-page pricing-page">
-      <p className="eyebrow">{zh ? "Ages 測試版" : "Ages beta"}</p>
-      <h1>{zh ? "為回憶選擇適合的方案" : "Plans for your memories"}</h1>
+      <p className="eyebrow">{zh ? "AGES 方案資訊" : "Ages plans"}</p>
+      <h1>
+        {zh
+          ? "價格方案已移至 AGES 官網"
+          : "Pricing has moved to the Ages website"}
+      </h1>
       <p>
         {zh
-          ? "方案價格與創作者贊助費率仍在規劃中，付費訂閱與贊助功能尚未開放。"
-          : "Plan prices and creator-support fees are proposals. Paid subscriptions and creator-support payments are not available yet."}
+          ? "所有公開方案將統一在 AGES 官方網站公告。目前仍屬規劃階段，尚未開放訂閱或贊助付款。"
+          : "Public plan information is available on the official Ages website. Plans are still proposed, and subscriptions and creator-support payments are not available yet."}
       </p>
-      <section className="pricing-section" aria-labelledby="monthly-plans">
-        <h2 id="monthly-plans">{zh ? "月繳方案" : "Monthly plans"}</h2>
-        <p>
-          {zh
-            ? "月費為會員本人 Ages 方案的價格，金額以新臺幣顯示。"
-            : "The monthly price is what a member would pay for their own Ages plan. Prices are shown in New Taiwan dollars."}
-        </p>
-        <table className="pricing-table">
-          <caption>{zh ? "規劃中的月費" : "Proposed monthly prices"}</caption>
-          <thead>
-            <tr>
-              <th className="pricing-table-header" scope="col">
-                {zh ? "方案" : "Plan"}
-              </th>
-              <th className="pricing-table-header" scope="col">
-                {zh ? "月費" : "Monthly price"}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {proposedPlans.map(({ name, monthly }) => (
-              <tr key={name}>
-                <th scope="row">{name}</th>
-                <td>
-                  NT${monthly} {zh ? "/ 月" : "/ month"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p>
-          {zh
-            ? "方案功能、儲存空間上限及年費尚未定案。"
-            : "Plan features, storage limits, and annual pricing have not been finalized."}
-        </p>
-      </section>
-      <section className="pricing-section" aria-labelledby="support-fees">
-        <h2 id="support-fees">
-          {zh ? "創作者贊助費率" : "Creator-support fees"}
-        </h2>
-        <p>
-          {zh
-            ? "創作者贊助是粉絲支付給創作者的獨立款項，每筆贊助將依創作者的方案費率計收平台費。"
-            : "Creator support is a separate payment from a fan to a creator. The platform fee would apply to each support payment at the rate for the creator’s plan."}
-        </p>
-        <table className="pricing-table">
-          <caption>
-            {zh
-              ? "規劃中的創作者贊助平台費率"
-              : "Proposed platform fees on creator support"}
-          </caption>
-          <thead>
-            <tr>
-              <th className="pricing-table-header" scope="col">
-                {zh ? "創作者方案" : "Creator’s plan"}
-              </th>
-              <th className="pricing-table-header" scope="col">
-                {zh ? "Ages 平台費率" : "Ages platform fee"}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {proposedPlans.map(({ name, supportFee }) => (
-              <tr key={name}>
-                <th scope="row">{name}</th>
-                <td>{supportFee}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-      <a href="/library">{zh ? "返回 Ages" : "Return to Ages"}</a>
+      <a href={officialPricingUrl(locale)}>
+        {zh ? "查看官方價格方案" : "View official pricing"}
+      </a>
     </main>
   );
 }

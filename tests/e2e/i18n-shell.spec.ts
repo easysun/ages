@@ -75,14 +75,16 @@ test("Chinese library and proposed pricing remain usable after navigation", asyn
   await expect(
     page.getByRole("heading", { name: "垃圾桶是空的" }),
   ).toBeVisible();
-  await page.getByRole("link", { name: "方案", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "為回憶選擇適合的方案" }),
+    page.getByRole("link", { name: "方案", exact: true }),
+  ).toHaveAttribute("href", "https://ages.tw/pricing");
+  await page.goto("/pricing");
+  await expect(
+    page.getByRole("heading", { name: "價格方案已移至 AGES 官網" }),
   ).toBeVisible();
-  await expect(page.getByRole("table", { name: "規劃中的月費" })).toBeVisible();
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "為回憶選擇適合的方案" }),
+    page.getByRole("heading", { name: "價格方案已移至 AGES 官網" }),
   ).toBeVisible();
 });
 
