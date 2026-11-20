@@ -12,7 +12,7 @@ test("legacy pricing bookmarks offer a localized link without enabling payment",
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "View official pricing" }),
-  ).toHaveAttribute("href", "https://ages.tw/pricing");
+  ).toHaveAttribute("href", "https://ages.tw/pricing-en");
   await expect(page.getByRole("table")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: /subscribe|purchase/i }),
@@ -37,13 +37,13 @@ test("landing and owner navigation link to the canonical page without changing q
   await page.goto("/");
   await expect(
     page.getByRole("link", { name: "Explore plans" }),
-  ).toHaveAttribute("href", "https://ages.tw/pricing");
+  ).toHaveAttribute("href", "https://ages.tw/pricing-en");
   await seedLibrary(context);
   const before = await (await context.request.get("/api/me")).json();
   await page.goto("/library");
   await expect(
     page.getByRole("link", { name: "Plans", exact: true }),
-  ).toHaveAttribute("href", "https://ages.tw/pricing");
+  ).toHaveAttribute("href", "https://ages.tw/pricing-en");
   await page.getByLabel("Language / 語言").selectOption("zh-Hant");
   await expect(
     page.getByRole("link", { name: "方案", exact: true }),

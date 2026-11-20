@@ -17,6 +17,7 @@ import { type Locale, LocaleProvider, useLocale } from "./i18n";
 import { LinksScreen } from "./links";
 import { LocalSignIn } from "./local-sign-in";
 import { ModerationScreen } from "./moderation";
+import { officialPricingUrl } from "./pricing-url";
 import { ReporterScreen } from "./reporter";
 import { TimelineScreen } from "./timelines";
 import { TrackingSettingsScreen } from "./tracking-settings";
@@ -177,7 +178,7 @@ function App() {
           >
             {t("tracking")}
           </a>
-          <a href="https://ages.tw/pricing">{t("plans")}</a>
+          <a href={officialPricingUrl(locale)}>{t("plans")}</a>
           {profile.user.plan === "admin" ? (
             <a
               href="/admin/reports"
@@ -260,7 +261,7 @@ function App() {
   );
 }
 function Landing() {
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   return (
     <main id="main" className="landing">
       <div className="landing-copy">
@@ -276,7 +277,7 @@ function Landing() {
         </a>
         <p className="privacy-copy">{t("privateStart")}</p>
         <LocalSignIn />
-        <a href="https://ages.tw/pricing">{t("explorePlans")}</a>
+        <a href={officialPricingUrl(locale)}>{t("explorePlans")}</a>
         <a className="landing-report-link" href="/report">
           {t("reportLink")}
         </a>
@@ -323,7 +324,7 @@ function Pricing() {
           ? "所有公開方案將統一在 AGES 官方網站公告。目前仍屬規劃階段，尚未開放訂閱或贊助付款。"
           : "Public plan information is available on the official Ages website. Plans are still proposed, and subscriptions and creator-support payments are not available yet."}
       </p>
-      <a href="https://ages.tw/pricing">
+      <a href={officialPricingUrl(locale)}>
         {zh ? "查看官方價格方案" : "View official pricing"}
       </a>
     </main>
