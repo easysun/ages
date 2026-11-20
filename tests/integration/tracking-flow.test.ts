@@ -2,6 +2,7 @@ import { applyD1Migrations, reset } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app";
+import { hashToken } from "../../src/auth/crypto";
 import type { Bindings } from "../../src/bindings";
 import { scheduledCleanup } from "../../src/cleanup";
 import { createTrackingApp } from "../../src/tracking/index";
@@ -374,7 +375,7 @@ describe("isolated provider consent flow", () => {
 
     const canonical = await trackingApp.request(
       `${configuredTrackingOrigin}/${ticket}`,
-      {},
+      { headers: { "CF-Connecting-IP": "203.0.113.10" } },
       trackingBindings,
     );
     expect(canonical.status).toBe(200);
@@ -392,6 +393,78 @@ describe("isolated provider consent flow", () => {
     expect(aliasHtml).not.toContain("google-analytics.com");
     expect(aliasHtml).not.toContain("connect.facebook.net");
     prepare.mockRestore();
+  });
+
+  it("lets a rate-limited visitor skip analytics using the original one-use ticket", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+    const redirect = await request(`/s/${link.slug}`);
+    const token = new URL(
+      redirect.headers.get("Location") ?? "",
+    ).pathname.slice(1);
+    const bucket = Math.floor(Date.now() / 60_000) * 60_000;
+    await env.DB.prepare(
+      "INSERT INTO rate_limits (scope_hash,bucket,count,expires_at) VALUES (?,?,?,?)",
+    )
+      .bind(
+        await hashToken("tracking:203.0.113.42"),
+        bucket,
+        600,
+        bucket + 3_660_000,
+      )
+      .run();
+
+    const page = await trackingApp.request(
+      `${trackingOrigin}/${token}`,
+      {
+        headers: { "CF-Connecting-IP": "203.0.113.42" },
+      },
+      {
+        DB: env.DB,
+        APP_ENV: "local",
+        APP_ORIGIN: appOrigin,
+        TRACKING_ORIGIN: trackingOrigin,
+      },
+    );
+    expect(page.status).toBe(429);
+    const html = await page.text();
+    expect(html).toContain("Continue without analytics");
+    expect(html).toContain(`action="${appOrigin}/s/continue"`);
+    expect(html).toContain(`value="${token}"`);
+    expect(html).not.toContain("<script");
+    expect(page.headers.get("Content-Security-Policy")).toContain(
+      `form-action ${appOrigin}`,
+    );
+    const next = await continueTicket(token, trackingOrigin);
+    expect(next.status).toBe(200);
+    expect(await next.text()).toContain(
+      "https://destination.example.test/private-path",
+    );
+    expect((await continueTicket(token, trackingOrigin)).status).toBe(404);
+  });
+
+  it("applies the app's separate IP limit to ticket continuations", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+    const redirect = await request(`/s/${link.slug}`);
+    const token = new URL(
+      redirect.headers.get("Location") ?? "",
+    ).pathname.slice(1);
+    const bucket = Math.floor(Date.now() / 60_000) * 60_000;
+    await env.DB.prepare(
+      "INSERT INTO rate_limits (scope_hash,bucket,count,expires_at) VALUES (?,?,?,?) ON CONFLICT(scope_hash,bucket) DO UPDATE SET count=excluded.count",
+    )
+      .bind(await hashToken("public:local"), bucket, 600, bucket + 3_660_000)
+      .run();
+    const limited = await continueTicket(token);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+    const ticket = await env.DB.prepare(
+      "SELECT consumed_at FROM tracking_tickets WHERE token_hash = ?",
+    )
+      .bind(await ticketHash(token))
+      .first<{ consumed_at: string | null }>();
+    expect(ticket?.consumed_at).toBeNull();
   });
 
   it("redirects a provider-enabled GET to one opaque ticket and stores only a bounded event", async () => {

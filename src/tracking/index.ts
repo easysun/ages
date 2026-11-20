@@ -1,7 +1,8 @@
 import { Hono } from "hono";
+import { consumeLimit } from "../abuse/limits";
 import { ApiError } from "../http/errors";
 import { type TrackingWorkerBindings, trackingPageOrigins } from "./config";
-import { renderTrackingInterstitial } from "./interstitial";
+import { escapeHtml, renderTrackingInterstitial } from "./interstitial";
 import { readTrackingTicket } from "./tickets";
 
 export function createTrackingApp() {
@@ -41,6 +42,39 @@ export function createTrackingApp() {
       requestUrl.hash !== ""
     )
       throw new ApiError("NOT_FOUND");
+    // Only the edge-provided client IP is trusted; never use forwarded headers.
+    const ip =
+      context.req.header("CF-Connecting-IP") ||
+      (context.env.APP_ENV === "local" ? "local" : null);
+    if (!ip) throw new ApiError("SERVICE_UNAVAILABLE");
+    const retryAfter = await consumeLimit(context.env.DB, "tracking", ip);
+    if (retryAfter !== null) {
+      context.header("Retry-After", String(retryAfter));
+      context.header("Cache-Control", "no-store");
+      context.header("Referrer-Policy", "no-referrer");
+      context.header("X-Content-Type-Options", "nosniff");
+      context.header("X-Robots-Tag", "noindex, nofollow");
+      context.header("X-Frame-Options", "DENY");
+      const token = context.req.param("token");
+      if (!/^[0-9a-f]{64}$/.test(token))
+        return context.text("Too many requests.", 429);
+      context.header(
+        "Content-Security-Policy",
+        `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${origins.appOrigin}`,
+      );
+      return context.html(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continue without analytics</title></head><body><main>
+<h1>Continue without analytics</h1>
+<p>Optional analytics are temporarily unavailable.</p>
+<form action="${escapeHtml(origins.appOrigin)}/s/continue" method="post">
+<input type="hidden" name="token" value="${token}">
+<button type="submit">Continue without analytics</button>
+</form></main></body></html>`,
+        429,
+      );
+    }
     const view = await readTrackingTicket(
       context.env.DB,
       context.req.param("token"),

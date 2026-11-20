@@ -2,7 +2,7 @@ import type { TrackingPageOrigins } from "./config";
 import { googleCustomParameterName } from "./google-parameters";
 import type { TrackingTicketView } from "./tickets";
 
-function escapeHtml(value: string) {
+export function escapeHtml(value: string) {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll('"', "&quot;")
