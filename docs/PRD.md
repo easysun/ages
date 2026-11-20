@@ -14,8 +14,8 @@ is not an MVP prerequisite.
 
 The primary MVP journey is:
 
-1. Sign in and upload media to a private library.
-2. Create a timeline and add media and text moments.
+1. Sign in and create a private timeline, starting with text or a photo.
+2. Add further media and text moments, reusing private library assets when desired.
 3. Set each moment's narrative position, description, and event date.
 4. Share the timeline under an explicit visibility policy.
 5. Return to append a later moment without changing the share URL.
@@ -55,9 +55,11 @@ sharing with server-rendered OG metadata, then a fourth appended photo. See
 - Sharing expiry and revocation take effect immediately. Retired slugs cannot
   be claimed by another owner. Thumbnail and OG media obey equivalent access
   controls.
-- User data must survive accidental deletion through an explicit trash and
-  restore flow, subject to a published retention policy. Reference and
-  lifecycle rules must prevent accidental deletion of shared Assets.
+- Trash and restore must protect against accidental deletion, subject to a
+  published retention policy. A referenced Asset cannot be trashed until its
+  references are removed; a future change to that behavior requires an explicit
+  product decision. Authenticated memories must not silently expire due to
+  inactivity.
 - Rate limiting, upload cleanup, abuse controls, and recoverable backups are
   launch requirements. Validate behavior under concurrent requests and failure
   conditions before enabling public uploads.
@@ -117,7 +119,8 @@ Release acceptance must cover:
 - Anonymous and cross-owner access denial for private content and media.
 - Expired or revoked links, unlisted noindex, and protected preview images.
 - Upload retries, incomplete uploads, corrupted files, quota races, and cleanup.
-- Trash and restore of a referenced Asset without losing the original story.
+- A referenced Asset is protected from trash. An unreferenced Asset can be
+  trashed and restored without affecting other stories or media.
 - English and Traditional Chinese plan presentation, prices, support contact,
   disabled checkout, and keyboard/mobile rendering.
 - Unit and regression checks, isolated restore validation, and environment
