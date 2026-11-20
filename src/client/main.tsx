@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { ContentNodesScreen } from "./content-nodes";
 import { AssetDetails } from "./details";
+import { type Locale, LocaleProvider, useLocale } from "./i18n";
 import { LinksScreen } from "./links";
 import { LocalSignIn } from "./local-sign-in";
 import { ModerationScreen } from "./moderation";
@@ -23,8 +24,9 @@ import { type UploadJob, uploadFile } from "./upload";
 import "./styles.css";
 
 function Brand() {
+  const { t } = useLocale();
   return (
-    <a href="/" className="brand" aria-label="Ages home">
+    <a href="/" className="brand" aria-label={t("home")}>
       <span className="brand-mark" aria-hidden="true">
         a
       </span>
@@ -35,6 +37,9 @@ function Brand() {
   );
 }
 function App() {
+  const { locale, setLocale, t } = useLocale();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -73,7 +78,7 @@ function App() {
           live &&
           !(reason instanceof RequestError && reason.code === "UNAUTHENTICATED")
         )
-          setError(errorMessage(reason));
+          setError(errorMessage(reason, localeRef.current));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -94,28 +99,39 @@ function App() {
       if (!response.ok) throw new Error();
       setProfile(null);
     } catch {
-      setLogoutError("Sign out could not be completed. Please try again.");
+      setLogoutError(t("logoutError"));
     }
   }
   const generation = authGenerationRevision;
   return (
     <>
       <a className="skip-link" href="#main">
-        Skip to content
+        {t("skip")}
       </a>
       <header className="site-header">
         <Brand />
-        <span className="header-note">A home for your moments</span>
+        <span className="header-note">{t("headerNote")}</span>
         {profile ? (
           <div className="account">
             <span>{profile.user.display_name ?? profile.user.email}</span>
             <button type="button" className="text-button" onClick={logout}>
-              Sign out
+              {t("signOut")}
             </button>
           </div>
         ) : (
-          <span className="private-label">Made to keep</span>
+          <span className="private-label">{t("privateLabel")}</span>
         )}
+        <label className="locale-selector">
+          <span className="sr-only">Language / 語言</span>
+          <select
+            aria-label="Language / 語言"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
+          >
+            <option value="en">English</option>
+            <option value="zh-Hant">繁體中文</option>
+          </select>
+        </label>
       </header>
       {logoutError ? (
         <p className="error logout-notice" role="alert">
@@ -123,7 +139,7 @@ function App() {
         </p>
       ) : null}
       {profile ? (
-        <nav className="client-nav" aria-label="Primary navigation">
+        <nav className="client-nav" aria-label={t("navigation")}>
           <a
             href="/library"
             onClick={collectionLink}
@@ -131,42 +147,42 @@ function App() {
               path === "/library" || path === "/" ? "page" : undefined
             }
           >
-            Library
+            {t("library")}
           </a>
           <a
             href="/timelines"
             onClick={collectionLink}
             aria-current={path.startsWith("/timelines") ? "page" : undefined}
           >
-            Timelines
+            {t("timelines")}
           </a>
           <a
             href="/content"
             onClick={collectionLink}
             aria-current={path === "/content" ? "page" : undefined}
           >
-            Content
+            {t("content")}
           </a>
           <a
             href="/links"
             onClick={collectionLink}
             aria-current={path === "/links" ? "page" : undefined}
           >
-            Links
+            {t("links")}
           </a>
           <a
             href="/settings/tracking"
             onClick={collectionLink}
             aria-current={path === "/settings/tracking" ? "page" : undefined}
           >
-            Tracking settings
+            {t("tracking")}
           </a>
           <a
             href="/pricing"
             onClick={collectionLink}
             aria-current={path === "/pricing" ? "page" : undefined}
           >
-            Plans
+            {t("plans")}
           </a>
           {profile.user.plan === "admin" ? (
             <a
@@ -174,14 +190,14 @@ function App() {
               onClick={collectionLink}
               aria-current={path === "/admin/reports" ? "page" : undefined}
             >
-              Moderation
+              {t("moderation")}
             </a>
           ) : null}
         </nav>
       ) : null}
       {loading ? (
         <main id="main" className="loading-page">
-          <p role="status">Opening your library…</p>
+          <p role="status">{t("opening")}</p>
         </main>
       ) : error ? (
         <main id="main" className="loading-page">
@@ -193,7 +209,7 @@ function App() {
             className="button"
             onClick={() => setProfileRequest({ path: "/api/me" })}
           >
-            Try again
+            {t("retry")}
           </button>
         </main>
       ) : path === "/pricing" ? (
@@ -206,8 +222,8 @@ function App() {
             <ModerationScreen authGeneration={generation} />
           ) : (
             <main id="main" className="loading-page">
-              <h1>Access denied</h1>
-              <p>This page requires an administrator account.</p>
+              <h1>{t("accessDenied")}</h1>
+              <p>{t("adminRequired")}</p>
             </main>
           )
         ) : path === "/timelines" || path.startsWith("/timelines/") ? (
@@ -235,9 +251,9 @@ function App() {
           />
         ) : (
           <main id="main" className="loading-page">
-            <h1>Page not found</h1>
+            <h1>{t("notFound")}</h1>
             <a href="/library" onClick={collectionLink}>
-              Open your library
+              {t("openLibrary")}
             </a>
           </main>
         )
@@ -250,28 +266,25 @@ function App() {
   );
 }
 function Landing() {
+  const { t } = useLocale();
   return (
     <main id="main" className="landing">
       <div className="landing-copy">
-        <p className="eyebrow">Photos. Stories. A little more life.</p>
-        <h1>Keep your moments close.</h1>
-        <p className="landing-lede">
-          A place for the photos and videos you want to come back to. Begin with
-          a moment. Keep adding as life unfolds.
-        </p>
+        <p className="eyebrow">{t("landingEyebrow")}</p>
+        <h1>{t("landingTitle")}</h1>
+        <p className="landing-lede">{t("landingIntro")}</p>
         <a href="/auth/google" className="button primary google-link">
           <span aria-hidden="true" className="google-mark">
             G
           </span>
-          Continue with Google<span aria-hidden="true">↗</span>
+          {t("google")}
+          <span aria-hidden="true">↗</span>
         </a>
-        <p className="privacy-copy">
-          Your library starts private. Your memories stay yours.
-        </p>
+        <p className="privacy-copy">{t("privateStart")}</p>
         <LocalSignIn />
-        <a href="/pricing">Explore plans</a>
+        <a href="/pricing">{t("explorePlans")}</a>
         <a className="landing-report-link" href="/report">
-          Report an Ages Link
+          {t("reportLink")}
         </a>
       </div>
       <div className="landing-art" aria-hidden="true">
@@ -281,7 +294,7 @@ function Landing() {
             <span className="ridge ridge-back" />
             <span className="ridge ridge-front" />
           </div>
-          <span className="paper-caption">The places we return to</span>
+          <span className="paper-caption">{t("paperOne")}</span>
         </div>
         <div className="paper paper-two">
           <div className="still-life">
@@ -289,13 +302,13 @@ function Landing() {
             <span />
             <span />
           </div>
-          <span className="paper-caption">The small things, too</span>
+          <span className="paper-caption">{t("paperTwo")}</span>
         </div>
-        <span className="art-note">Collected, with care.</span>
+        <span className="art-note">{t("artNote")}</span>
       </div>
       <div className="landing-footer">
-        <span>ONE MOMENT AT A TIME</span>
-        <span>Ages — a living library</span>
+        <span>{t("landingFooter")}</span>
+        <span>{t("livingLibrary")}</span>
       </div>
     </main>
   );
@@ -308,29 +321,33 @@ const proposedPlans = [
 ] as const;
 
 function Pricing() {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
   return (
     <main id="main" className="loading-page pricing-page">
-      <p className="eyebrow">Ages beta</p>
-      <h1>Plans for your memories</h1>
+      <p className="eyebrow">{zh ? "Ages 測試版" : "Ages beta"}</p>
+      <h1>{zh ? "為回憶選擇適合的方案" : "Plans for your memories"}</h1>
       <p>
-        Plan prices and creator-support fees are proposals. Paid subscriptions
-        and creator-support payments are not available yet.
+        {zh
+          ? "方案價格與創作者贊助費率仍在規劃中，付費訂閱與贊助功能尚未開放。"
+          : "Plan prices and creator-support fees are proposals. Paid subscriptions and creator-support payments are not available yet."}
       </p>
       <section className="pricing-section" aria-labelledby="monthly-plans">
-        <h2 id="monthly-plans">Monthly plans</h2>
+        <h2 id="monthly-plans">{zh ? "月繳方案" : "Monthly plans"}</h2>
         <p>
-          The monthly price is what a member would pay for their own Ages plan.
-          Prices are shown in New Taiwan dollars.
+          {zh
+            ? "月費為會員本人 Ages 方案的價格，金額以新臺幣顯示。"
+            : "The monthly price is what a member would pay for their own Ages plan. Prices are shown in New Taiwan dollars."}
         </p>
         <table className="pricing-table">
-          <caption>Proposed monthly prices</caption>
+          <caption>{zh ? "規劃中的月費" : "Proposed monthly prices"}</caption>
           <thead>
             <tr>
               <th className="pricing-table-header" scope="col">
-                Plan
+                {zh ? "方案" : "Plan"}
               </th>
               <th className="pricing-table-header" scope="col">
-                Monthly price
+                {zh ? "月費" : "Monthly price"}
               </th>
             </tr>
           </thead>
@@ -338,32 +355,41 @@ function Pricing() {
             {proposedPlans.map(({ name, monthly }) => (
               <tr key={name}>
                 <th scope="row">{name}</th>
-                <td>NT${monthly} / month</td>
+                <td>
+                  NT${monthly} {zh ? "/ 月" : "/ month"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
         <p>
-          Plan features, storage limits, and annual pricing have not been
-          finalized.
+          {zh
+            ? "方案功能、儲存空間上限及年費尚未定案。"
+            : "Plan features, storage limits, and annual pricing have not been finalized."}
         </p>
       </section>
       <section className="pricing-section" aria-labelledby="support-fees">
-        <h2 id="support-fees">Creator-support fees</h2>
+        <h2 id="support-fees">
+          {zh ? "創作者贊助費率" : "Creator-support fees"}
+        </h2>
         <p>
-          Creator support is a separate payment from a fan to a creator. The
-          platform fee would apply to each support payment at the rate for the
-          creator's plan.
+          {zh
+            ? "創作者贊助是粉絲支付給創作者的獨立款項，每筆贊助將依創作者的方案費率計收平台費。"
+            : "Creator support is a separate payment from a fan to a creator. The platform fee would apply to each support payment at the rate for the creator’s plan."}
         </p>
         <table className="pricing-table">
-          <caption>Proposed platform fees on creator support</caption>
+          <caption>
+            {zh
+              ? "規劃中的創作者贊助平台費率"
+              : "Proposed platform fees on creator support"}
+          </caption>
           <thead>
             <tr>
               <th className="pricing-table-header" scope="col">
-                Creator's plan
+                {zh ? "創作者方案" : "Creator’s plan"}
               </th>
               <th className="pricing-table-header" scope="col">
-                Ages platform fee
+                {zh ? "Ages 平台費率" : "Ages platform fee"}
               </th>
             </tr>
           </thead>
@@ -377,7 +403,7 @@ function Pricing() {
           </tbody>
         </table>
       </section>
-      <a href="/library">Return to Ages</a>
+      <a href="/library">{zh ? "返回 Ages" : "Return to Ages"}</a>
     </main>
   );
 }
@@ -395,6 +421,10 @@ function Library({
   profile: Profile;
   onProfile: (profile: Profile) => void;
 }) {
+  const { locale } = useLocale();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const zh = locale === "zh-Hant";
   const initialTag =
     new URLSearchParams(window.location.search).get("tag") ?? "";
   const initialTrash =
@@ -445,7 +475,8 @@ function Library({
         setCursor(page.next_cursor);
       })
       .catch((reason) => {
-        if (!controller.signal.aborted) setError(errorMessage(reason));
+        if (!controller.signal.aborted)
+          setError(errorMessage(reason, localeRef.current));
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);
@@ -471,7 +502,8 @@ function Library({
       ]);
       setCursor(page.next_cursor);
     } catch (reason) {
-      if (!controller.signal.aborted) setError(errorMessage(reason));
+      if (!controller.signal.aborted)
+        setError(errorMessage(reason, localeRef.current));
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
@@ -502,11 +534,14 @@ function Library({
     try {
       await uploadFile(job, update);
     } catch (reason) {
-      update({ phase: "error", message: errorMessage(reason) });
+      update({ phase: "error", message: errorMessage(reason, locale) });
       return;
     }
     if (!mounted.current) return;
-    update({ phase: "saved", message: "Saved to your library" });
+    update({
+      phase: "saved",
+      message: zh ? "已儲存至素材庫" : "Saved to your library",
+    });
     setLibraryRequest((current) => ({ ...current }));
     try {
       const next = await api<Profile>("/api/me");
@@ -516,7 +551,9 @@ function Library({
     } catch {
       if (!mounted.current) return;
       setQuotaNotice(
-        "Storage display may be out of date. Refresh the page to update it.",
+        zh
+          ? "儲存空間資訊可能不是最新狀態，請重新整理頁面。"
+          : "Storage display may be out of date. Refresh the page to update it.",
       );
     }
   }
@@ -579,15 +616,17 @@ function Library({
       });
       if (!mounted.current || controller?.signal.aborted) return;
       setAssets((current) => current.filter((row) => row.id !== asset.id));
-      setNotice("Moment restored to your library");
+      setNotice(zh ? "時刻已還原至素材庫" : "Moment restored to your library");
       trashTab.current?.focus();
       setLibraryRequest((current) => ({ ...current }));
     } catch (reason) {
       if (mounted.current && !controller?.signal.aborted)
         setError(
           reason instanceof RequestError && reason.code === "CONFLICT"
-            ? "This moment could not be restored. Its recovery window may have ended, or its media is unavailable."
-            : errorMessage(reason),
+            ? zh
+              ? "無法還原此時刻，可能已超過還原期限或媒體無法使用。"
+              : "This moment could not be restored. Its recovery window may have ended, or its media is unavailable."
+            : errorMessage(reason, locale),
         );
     } finally {
       if (mounted.current) setRestoring(null);
@@ -604,10 +643,14 @@ function Library({
     <main id="main" className="library-page">
       <section className="library-intro">
         <div>
-          <p className="eyebrow">Collected over time</p>
-          <h1>Your library</h1>
+          <p className="eyebrow">
+            {zh ? "日積月累的收藏" : "Collected over time"}
+          </p>
+          <h1>{zh ? "你的素材庫" : "Your library"}</h1>
           <p className="intro-copy">
-            The big days. The ordinary ones. All worth keeping.
+            {zh
+              ? "重要的日子、平凡的日常，都值得珍藏。"
+              : "The big days. The ordinary ones. All worth keeping."}
           </p>
         </div>
         <div className="upload-control">
@@ -615,34 +658,40 @@ function Library({
             className={`button primary upload-label ${uploading ? "disabled" : ""}`}
             htmlFor="choose-files"
           >
-            <span aria-hidden="true">＋</span>Add moments
+            <span aria-hidden="true">＋</span>
+            {zh ? "新增時刻" : "Add moments"}
           </label>
           <input
             ref={input}
             className="file-input"
             id="choose-files"
             type="file"
-            aria-label="Choose photos or videos"
+            aria-label={zh ? "選擇照片或影片" : "Choose photos or videos"}
             accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm"
             multiple
             disabled={uploading}
             onChange={(event) => void filesChosen(event.target.files)}
           />
           <span className="upload-help">
-            Photos up to 25 MB · videos up to 250 MB
+            {zh
+              ? "照片上限 25 MB · 影片上限 250 MB"
+              : "Photos up to 25 MB · videos up to 250 MB"}
           </span>
         </div>
       </section>
       <div className="library-layout">
         <aside className="library-sidebar">
-          <nav className="collection-switcher" aria-label="Library collections">
+          <nav
+            className="collection-switcher"
+            aria-label={zh ? "素材庫分類" : "Library collections"}
+          >
             <button
               type="button"
               className="button secondary"
               aria-pressed={!trash}
               onClick={() => switchCollection(false)}
             >
-              All moments
+              {zh ? "所有時刻" : "All moments"}
             </button>
             <button
               ref={trashTab}
@@ -651,7 +700,7 @@ function Library({
               aria-pressed={trash}
               onClick={() => switchCollection(true)}
             >
-              Trash
+              {zh ? "垃圾桶" : "Trash"}
             </button>
           </nav>
           {!trash ? (
@@ -662,18 +711,20 @@ function Library({
                 applyFilter(filterInput);
               }}
             >
-              <label htmlFor="tag-filter">Filter by tag</label>
+              <label htmlFor="tag-filter">
+                {zh ? "依標籤篩選" : "Filter by tag"}
+              </label>
               <input
                 ref={filter}
                 id="tag-filter"
                 type="text"
                 value={filterInput}
                 maxLength={64}
-                placeholder="Find a familiar thread"
+                placeholder={zh ? "尋找標籤" : "Find a familiar thread"}
                 onChange={(event) => setFilterInput(event.target.value)}
               />
               <button className="button secondary" type="submit">
-                Apply filter
+                {zh ? "套用篩選" : "Apply filter"}
               </button>
               {tag ? (
                 <button
@@ -681,37 +732,50 @@ function Library({
                   type="button"
                   onClick={() => applyFilter("")}
                 >
-                  Clear filter
+                  {zh ? "清除篩選" : "Clear filter"}
                 </button>
               ) : null}
               <p className="field-help">
-                Tags match exactly, including spaces and capitals.
+                {zh
+                  ? "標籤需完全相符，包含空格與大小寫。"
+                  : "Tags match exactly, including spaces and capitals."}
               </p>
             </form>
           ) : (
             <p className="field-help">
-              Moments can be restored for 30 days. Storage remains in use while
-              they are in Trash.
+              {zh
+                ? "移至垃圾桶的時刻可在 30 天內還原，期間仍佔用儲存空間。"
+                : "Moments can be restored for 30 days. Storage remains in use while they are in Trash."}
             </p>
           )}
           <div className="storage-card">
-            <span className="eyebrow">Your space</span>
+            <span className="eyebrow">{zh ? "你的空間" : "Your space"}</span>
             <p>
               {bytesLabel(quota.storage_used_bytes)}{" "}
-              <span>of {bytesLabel(quota.storage_limit_bytes)}</span>
+              <span>
+                {zh ? "共" : "of"} {bytesLabel(quota.storage_limit_bytes)}
+              </span>
             </p>
             <progress
               value={progress}
               max={100}
-              aria-label="Storage used including pending uploads"
+              aria-label={
+                zh
+                  ? "已使用空間，包含待完成的上傳"
+                  : "Storage used including pending uploads"
+              }
             />
             {quota.storage_reserved_bytes > 0 ? (
               <p className="field-help">
-                {bytesLabel(quota.storage_reserved_bytes)} reserved for pending
-                uploads
+                {bytesLabel(quota.storage_reserved_bytes)}{" "}
+                {zh ? "保留給待完成的上傳" : "reserved for pending uploads"}
               </p>
             ) : (
-              <p className="field-help">A little room for what comes next.</p>
+              <p className="field-help">
+                {zh
+                  ? "為未來的回憶留點空間。"
+                  : "A little room for what comes next."}
+              </p>
             )}
             {quotaNotice ? (
               <p role="status" className="field-help">
@@ -720,17 +784,33 @@ function Library({
             ) : null}
           </div>
           <p className="sidebar-note">
-            Each moment is private.
+            {zh ? "每個時刻預設為私人。" : "Each moment is private."}
             <br />
-            Keep adding, at your own pace.
+            {zh ? "照自己的步調繼續記錄。" : "Keep adding, at your own pace."}
           </p>
         </aside>
-        <section className="collection" aria-label="Library moments">
+        <section
+          className="collection"
+          aria-label={zh ? "素材庫時刻" : "Library moments"}
+        >
           <div className="collection-heading">
-            <h2>{trash ? "Trash" : tag ? `Tagged “${tag}”` : "All moments"}</h2>
+            <h2>
+              {trash
+                ? zh
+                  ? "垃圾桶"
+                  : "Trash"
+                : tag
+                  ? zh
+                    ? `標籤「${tag}」`
+                    : `Tagged “${tag}”`
+                  : zh
+                    ? "所有時刻"
+                    : "All moments"}
+            </h2>
             <span>
-              {assets.length} {assets.length === 1 ? "moment" : "moments"}
-              {cursor ? " shown" : ""}
+              {zh
+                ? `已顯示 ${assets.length} 個時刻`
+                : `${assets.length} ${assets.length === 1 ? "moment" : "moments"}${cursor ? " shown" : ""}`}
             </span>
           </div>
           {notice ? (
@@ -739,7 +819,10 @@ function Library({
             </p>
           ) : null}
           {jobs.length ? (
-            <section className="upload-list" aria-label="Uploads">
+            <section
+              className="upload-list"
+              aria-label={zh ? "上傳項目" : "Uploads"}
+            >
               {jobs.map((job) => (
                 <div className="upload-row" key={job.id}>
                   <div>
@@ -750,11 +833,15 @@ function Library({
                     >
                       {job.message ||
                         {
-                          waiting: "Waiting…",
-                          uploading: "Uploading directly to storage…",
-                          checking: "Checking your upload…",
-                          saved: "Saved",
-                          error: "Upload interrupted",
+                          waiting: zh ? "等待中…" : "Waiting…",
+                          uploading: zh
+                            ? "正在上傳…"
+                            : "Uploading directly to storage…",
+                          checking: zh
+                            ? "正在檢查上傳…"
+                            : "Checking your upload…",
+                          saved: zh ? "已儲存" : "Saved",
+                          error: zh ? "上傳中斷" : "Upload interrupted",
                         }[job.phase]}
                     </p>
                   </div>
@@ -764,15 +851,23 @@ function Library({
                       type="button"
                       disabled={uploading}
                       onClick={() => void retry(job)}
-                      aria-label={`Retry ${job.file.name}`}
+                      aria-label={
+                        zh
+                          ? `重試上傳 ${job.file.name}`
+                          : `Retry ${job.file.name}`
+                      }
                     >
-                      Retry
+                      {zh ? "重試" : "Retry"}
                     </button>
                   ) : job.phase === "saved" ? (
                     <button
                       className="icon-button"
                       type="button"
-                      aria-label={`Dismiss ${job.file.name}`}
+                      aria-label={
+                        zh
+                          ? `關閉 ${job.file.name}`
+                          : `Dismiss ${job.file.name}`
+                      }
                       onClick={() =>
                         setJobs((current) =>
                           current.filter((item) => item.id !== job.id),
@@ -788,13 +883,17 @@ function Library({
           ) : null}
           {selected.size > 0 ? (
             <div className="selection-bar">
-              <p role="status">{selected.size} selected</p>
+              <p role="status">
+                {zh
+                  ? `已選取 ${selected.size} 個項目`
+                  : `${selected.size} selected`}
+              </p>
               <button
                 type="button"
                 className="text-button"
                 onClick={() => setSelected(new Set())}
               >
-                Clear selection
+                {zh ? "清除選取" : "Clear selection"}
               </button>
             </div>
           ) : null}
@@ -808,7 +907,7 @@ function Library({
                 type="button"
                 onClick={() => setLibraryRequest((current) => ({ ...current }))}
               >
-                Retry library
+                {zh ? "重新載入素材庫" : "Retry library"}
               </button>
             </div>
           ) : null}
@@ -817,17 +916,29 @@ function Library({
               <span aria-hidden="true">＋</span>
               <h3>
                 {trash
-                  ? "Trash is empty"
+                  ? zh
+                    ? "垃圾桶是空的"
+                    : "Trash is empty"
                   : tag
-                    ? "No moments with this tag yet"
-                    : "A beginning, waiting for you"}
+                    ? zh
+                      ? "目前沒有這個標籤的時刻"
+                      : "No moments with this tag yet"
+                    : zh
+                      ? "從這裡開始"
+                      : "A beginning, waiting for you"}
               </h3>
               <p>
                 {trash
-                  ? "Moments you move to Trash will appear here."
+                  ? zh
+                    ? "移至垃圾桶的時刻會顯示在這裡。"
+                    : "Moments you move to Trash will appear here."
                   : tag
-                    ? "Try another tag or clear the filter to see your library."
-                    : "Add a photo or a video. It doesn’t have to be a special occasion."}
+                    ? zh
+                      ? "試試其他標籤，或清除篩選以查看素材庫。"
+                      : "Try another tag or clear the filter to see your library."
+                    : zh
+                      ? "新增照片或影片，平凡的日常也值得記錄。"
+                      : "Add a photo or a video. It doesn’t have to be a special occasion."}
               </p>
               {trash ? null : tag ? (
                 <button
@@ -835,7 +946,7 @@ function Library({
                   type="button"
                   onClick={() => applyFilter("")}
                 >
-                  Show all moments
+                  {zh ? "顯示所有時刻" : "Show all moments"}
                 </button>
               ) : (
                 <button
@@ -843,7 +954,7 @@ function Library({
                   type="button"
                   onClick={() => input.current?.click()}
                 >
-                  Choose a first moment
+                  {zh ? "選擇第一個時刻" : "Choose a first moment"}
                 </button>
               )}
             </div>
@@ -864,7 +975,11 @@ function Library({
                       <button
                         className="open-asset"
                         type="button"
-                        aria-label={`Open ${asset.original_name}`}
+                        aria-label={
+                          zh
+                            ? `開啟 ${asset.original_name}`
+                            : `Open ${asset.original_name}`
+                        }
                         onClick={(event) => {
                           opener.current = event.currentTarget;
                           setDetails(asset);
@@ -885,14 +1000,20 @@ function Library({
                             >
                               <track kind="captions" />
                             </video>
-                            <span className="video-label">Video</span>
+                            <span className="video-label">
+                              {zh ? "影片" : "Video"}
+                            </span>
                           </>
                         )}
                       </button>
                       <label className="select-asset">
                         <input
                           type="checkbox"
-                          aria-label={`Select ${asset.original_name}`}
+                          aria-label={
+                            zh
+                              ? `選取 ${asset.original_name}`
+                              : `Select ${asset.original_name}`
+                          }
                           checked={selected.has(asset.id)}
                           onChange={(event) => {
                             const checked = event.target.checked;
@@ -915,19 +1036,29 @@ function Library({
                 {trash ? (
                   <div className="trash-card-actions">
                     <p className="field-help">
-                      Moved to Trash{" "}
+                      {zh ? "已移至垃圾桶" : "Moved to Trash"}{" "}
                       {asset.deleted_at
-                        ? new Date(asset.deleted_at).toLocaleDateString()
+                        ? new Date(asset.deleted_at).toLocaleDateString(locale)
                         : ""}
                     </p>
                     <button
                       className="button secondary"
                       type="button"
                       disabled={restoring !== null}
-                      aria-label={`Restore ${asset.original_name}`}
+                      aria-label={
+                        zh
+                          ? `還原 ${asset.original_name}`
+                          : `Restore ${asset.original_name}`
+                      }
                       onClick={() => void restore(asset)}
                     >
-                      {restoring === asset.id ? "Restoring…" : "Restore"}
+                      {restoring === asset.id
+                        ? zh
+                          ? "還原中…"
+                          : "Restoring…"
+                        : zh
+                          ? "還原"
+                          : "Restore"}
                     </button>
                   </div>
                 ) : asset.tags.length ? (
@@ -944,7 +1075,14 @@ function Library({
                   </div>
                 ) : (
                   <p className="card-private">
-                    Private · {asset.kind === "image" ? "Photo" : "Video"}
+                    {zh ? "私人" : "Private"} ·{" "}
+                    {asset.kind === "image"
+                      ? zh
+                        ? "照片"
+                        : "Photo"
+                      : zh
+                        ? "影片"
+                        : "Video"}
                   </p>
                 )}
               </article>
@@ -952,7 +1090,7 @@ function Library({
           </div>
           {loading ? (
             <p role="status" className="collection-loading">
-              Loading moments…
+              {zh ? "正在載入時刻…" : "Loading moments…"}
             </p>
           ) : cursor ? (
             <button
@@ -960,10 +1098,12 @@ function Library({
               type="button"
               onClick={() => void more()}
             >
-              Load more moments
+              {zh ? "載入更多時刻" : "Load more moments"}
             </button>
           ) : assets.length > 0 ? (
-            <p className="collection-end">A little piece of life, kept.</p>
+            <p className="collection-end">
+              {zh ? "珍藏生活的點點滴滴。" : "A little piece of life, kept."}
+            </p>
           ) : null}
         </section>
       </div>
@@ -979,7 +1119,7 @@ function Library({
               current.filter((row) => row.id !== asset.id),
             );
             setLibraryRequest((current) => ({ ...current }));
-            setNotice("Moved to Trash");
+            setNotice(zh ? "已移至垃圾桶" : "Moved to Trash");
             filter.current?.focus();
           }}
           onClose={() => {
@@ -993,4 +1133,9 @@ function Library({
   );
 }
 const root = document.getElementById("root");
-if (root) createRoot(root).render(<App />);
+if (root)
+  createRoot(root).render(
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>,
+  );

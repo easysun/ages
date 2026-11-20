@@ -1,6 +1,7 @@
 import type { assetPayload } from "../assets/model";
 import type { linkPayload } from "../links/model";
 import type { LinkTracking } from "../links/tracking";
+import type { Locale } from "./locale";
 
 export type LibraryAsset = ReturnType<typeof assetPayload> & { tags: string[] };
 export type LibraryPage = {
@@ -203,7 +204,32 @@ export function bytesLabel(bytes: number) {
   }
   return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
-export function errorMessage(error: unknown) {
+const chineseErrors: Record<string, string> = {
+  INVALID_REQUEST: "資料格式不正確，請檢查後再試。",
+  UNAUTHENTICATED: "登入已過期，請重新登入。",
+  FORBIDDEN: "你沒有權限執行這個操作。",
+  NOT_FOUND: "找不到這個項目。",
+  CONFLICT: "內容已變更，請重新整理後再試。",
+  APPEND_ALREADY_APPLIED: "這個時刻已新增且後來有變更，請查看最新時間軸。",
+  PAYLOAD_TOO_LARGE: "送出的資料太大，請縮小後再試。",
+  ASSET_TOO_LARGE: "檔案超過上傳限制，請選擇較小的檔案。",
+  TIMELINE_QUOTA_EXCEEDED: "時間軸數量已達上限。",
+  LINK_QUOTA_EXCEEDED: "連結數量已達上限。",
+  QUOTA_EXCEEDED: "可用儲存空間不足。未完成的上傳會暫時保留空間。",
+  UPLOAD_EXPIRED: "上傳時間已結束，請重新上傳。",
+  UPLOAD_VALIDATION_FAILED: "無法驗證媒體檔案，請選擇其他檔案或重試。",
+  UPLOAD_INTERRUPTED: "上傳中斷，重試時會先確認是否已儲存。",
+  RATE_LIMITED: "操作太頻繁，請稍後再試。",
+  INTERNAL_ERROR: "目前無法完成操作，請稍後再試。",
+  SERVICE_UNAVAILABLE: "服務目前無法使用，請稍後再試。",
+};
+
+export function errorMessage(error: unknown, locale: Locale = "en") {
+  if (locale === "zh-Hant") {
+    if (error instanceof RequestError)
+      return chineseErrors[error.code] ?? "目前無法完成操作，請稍後再試。";
+    return "連線中斷，請檢查網路後再試。";
+  }
   if (error instanceof RequestError) {
     if (error.code === "UNAUTHENTICATED")
       return "Your session has ended. Sign in again to continue.";
