@@ -10,6 +10,11 @@ The north star is Monthly Active Timelines: distinct timelines receiving at leas
 
 - TypeScript, npm, Hono, and Zod on Cloudflare Workers; React when client work begins.
 - D1 is authoritative for identity, ownership, quotas, timelines, and sharing policies. R2 stores media. KV is a disposable cache, never an authorization or quota ledger.
+- Reuse the existing Library storage meter and `GET /api/me` for Images quota
+  visibility. An optional image-count cap requires an authoritative, atomic
+  server-side counting/admission model before the UI shows a percentage. Keep
+  informational upgrade navigation decoupled from disabled payment providers;
+  see [Images quota and upgrade specification](images-quota-and-upgrade.md).
 - The payment foundation remains disabled: no checkout or webhook adapters are
   enabled. Any future integration must meet the [payment foundation
   requirements](payment-foundation.md) before launch.
@@ -58,6 +63,12 @@ P0 includes durable ownership, image/video upload, tags, independent timeline it
 P1 includes EXIF extraction and auto-sort, create-from-selection, year/month navigation, milestones, password/expiry/view limits, invite-only grants, custom OG, basic analytics, anniversaries, and slideshow. Basic link expiry is included earlier because resolution must reject it correctly.
 
 P2 includes collaboration, comments/reactions, profiles/follow/feed, AI curation, generated video, maps, native clients, custom domains, and public developer API. Do not install AI SDKs or video infrastructure before those features are selected.
+
+The first Pages/Images launch is tracked under Issues #103-#108 and #110. Images requires
+storage usage/remaining visibility and, only if a count cap is enforced, a
+separate image-count indicator. The upgrade entry can link to the canonical
+pricing information but cannot enable checkout or grant paid entitlements until
+merchant review and the payment-foundation release gates are satisfied.
 
 ## Verification and release policy
 
