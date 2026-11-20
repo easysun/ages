@@ -87,7 +87,15 @@ function initialLocale(): Locale {
   } catch {
     // Fall back to the browser language when cookies are unavailable.
   }
-  return navigator.language.toLowerCase().startsWith("zh") ? "zh-Hant" : "en";
+  const languages = navigator.languages?.length
+    ? navigator.languages
+    : [navigator.language];
+  for (const language of languages) {
+    const normalized = language.toLowerCase();
+    if (/^zh(-|$)/.test(normalized)) return "zh-Hant";
+    if (/^en(-|$)/.test(normalized)) return "en";
+  }
+  return "en";
 }
 
 export function LocaleProvider({ children }: { children: ReactNode }) {

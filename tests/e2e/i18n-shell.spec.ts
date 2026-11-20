@@ -215,3 +215,21 @@ test("Chinese conflict notice preserves an unsaved caption", async ({
     "保留我的草稿",
   );
 });
+
+test("first-time language selection honors supported browser preferences after an unsupported language", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "language", { get: () => "fr-FR" });
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["fr-FR", "zh-TW", "en-US"],
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+});
