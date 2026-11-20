@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import type { Locale } from "./locale";
+import { type Locale, supportedLocale } from "./locale";
 
 export type { Locale } from "./locale";
 
@@ -69,13 +69,6 @@ type LocaleContextValue = {
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 const key = "ages_locale";
-
-export function supportedLocale(
-  value: string | null | undefined,
-): Locale | null {
-  if (value === "en" || value === "zh-Hant") return value;
-  return null;
-}
 
 function initialLocale(): Locale {
   try {
