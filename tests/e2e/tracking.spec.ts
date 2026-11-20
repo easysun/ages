@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
@@ -63,6 +63,44 @@ test.describe("limited tracking fallback", () => {
       executeFixtureSql(
         `DELETE FROM rate_limits WHERE scope_hash IN (${hashes.map((hash) => `'${hash}'`).join(",")});`,
       );
+    }
+  });
+
+  test("continues without analytics when the tracking limiter fails", async ({
+    page,
+  }) => {
+    const { owner } = await seedLibrary(page.context(), { empty: true });
+    const target =
+      "http://127.0.0.3:8799/landing?destination_secret=private#story";
+    const link = seedProviderLink(owner, "direct", target);
+    const vendors = await installNetworkStubs(page, {
+      destinationTarget: target,
+    });
+    const hashes = ["local", "127.0.0.1", "::1"].map((subject) =>
+      createHash("sha256").update(`tracking:${subject}`).digest("hex"),
+    );
+    const trigger = `e2e_fail_tracking_${randomUUID().replaceAll("-", "")}`;
+    try {
+      executeFixtureSql(
+        `CREATE TRIGGER ${trigger} BEFORE INSERT ON rate_limits WHEN NEW.scope_hash IN (${hashes.map((hash) => `'${hash}'`).join(",")}) BEGIN SELECT RAISE(FAIL, 'synthetic tracking limiter failure'); END;`,
+      );
+      const response = await page.goto(`${e2eOrigin}/s/${link.slug}`);
+      expect(response?.status()).toBe(503);
+      await expect(
+        page.getByRole("heading", { name: "Continue without analytics" }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Continue without analytics" })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "External fixture reached" }),
+      ).toBeVisible();
+      expect(vendors.requests).toEqual([]);
+      expect(vendors.continuationOrigins).toEqual([e2eTrackingOrigin]);
+      expect(vendors.continuationReferrers).toEqual([`${e2eTrackingOrigin}/`]);
+      expect(vendors.continuationStatuses).toEqual([200]);
+    } finally {
+      executeFixtureSql(`DROP TRIGGER IF EXISTS ${trigger};`);
     }
   });
 });
