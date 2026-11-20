@@ -80,4 +80,7 @@ it("requires the Cloudflare client IP outside local development", async () => {
   expect(response.status).toBe(503);
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Set-Cookie")).toBeNull();
+  const html = await response.text();
+  expect(html).toContain("Continue without analytics");
+  expect(html).not.toContain("<script");
 });

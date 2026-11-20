@@ -443,6 +443,39 @@ describe("isolated provider consent flow", () => {
     expect((await continueTicket(token, trackingOrigin)).status).toBe(404);
   });
 
+  it("provides skip without analytics if the tracking limiter cannot write", async () => {
+    const link = await createLink();
+    await configureProvider(link.id);
+    const redirect = await request(`/s/${link.slug}`);
+    const token = new URL(
+      redirect.headers.get("Location") ?? "",
+    ).pathname.slice(1);
+    const prepare = env.DB.prepare.bind(env.DB);
+    const failure = vi.spyOn(env.DB, "prepare").mockImplementation((query) => {
+      if (query.includes("INSERT INTO rate_limits"))
+        throw new Error("synthetic database failure");
+      return prepare(query);
+    });
+    try {
+      const page = await viewTicket(token);
+      expect(page.status).toBe(503);
+      expect(page.headers.get("Cache-Control")).toBe("no-store");
+      const html = await page.text();
+      expect(html).toContain(`action="${appOrigin}/s/continue"`);
+      expect(html).toContain(`value="${token}"`);
+      expect(html).not.toContain("<script");
+      expect(html).not.toContain("synthetic database failure");
+    } finally {
+      failure.mockRestore();
+    }
+    const next = await continueTicket(token);
+    expect(next.status).toBe(200);
+    expect(await next.text()).toContain(
+      "https://destination.example.test/private-path",
+    );
+    expect((await continueTicket(token)).status).toBe(404);
+  });
+
   it("applies the app's separate IP limit to ticket continuations", async () => {
     const link = await createLink();
     await configureProvider(link.id);

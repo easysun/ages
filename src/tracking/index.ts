@@ -46,10 +46,19 @@ export function createTrackingApp() {
     const ip =
       context.req.header("CF-Connecting-IP") ||
       (context.env.APP_ENV === "local" ? "local" : null);
-    if (!ip) throw new ApiError("SERVICE_UNAVAILABLE");
-    const retryAfter = await consumeLimit(context.env.DB, "tracking", ip);
-    if (retryAfter !== null) {
-      context.header("Retry-After", String(retryAfter));
+    let retryAfter: number | null = null;
+    let unavailable = !ip;
+    if (ip) {
+      try {
+        retryAfter = await consumeLimit(context.env.DB, "tracking", ip);
+      } catch {
+        unavailable = true;
+      }
+    }
+    if (unavailable || retryAfter !== null) {
+      const status = unavailable ? 503 : 429;
+      if (retryAfter !== null)
+        context.header("Retry-After", String(retryAfter));
       context.header("Cache-Control", "no-store");
       context.header("Referrer-Policy", "no-referrer");
       context.header("X-Content-Type-Options", "nosniff");
@@ -57,7 +66,10 @@ export function createTrackingApp() {
       context.header("X-Frame-Options", "DENY");
       const token = context.req.param("token");
       if (!/^[0-9a-f]{64}$/.test(token))
-        return context.text("Too many requests.", 429);
+        return context.text(
+          unavailable ? "Unavailable" : "Too many requests.",
+          status,
+        );
       context.header(
         "Content-Security-Policy",
         `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${origins.appOrigin}`,
@@ -72,7 +84,7 @@ export function createTrackingApp() {
 <input type="hidden" name="token" value="${token}">
 <button type="submit">Continue without analytics</button>
 </form></main></body></html>`,
-        429,
+        status,
       );
     }
     const view = await readTrackingTicket(
