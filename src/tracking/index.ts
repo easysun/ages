@@ -1,8 +1,9 @@
 import { Hono } from "hono";
+import { consumeLimit } from "../abuse/limits";
 import { ApiError } from "../http/errors";
 import { type TrackingWorkerBindings, trackingPageOrigins } from "./config";
-import { renderTrackingInterstitial } from "./interstitial";
-import { readTrackingTicket } from "./tickets";
+import { escapeHtml, renderTrackingInterstitial } from "./interstitial";
+import { readTrackingTicket, tokenPattern } from "./tickets";
 
 export function createTrackingApp() {
   const app = new Hono<{ Bindings: TrackingWorkerBindings }>();
@@ -41,14 +42,51 @@ export function createTrackingApp() {
       requestUrl.hash !== ""
     )
       throw new ApiError("NOT_FOUND");
-    const view = await readTrackingTicket(
-      context.env.DB,
-      context.req.param("token"),
-      new Date(),
-    );
+    const token = context.req.param("token");
+    if (!tokenPattern.test(token)) throw new ApiError("NOT_FOUND");
+    // Only the edge-provided client IP is trusted; never use forwarded headers.
+    const ip =
+      context.req.header("CF-Connecting-IP") ||
+      (context.env.APP_ENV === "local" ? "local" : null);
+    let retryAfter: number | null = null;
+    let unavailable = !ip;
+    if (ip) {
+      try {
+        retryAfter = await consumeLimit(context.env.DB, "tracking", ip);
+      } catch {
+        unavailable = true;
+      }
+    }
+    if (unavailable || retryAfter !== null) {
+      const status = unavailable ? 503 : 429;
+      if (retryAfter !== null)
+        context.header("Retry-After", String(retryAfter));
+      context.header("Cache-Control", "no-store");
+      context.header("Referrer-Policy", "strict-origin");
+      context.header("X-Content-Type-Options", "nosniff");
+      context.header("X-Robots-Tag", "noindex, nofollow");
+      context.header("X-Frame-Options", "DENY");
+      context.header(
+        "Content-Security-Policy",
+        `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${origins.appOrigin}`,
+      );
+      return context.html(
+        `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continue without analytics</title></head><body><main>
+<h1>Continue without analytics</h1>
+<p>Optional analytics are temporarily unavailable.</p>
+<form action="${escapeHtml(origins.appOrigin)}/s/continue" method="post">
+<input type="hidden" name="token" value="${token}">
+<button type="submit">Continue without analytics</button>
+</form></main></body></html>`,
+        status,
+      );
+    }
+    const view = await readTrackingTicket(context.env.DB, token, new Date());
     if (!view) throw new ApiError("NOT_FOUND");
     const { html, contentSecurityPolicy } = await renderTrackingInterstitial(
-      context.req.param("token"),
+      token,
       view,
       origins,
     );

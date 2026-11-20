@@ -11,29 +11,38 @@ const limits = {
   writes: 120,
   intents: 30,
   reports: 10,
+  tracking: 600,
 } as const;
 const windowMs = 60_000;
+
+export async function consumeLimit(
+  db: D1Database,
+  policy: keyof typeof limits,
+  subject: string,
+): Promise<number | null> {
+  const now = Date.now();
+  const bucket = Math.floor(now / windowMs) * windowMs;
+  const scope = await hashToken(`${policy}:${subject}`);
+  // Conditional UPSERT is atomic across concurrent Worker requests and restarts.
+  const allowed = await db
+    .prepare(`INSERT INTO rate_limits (scope_hash,bucket,count,expires_at)
+    VALUES (?,?,1,?) ON CONFLICT (scope_hash,bucket) DO UPDATE SET count=rate_limits.count+1
+    WHERE rate_limits.count < ? RETURNING count`)
+    .bind(scope, bucket, bucket + windowMs + 3_600_000, limits[policy])
+    .first();
+  return allowed
+    ? null
+    : Math.max(1, Math.ceil((bucket + windowMs - now) / 1000));
+}
 
 async function consume(
   context: Context<AppContext>,
   policy: keyof typeof limits,
   subject: string,
 ) {
-  const now = Date.now();
-  const bucket = Math.floor(now / windowMs) * windowMs;
-  const scope = await hashToken(`${policy}:${subject}`);
-  // Conditional UPSERT is atomic across concurrent Worker requests and restarts.
-  const allowed =
-    await context.env.DB.prepare(`INSERT INTO rate_limits (scope_hash,bucket,count,expires_at)
-    VALUES (?,?,1,?) ON CONFLICT (scope_hash,bucket) DO UPDATE SET count=rate_limits.count+1
-    WHERE rate_limits.count < ? RETURNING count`)
-      .bind(scope, bucket, bucket + windowMs + 3_600_000, limits[policy])
-      .first();
-  if (allowed) return null;
-  context.header(
-    "Retry-After",
-    String(Math.max(1, Math.ceil((bucket + windowMs - now) / 1000))),
-  );
+  const retryAfter = await consumeLimit(context.env.DB, policy, subject);
+  if (retryAfter === null) return null;
+  context.header("Retry-After", String(retryAfter));
   return errorResponse(context, "RATE_LIMITED");
 }
 

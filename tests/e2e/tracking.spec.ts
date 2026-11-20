@@ -1,9 +1,11 @@
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import {
   e2eOrigin,
   e2eTrackingOrigin,
+  executeFixtureSql,
   seedLibrary,
   seedProviderLink,
 } from "./fixtures";
@@ -12,6 +14,96 @@ const artifactDirectory = resolve(".wrangler/e2e-artifacts");
 mkdirSync(artifactDirectory, { recursive: true });
 const localDestination =
   "http://127.0.0.3:8799/landing?utm_source=old&destination_secret=private#story";
+
+test.describe("limited tracking fallback", () => {
+  test.use({ javaScriptEnabled: false });
+
+  test("continues to the destination without analytics when tracking is limited", async ({
+    page,
+  }) => {
+    const { owner } = await seedLibrary(page.context(), { empty: true });
+    const target =
+      "http://127.0.0.3:8799/landing?destination_secret=private#story";
+    const link = seedProviderLink(owner, "direct", target);
+    const vendors = await installNetworkStubs(page, {
+      destinationTarget: target,
+    });
+    const subjects = ["local", "127.0.0.1", "::1"];
+    const hashes = subjects.map((subject) =>
+      createHash("sha256").update(`tracking:${subject}`).digest("hex"),
+    );
+    const bucket = Math.floor(Date.now() / 60_000) * 60_000;
+    executeFixtureSql(
+      hashes
+        .flatMap((hash) =>
+          [bucket, bucket + 60_000].map(
+            (window) =>
+              `INSERT OR REPLACE INTO rate_limits (scope_hash,bucket,count,expires_at) VALUES ('${hash}',${window},600,${window + 3_660_000});`,
+          ),
+        )
+        .join("\n"),
+    );
+    try {
+      const response = await page.goto(`${e2eOrigin}/s/${link.slug}`);
+      expect(response?.status()).toBe(429);
+      await expect(
+        page.getByRole("heading", { name: "Continue without analytics" }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Continue without analytics" })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "External fixture reached" }),
+      ).toBeVisible();
+      expect(vendors.requests).toEqual([]);
+      expect(vendors.continuationOrigins).toEqual([e2eTrackingOrigin]);
+      expect(vendors.continuationReferrers).toEqual([`${e2eTrackingOrigin}/`]);
+      expect(vendors.continuationStatuses).toEqual([200]);
+    } finally {
+      executeFixtureSql(
+        `DELETE FROM rate_limits WHERE scope_hash IN (${hashes.map((hash) => `'${hash}'`).join(",")});`,
+      );
+    }
+  });
+
+  test("continues without analytics when the tracking limiter fails", async ({
+    page,
+  }) => {
+    const { owner } = await seedLibrary(page.context(), { empty: true });
+    const target =
+      "http://127.0.0.3:8799/landing?destination_secret=private#story";
+    const link = seedProviderLink(owner, "direct", target);
+    const vendors = await installNetworkStubs(page, {
+      destinationTarget: target,
+    });
+    const hashes = ["local", "127.0.0.1", "::1"].map((subject) =>
+      createHash("sha256").update(`tracking:${subject}`).digest("hex"),
+    );
+    const trigger = `e2e_fail_tracking_${randomUUID().replaceAll("-", "")}`;
+    try {
+      executeFixtureSql(
+        `CREATE TRIGGER ${trigger} BEFORE INSERT ON rate_limits WHEN NEW.scope_hash IN (${hashes.map((hash) => `'${hash}'`).join(",")}) BEGIN SELECT RAISE(FAIL, 'synthetic tracking limiter failure'); END;`,
+      );
+      const response = await page.goto(`${e2eOrigin}/s/${link.slug}`);
+      expect(response?.status()).toBe(503);
+      await expect(
+        page.getByRole("heading", { name: "Continue without analytics" }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "Continue without analytics" })
+        .click();
+      await expect(
+        page.getByRole("heading", { name: "External fixture reached" }),
+      ).toBeVisible();
+      expect(vendors.requests).toEqual([]);
+      expect(vendors.continuationOrigins).toEqual([e2eTrackingOrigin]);
+      expect(vendors.continuationReferrers).toEqual([`${e2eTrackingOrigin}/`]);
+      expect(vendors.continuationStatuses).toEqual([200]);
+    } finally {
+      executeFixtureSql(`DROP TRIGGER IF EXISTS ${trigger};`);
+    }
+  });
+});
 
 type VendorOptions = {
   destinationTarget?: string;
@@ -42,6 +134,7 @@ async function installNetworkStubs(
   const destinationReferrers: string[] = [];
   const trackingCookieHeaders: string[] = [];
   const continuationOrigins: string[] = [];
+  const continuationReferrers: string[] = [];
   const continuationStatuses: number[] = [];
   const vendorReferrers: string[] = [];
   const vendorDocumentReferrers: string[] = [];
@@ -62,8 +155,10 @@ async function installNetworkStubs(
     const headers = await request.allHeaders();
     if (url.origin === e2eTrackingOrigin)
       trackingCookieHeaders.push(headers.cookie ?? "");
-    if (url.origin === e2eOrigin && url.pathname === "/s/continue")
+    if (url.origin === e2eOrigin && url.pathname === "/s/continue") {
       continuationOrigins.push(headers.origin ?? "");
+      continuationReferrers.push(headers.referer ?? "");
+    }
     if (url.origin === "http://127.0.0.3:8799")
       destinationReferrers.push(headers.referer ?? "");
     if (
@@ -185,6 +280,7 @@ async function installNetworkStubs(
     destinationReferrers,
     trackingCookieHeaders,
     continuationOrigins,
+    continuationReferrers,
     continuationStatuses,
     vendorReferrers,
     vendorDocumentReferrers,

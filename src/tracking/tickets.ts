@@ -5,7 +5,7 @@ import type { Link } from "../links/model";
 import { type LinkTracking, linkTrackingSchema } from "../links/tracking";
 import type { EnabledProviders } from "./providers";
 
-const tokenPattern = /^[0-9a-f]{64}$/;
+export const tokenPattern = /^[0-9a-f]{64}$/;
 
 const enabledProvidersSchema = z.strictObject({
   ga4: z
