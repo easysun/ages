@@ -32,11 +32,13 @@ function request(path: string, init: RequestInit = {}, config = bindings) {
 async function asset(
   id: string,
   owner = "owner_a",
-  kind = "image",
+  kind: "image" | "video" | "audio" = "image",
   status: Asset["status"] = "ready",
 ) {
-  const bytes = kind === "video" ? new TextEncoder().encode("0123456789") : png;
-  const mime = kind === "video" ? "video/mp4" : "image/png";
+  const bytes = kind === "image" ? png : new TextEncoder().encode("0123456789");
+  const mime = { image: "image/png", video: "video/mp4", audio: "audio/mpeg" }[
+    kind
+  ];
   const key = `synthetic/${owner}/${id}`;
   const stored = await env.MEDIA.put(key, bytes, {
     httpMetadata: { contentType: mime, cacheControl: "public, max-age=999999" },
@@ -75,7 +77,7 @@ async function timeline(
 }
 async function item(
   id: string,
-  assetId: string,
+  assetId: string | null,
   timelineId = "story",
   position = 0,
   caption = "A moment",
@@ -108,6 +110,37 @@ async function unavailable(response: Response) {
 }
 
 describe("Canonical public timeline SSR", () => {
+  it("localizes visitor controls without translating story content or leaking private timelines", async () => {
+    await timeline("story", "unlisted", "A personal memory");
+    const zh = await request("/t/story", {
+      headers: { "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8" },
+    });
+    expect(zh.headers.get("cache-control")).toBe("private, no-store");
+    expect(zh.headers.get("x-robots-tag")).toContain("noindex");
+    const html = await zh.text();
+    expect(html).toContain('<html lang="zh-Hant">');
+    expect(html).toContain("檢舉此時間軸");
+    expect(html).toContain("A personal memory");
+    const ranked = await request("/t/story", {
+      headers: { "Accept-Language": "en;q=0.5,zh-TW;q=0.9" },
+    });
+    expect(await ranked.text()).toContain('<html lang="zh-Hant">');
+    const excluded = await request("/t/story", {
+      headers: { "Accept-Language": "zh;q=0,en;q=0.5" },
+    });
+    expect(await excluded.text()).toContain('<html lang="en">');
+    const en = await request("/t/story", {
+      headers: { Cookie: "ages_locale=en", "Accept-Language": "zh-TW" },
+    });
+    expect(await en.text()).toContain('<html lang="en">');
+    await timeline("private-story", "private", "A secret");
+    const hidden = await request("/t/private-story", {
+      headers: { Cookie: "ages_locale=zh-Hant" },
+    });
+    expect(hidden.status).toBe(404);
+    expect(await hidden.text()).not.toContain("A secret");
+  });
+
   it("serves escaped OG and story text without JavaScript and uses the configured canonical origin", async () => {
     const title = 'A <script>alert("title")</script> & memory';
     const caption = 'A <img src=x onerror="alert(1)"> & "moment"';
@@ -226,6 +259,50 @@ describe("Canonical public timeline SSR", () => {
     expect(html).toContain('loading="lazy"');
   });
 
+  it("shares standalone writing as escaped text with its date and no media grant", async () => {
+    await asset("note");
+    await timeline();
+    await item("note", null, "story", 0, '<b>Snow</b> & "rain"\nAt dusk.', {
+      kind: "date",
+      date: "2024-02-29",
+      time_zone: "Asia/Taipei",
+      calendar: "iso8601",
+    });
+    const response = await request("/t/story");
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    const escaped = "&lt;b&gt;Snow&lt;/b&gt; &amp; &quot;rain&quot;\nAt dusk.";
+    expect(html).toContain(`property="og:description" content="${escaped}"`);
+    expect(html).toContain(`<p class="caption">${escaped}</p>`);
+    expect(html).toContain('<time datetime="2024-02-29">2024-02-29</time>');
+    expect(html).toContain("1 moment</span>");
+    expect(html).not.toMatch(/og:image|\/media\/|<b>Snow|Open attachment/);
+    await unavailable(await request("/t/story/media/note"));
+  });
+
+  it("interleaves text and media in story order and hides the writing when a member is blocked", async () => {
+    await asset("photo");
+    await asset("audio", "owner_a", "audio");
+    await timeline();
+    await item("last", "audio", "story", 2, "Evening birds");
+    await item("middle", "photo", "story", 1, "A secret photograph");
+    await item("first", null, "story", 0, "A secret morning");
+    const html = await (await request("/t/story")).text();
+    expect(html).toContain("3 moments</span>");
+    expect(html).toContain(
+      'property="og:image" content="https://ages.test/t/story/media/photo"',
+    );
+    const list = html.match(/<ol>([\s\S]*?)<\/ol>/)?.[1] ?? "";
+    expect(list).toMatch(
+      /A secret morning[\s\S]*<img[^>]*\/media\/photo[\s\S]*<audio controls[^>]*\/media\/audio/,
+    );
+    await env.DB.prepare(
+      "UPDATE assets SET moderation_blocked=1 WHERE id='photo'",
+    ).run();
+    await unavailable(await request("/t/story"));
+    await unavailable(await request("/t/story/media/audio"));
+  });
+
   it("renders only complete positive integer dimensions stored on each image Asset", async () => {
     const ids = [
       "cover",
@@ -300,41 +377,45 @@ describe("Canonical public timeline SSR", () => {
     );
   });
 
-  it("keeps the same canonical URL after a fourth moment is appended through the owner API", async () => {
-    await timeline();
-    for (let i = 0; i < 3; i++) {
-      await asset(`photo${i}`);
-      await item(`item${i}`, `photo${i}`, "story", i, `Moment ${i}`);
-    }
-    const before = await (await request("/t/story")).text();
-    await asset("fourth");
-    const append = await request("/api/timelines/story/items", {
-      method: "POST",
-      headers: {
-        Cookie: session,
-        Origin: origin,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        expected_version: 1,
-        asset_id: "fourth",
-        caption: "Fourth moment",
-      }),
-    });
-    expect(append.status).toBe(201);
-    const after = await (await request("/t/story")).text();
-    for (const html of [before, after])
-      expect(html).toContain(
-        '<link rel="canonical" href="https://ages.test/t/story">',
-      );
-    expect(before).not.toContain("Fourth moment");
-    expect(after).toContain("Fourth moment");
-  });
+  it.each(["media", "text"])(
+    "keeps the same canonical URL after a fourth %s moment is appended through the owner API",
+    async (kind) => {
+      await timeline();
+      for (let i = 0; i < 3; i++) {
+        await asset(`photo${i}`);
+        await item(`item${i}`, `photo${i}`, "story", i, `Moment ${i}`);
+      }
+      const before = await (await request("/t/story")).text();
+      if (kind === "media") await asset("fourth");
+      const append = await request("/api/timelines/story/items", {
+        method: "POST",
+        headers: {
+          Cookie: session,
+          Origin: origin,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          expected_version: 1,
+          ...(kind === "media" ? { asset_id: "fourth" } : { kind: "text" }),
+          caption: "Fourth moment",
+        }),
+      });
+      expect(append.status).toBe(201);
+      const after = await (await request("/t/story")).text();
+      for (const html of [before, after])
+        expect(html).toContain(
+          '<link rel="canonical" href="https://ages.test/t/story">',
+        );
+      expect(before).not.toContain("Fourth moment");
+      expect(after).toContain("Fourth moment");
+    },
+  );
 
   it("rechecks visibility for page, OG and media after an earlier public request", async () => {
     await asset("photo");
     await timeline("story", "public", "A secret", "photo");
     await item("item", "photo");
+    await item("note", null, "story", 1, "A secret note");
     expect((await request("/t/story")).status).toBe(200);
     expect((await request("/t/story/media/photo")).status).toBe(200);
     await env.DB.prepare(

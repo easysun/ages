@@ -410,6 +410,7 @@ test("caption and date drafts stay attached to their items when leaving a window
   await page.goto(`/timelines/${id}`);
 
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first
     .getByRole("textbox", { name: "Caption" })
     .fill("Draft on page one");
@@ -488,6 +489,7 @@ test("a pending save clears only its submitted fields and keeps newer typing foc
   });
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   const caption = moment.getByRole("textbox", { name: "Caption" });
   await caption.fill("Committed snapshot");
   await moment.getByLabel("Date type").selectOption("date");
@@ -552,6 +554,7 @@ test("drafts follow stable item IDs through a remote reorder and conflict refres
   const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first
     .getByRole("textbox", { name: "Caption" })
     .fill("Follow this item");
@@ -626,6 +629,7 @@ test("caption-only conflict drafts rebase clean event fields to the canonical in
   expect(initial.ok()).toBe(true);
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
 
   const remote = await context.request.patch(
@@ -694,6 +698,7 @@ test("event-only conflict drafts rebase clean captions before a later event edit
   expect(initial.ok()).toBe(true);
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByLabel("Time zone").fill("Asia/Taipei");
 
   const remote = await context.request.patch(
@@ -753,6 +758,7 @@ test("confirmed removal after caption-only conflict does not resurrect its clean
   expect(initial.ok()).toBe(true);
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByRole("textbox", { name: "Caption" }).fill("Local caption");
   const remote = await context.request.patch(
     `/api/timelines/${id}/items/${itemId}`,
@@ -812,6 +818,7 @@ test("confirmed removal after event-only conflict does not resurrect its clean c
   expect(initial.ok()).toBe(true);
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByLabel("Time zone").fill("Asia/Taipei");
   const remote = await context.request.patch(
     `/api/timelines/${id}/items/${itemId}`,
@@ -868,6 +875,7 @@ test("fields typed during pending removal remain unresolved until explicitly han
   }
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first.getByRole("button", { name: "Remove moment" }).click();
   await holds.get(cleanRemoval)?.started;
   await first
@@ -878,6 +886,7 @@ test("fields typed during pending removal remain unresolved until explicitly han
   await expect(unresolved).toContainText("Typed during clean removal");
 
   const second = page.getByRole("group", { name: "Moment 1", exact: true });
+  await second.getByRole("button", { name: "Edit moment" }).click();
   await second
     .getByRole("textbox", { name: "Caption" })
     .fill("Confirmed draft before removal");
@@ -910,6 +919,7 @@ test("a non-caption focused field survives Enter submission and a cross-window c
   const { id, itemIds } = seedLargeTimeline(owner, ids[0] as string, 250);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first.getByLabel("Date type").selectOption("instant");
   await first.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
   const zone = first.getByLabel("Time zone");
@@ -951,6 +961,7 @@ test("a held non-caption save preserves newer typing and restores that field foc
   });
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByLabel("Date type").selectOption("instant");
   await moment.getByLabel("Event instant").fill("2026-10-04T10:30:00+08:00");
   const zone = moment.getByLabel("Time zone");
@@ -979,6 +990,7 @@ test("a remotely removed dirty moment remains copyable or discardable", async ({
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first
     .getByRole("textbox", { name: "Caption" })
     .fill("Keep this removed moment draft");
@@ -1018,6 +1030,7 @@ test("removing a dirty moment requires confirmation and discards only after acce
   const { id, itemIds } = seedTimeline(owner, ids, 2);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first
     .getByRole("textbox", { name: "Caption" })
     .fill("A draft that needs confirmation");
@@ -1152,6 +1165,7 @@ test("failed or conflicted append tails stop the batch and resume only after fre
     });
     await page.goto(`/timelines/${id}`);
     const first = page.getByRole("group", { name: "Moment 1", exact: true });
+    await first.getByRole("button", { name: "Edit moment" }).click();
     const caption = first.getByRole("textbox", { name: "Caption" });
     await caption.fill(`Draft survives ${failure}`);
     await page.route(`**/api/timelines/${id}/overview?**`, async (route) => {
@@ -1321,6 +1335,7 @@ test("a held timeline conflict cannot update the editor after logout starts", as
   });
   await page.goto(`/timelines/${id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   const caption = moment.getByRole("textbox", { name: "Caption" });
   await caption.fill("Keep draft while sign out is pending");
   const changed = await context.request.patch(`/api/timelines/${id}`, {
@@ -1398,6 +1413,7 @@ test("create, describe, share and append through simulated upload transport keep
     "Mountain air.png",
   ]);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first
     .getByRole("textbox", { name: "Caption" })
     .fill("The first light of summer");
@@ -1409,9 +1425,9 @@ test("create, describe, share and append through simulated upload transport keep
   await first.getByRole("button", { name: "Move later" }).focus();
   await page.keyboard.press("Enter");
   const second = page.getByRole("group", { name: "Moment 2", exact: true });
-  await expect(second.getByRole("textbox", { name: "Caption" })).toHaveValue(
-    "The first light of summer",
-  );
+  await expect(
+    second.getByText("The first light of summer", { exact: true }),
+  ).toBeVisible();
   await page
     .getByLabel("Cover", { exact: true })
     .selectOption({ label: "Coastal light.png" });
@@ -1494,13 +1510,11 @@ test("create, describe, share and append through simulated upload transport keep
   await expect(
     page
       .getByRole("group", { name: "Moment 2", exact: true })
-      .getByRole("textbox", { name: "Caption" }),
-  ).toHaveValue("The first light of summer");
+      .getByText("The first light of summer", { exact: true }),
+  ).toBeVisible();
   await expect(
-    page
-      .getByRole("group", { name: "Moment 2", exact: true })
-      .getByLabel("Event date", { exact: true }),
-  ).toHaveValue("2024-02-29");
+    page.getByRole("group", { name: "Moment 2", exact: true }).locator("time"),
+  ).toHaveAttribute("datetime", "2024-02-29");
   await expect(share).toHaveAttribute("href", canonical as string);
   await page.getByRole("link", { name: "Timelines", exact: true }).click();
   await page.getByRole("link", { name: /Days by the coast/ }).click();
@@ -1535,6 +1549,7 @@ test("reusing an asset keeps each story caption and event date independent", asy
   ).json();
   await page.goto(`/timelines/${first.id}`);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment
     .getByRole("textbox", { name: "Caption" })
     .fill("Only in the first story");
@@ -1544,18 +1559,22 @@ test("reusing an asset keeps each story caption and event date independent", asy
   await moment.getByRole("button", { name: "Save moment" }).click();
   await expect(moment.getByRole("status")).toHaveText("Moment saved");
   await page.goto(`/timelines/${second.id}`);
-  await expect(moment.getByRole("textbox", { name: "Caption" })).toHaveValue(
-    "Moment 1",
-  );
-  await expect(moment.getByLabel("Date type")).toHaveValue("none");
+  await expect(
+    moment.getByRole("paragraph").filter({ hasText: /^Moment 1$/ }),
+  ).toBeVisible();
+  await expect(
+    moment.getByRole("button", { name: "Edit moment" }),
+  ).toBeVisible();
+  await expect(moment.locator("time")).toHaveCount(0);
   expect(
     await (await context.request.get(`/api/assets/${ids[0]}`)).json(),
   ).toEqual(assetBefore);
   await page.goto(`/timelines/${first.id}`);
-  await expect(moment.getByRole("textbox", { name: "Caption" })).toHaveValue(
-    "Only in the first story",
-  );
-  await expect(moment.getByLabel("Event date", { exact: true })).toHaveValue(
+  await expect(
+    moment.getByText("Only in the first story", { exact: true }),
+  ).toBeVisible();
+  await expect(moment.locator("time")).toHaveAttribute(
+    "datetime",
     "2025-07-16",
   );
 });
@@ -1582,8 +1601,8 @@ test("100-item keyboard and touch moves submit the complete unique narrative ord
   await expect(
     page
       .getByRole("group", { name: "Moment 99", exact: true })
-      .getByRole("textbox", { name: "Caption" }),
-  ).toHaveValue("Moment 100");
+      .getByText("Moment 100", { exact: true }),
+  ).toBeVisible();
   expect(reordered).toHaveLength(100);
   expect(new Set(reordered).size).toBe(100);
   expect(reordered.slice(-2)).toEqual([itemIds[99], itemIds[98]]);
@@ -1591,8 +1610,8 @@ test("100-item keyboard and touch moves submit the complete unique narrative ord
   await expect(
     page
       .getByRole("group", { name: "Moment 99", exact: true })
-      .getByRole("textbox", { name: "Caption" }),
-  ).toHaveValue("Moment 100");
+      .getByText("Moment 100", { exact: true }),
+  ).toBeVisible();
 });
 
 test("a real stale version refetches the story while preserving the unsaved caption", async ({
@@ -1603,6 +1622,7 @@ test("a real stale version refetches the story while preserving the unsaved capt
   const { id, itemIds } = seedTimeline(owner, ids);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   await first.getByRole("textbox", { name: "Caption" }).fill("Keep my draft");
   const external = await context.request.patch(`/api/timelines/${id}`, {
     headers: { Origin: e2eOrigin },
@@ -2659,7 +2679,7 @@ test("selects_a_paged_undated_item_and_restores_focus_in_its_story_window", asyn
   await expect(
     page.getByRole("group", { name: "Moment 303", exact: true }),
   ).toBeVisible();
-  await expect(page.locator(`#item-${targetId}-caption`)).toBeFocused();
+  await expect(page.locator(`#item-${targetId}-edit`)).toBeFocused();
   await expect(page.getByRole("group", { name: /^Moment \d+$/ })).toHaveCount(
     3,
   );
@@ -2791,6 +2811,7 @@ test("preserves_all_three_manual_frames_across_mode_switches_resize_append_and_e
   expect(afterAppend.center).toBeCloseTo(resizedDate.center, 4);
   expect(afterAppend.span).toBeCloseTo(resizedDate.span, 4);
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByLabel("Date type").selectOption("date");
   await moment.getByLabel("Event date", { exact: true }).fill("2025-03-01");
   await moment.getByLabel("Time zone").fill("Pacific/Apia");
@@ -2830,6 +2851,7 @@ test("retains_drafts_and_field_focus_across_window_changes_and_conflicts", async
   ]);
   await page.goto(`/timelines/${id}`);
   const first = page.getByRole("group", { name: "Moment 1", exact: true });
+  await first.getByRole("button", { name: "Edit moment" }).click();
   const caption = first.getByRole("textbox", { name: "Caption" });
   const date = first.getByLabel("Event date", { exact: true });
   const zone = first.getByLabel("Time zone");
@@ -2979,6 +3001,7 @@ test("acknowledges_date_edit_before_refresh_reconciliation", async ({
   });
 
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByLabel("Event date", { exact: true }).fill("2024-02-29");
   await moment.getByLabel("Time zone").focus();
   await moment.getByRole("button", { name: "Save moment" }).click();
@@ -3030,7 +3053,7 @@ test("acknowledges_date_edit_before_refresh_reconciliation", async ({
   await expect(
     page
       .getByRole("group", { name: "Moment 1", exact: true })
-      .getByLabel("Time zone"),
+      .getByRole("button", { name: "Edit moment" }),
   ).toBeFocused();
 });
 
@@ -3222,6 +3245,7 @@ test("rejects_old_read_and_current_auth_generation_responses", async ({
     });
   });
   const moment = page.getByRole("group", { name: "Moment 1", exact: true });
+  await moment.getByRole("button", { name: "Edit moment" }).click();
   await moment.getByRole("textbox", { name: "Caption" }).fill("Private draft");
   await moment.getByRole("button", { name: "Save moment" }).click();
   await expect(

@@ -14,6 +14,8 @@ import {
   mediaUrl,
   RequestError,
 } from "./api";
+import { useLocale } from "./i18n";
+import { type AppendAttempt, MomentComposer } from "./moment-composer";
 import { StoryViewport } from "./story-viewport";
 
 type Summary = Omit<ReturnType<typeof timelinePayload>, "items">;
@@ -32,11 +34,11 @@ type MomentAsset = {
 };
 type ItemDetail = {
   id: string;
-  asset_id: string;
+  asset_id: string | null;
   position: number;
   caption: string;
   event_at: EventAt | null;
-  asset: MomentAsset;
+  asset: MomentAsset | null;
 };
 type OverviewPage = {
   timeline: Summary;
@@ -220,6 +222,10 @@ function TimelineList({
   navigate: Navigate;
   authGeneration: number;
 }) {
+  const { locale } = useLocale();
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
+  const zh = locale === "zh-Hant";
   const [stories, setStories] = useState<Summary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -247,7 +253,7 @@ function TimelineList({
       })
       .catch((reason) => {
         if (ownsRequest() && !controller.signal.aborted)
-          setError(errorMessage(reason));
+          setError(errorMessage(reason, localeRef.current));
       })
       .finally(() => {
         if (ownsRequest() && !controller.signal.aborted) setLoading(false);
@@ -271,7 +277,7 @@ function TimelineList({
         navigate(`/timelines/${encodeURIComponent(result.timeline.id)}`);
     } catch (reason) {
       if (live.current && authGenerationRef.current === requestAuthGeneration)
-        setError(errorMessage(reason));
+        setError(errorMessage(reason, localeRef.current));
     } finally {
       if (live.current && authGenerationRef.current === requestAuthGeneration)
         setCreating(false);
@@ -296,7 +302,7 @@ function TimelineList({
       setCursor(page.next_cursor);
     } catch (reason) {
       if (live.current && authGenerationRef.current === requestAuthGeneration)
-        setError(errorMessage(reason));
+        setError(errorMessage(reason, localeRef.current));
     } finally {
       if (live.current && authGenerationRef.current === requestAuthGeneration)
         setLoading(false);
@@ -305,25 +311,43 @@ function TimelineList({
   return (
     <main id="main" className="timeline-page">
       <div className="timeline-intro">
-        <p className="eyebrow">A story that keeps growing</p>
-        <h1>Your timelines</h1>
-        <p>Bring moments together. Describe them. Keep adding.</p>
+        <p className="eyebrow">
+          {zh ? "持續成長的故事" : "A story that keeps growing"}
+        </p>
+        <h1>{zh ? "你的時間軸" : "Your timelines"}</h1>
+        <p>
+          {zh
+            ? "串起時刻，寫下故事，持續新增。"
+            : "Bring moments together. Describe them. Keep adding."}
+        </p>
       </div>
       <form className="timeline-create" onSubmit={create}>
-        <label htmlFor="new-timeline-title">New timeline title</label>
+        <label htmlFor="new-timeline-title">
+          {zh ? "新時間軸標題" : "New timeline title"}
+        </label>
         <input
           id="new-timeline-title"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           required
           maxLength={200}
-          placeholder="A summer, a place, a life…"
+          placeholder={
+            zh ? "一個夏天、一個地方、一段人生…" : "A summer, a place, a life…"
+          }
         />
         <button className="button primary" disabled={creating} type="submit">
-          {creating ? "Creating…" : "Create timeline"}
+          {creating
+            ? zh
+              ? "建立中…"
+              : "Creating…"
+            : zh
+              ? "建立時間軸"
+              : "Create timeline"}
         </button>
         <p className="field-help">
-          New timelines are private. Your original media stays in your library.
+          {zh
+            ? "新建的時間軸預設為私人，原始媒體會保留在素材庫。"
+            : "New timelines are private. Your original media stays in your library."}
         </p>
       </form>
       {error ? (
@@ -334,7 +358,7 @@ function TimelineList({
             className="text-button"
             onClick={() => setRequest({ path: "/api/timelines?limit=30" })}
           >
-            Retry timelines
+            {zh ? "重新載入時間軸" : "Retry timelines"}
           </button>
         </div>
       ) : null}
@@ -359,26 +383,36 @@ function TimelineList({
             <h2>{story.title}</h2>
             <span>
               {story.visibility === "private"
-                ? "Private"
+                ? zh
+                  ? "私人"
+                  : "Private"
                 : story.visibility === "unlisted"
-                  ? "Anyone with the link"
-                  : "Public"}
+                  ? zh
+                    ? "知道連結的人"
+                    : "Anyone with the link"
+                  : zh
+                    ? "公開"
+                    : "Public"}
             </span>
           </a>
         ))}
       </div>
       {loading ? (
-        <p role="status">Opening timelines…</p>
+        <p role="status">{zh ? "正在載入時間軸…" : "Opening timelines…"}</p>
       ) : cursor ? (
         <button
           type="button"
           className="button secondary"
           onClick={() => void more()}
         >
-          More timelines
+          {zh ? "更多時間軸" : "More timelines"}
         </button>
       ) : stories.length === 0 && !error ? (
-        <p className="empty-state">Your first story starts with a moment.</p>
+        <p className="empty-state">
+          {zh
+            ? "你的第一個故事，從一個時刻開始。"
+            : "Your first story starts with a moment."}
+        </p>
       ) : null}
     </main>
   );
@@ -409,6 +443,10 @@ function TimelineEditor({
   ) => void;
   authorizationFailure: (timelineId: string, authGeneration: number) => boolean;
 }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
+  const localeRef = useRef(locale);
+  localeRef.current = locale;
   const [summary, setSummary] = useState<Summary | null>(null);
   const [indexItems, setIndexItems] = useState<OverviewItem[]>([]);
   const [chronologicalSnapshot, setChronologicalSnapshot] = useState<{
@@ -428,6 +466,9 @@ function TimelineEditor({
   const [rangeStart, setRangeStart] = useState(0);
   const [goToValue, setGoToValue] = useState("1");
   const [drafts, setDrafts] = useState<Record<string, TimelineDraft>>({});
+  const [editingItems, setEditingItems] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [itemNotices, setItemNotices] = useState<Record<string, string>>({});
   const [assets, setAssets] = useState<Record<string, LibraryAsset>>({});
   const [library, setLibrary] = useState<LibraryAsset[]>([]);
@@ -572,6 +613,7 @@ function TimelineEditor({
       setRangeStart(0);
       setGoToValue("1");
       setDrafts({});
+      setEditingItems(new Set());
       setItemNotices({});
       setAssets({});
       setLibrary([]);
@@ -584,8 +626,10 @@ function TimelineEditor({
       setDetailError("");
       setError(
         reason instanceof RequestError && reason.status === 403
-          ? "You no longer have access to this private timeline."
-          : errorMessage(reason),
+          ? localeRef.current === "zh-Hant"
+            ? "你已無權存取這條私人時間軸。"
+            : "You no longer have access to this private timeline."
+          : errorMessage(reason, localeRef.current),
       );
       setNotice("");
       setBusy(false);
@@ -636,6 +680,7 @@ function TimelineEditor({
     setRangeStart(0);
     setGoToValue("1");
     setDrafts({});
+    setEditingItems(new Set());
     setItemNotices({});
     setAssets({});
     setLibrary([]);
@@ -837,8 +882,8 @@ function TimelineEditor({
             setOverviewProgress(0);
             continue;
           }
-          setError(errorMessage(reason));
-          setChronologicalError(errorMessage(reason));
+          setError(errorMessage(reason, localeRef.current));
+          setChronologicalError(errorMessage(reason, localeRef.current));
           setWritePaused(true);
           writePausedRef.current = true;
           releaseReadinessWaiters();
@@ -929,7 +974,7 @@ function TimelineEditor({
           setWritePaused(true);
           setOverviewRequest((current) => current + 1);
         } else {
-          setDetailError(errorMessage(reason));
+          setDetailError(errorMessage(reason, localeRef.current));
           releaseReadinessWaiters();
         }
       })
@@ -964,9 +1009,11 @@ function TimelineEditor({
     const target =
       focusedField instanceof HTMLElement
         ? focusedField
-        : document.getElementById(`item-${focus.id}-caption`);
-    pendingFocus.current = null;
-    if (target instanceof HTMLElement) target.focus();
+        : document.getElementById(`item-${focus.id}-edit`);
+    if (target instanceof HTMLElement) {
+      pendingFocus.current = null;
+      target.focus();
+    }
   }, [detailsReady, focusRequestVersion]);
 
   useEffect(() => {
@@ -995,7 +1042,7 @@ function TimelineEditor({
           clearPrivateState(reason, requestAuthGeneration);
           return;
         }
-        setAssetError(errorMessage(reason));
+        setAssetError(errorMessage(reason, localeRef.current));
       });
     return () => controller.abort();
   }, [summary?.cover_asset_id, assets, authGeneration, clearPrivateState]);
@@ -1012,11 +1059,17 @@ function TimelineEditor({
     api<LibraryPage>("/api/assets?limit=100", { signal: controller.signal })
       .then((page) => {
         if (!ownsRequest()) return;
-        setLibrary(page.assets);
+        setLibrary((current) => [
+          ...current,
+          ...page.assets.filter(
+            (asset) => !current.some((entry) => entry.id === asset.id),
+          ),
+        ]);
         setCursor(page.next_cursor);
-        setAssets(
-          Object.fromEntries(page.assets.map((asset) => [asset.id, asset])),
-        );
+        setAssets((current) => ({
+          ...Object.fromEntries(page.assets.map((asset) => [asset.id, asset])),
+          ...current,
+        }));
       })
       .catch((reason) => {
         if (!ownsRequest()) return;
@@ -1024,7 +1077,7 @@ function TimelineEditor({
           clearPrivateState(reason, requestAuthGeneration);
           return;
         }
-        setLibraryError(errorMessage(reason));
+        setLibraryError(errorMessage(reason, localeRef.current));
       })
       .finally(() => {
         if (ownsRequest()) setLibraryLoading(false);
@@ -1075,7 +1128,7 @@ function TimelineEditor({
       ) {
         if (isAuthorizationFailureResponse(reason))
           clearPrivateState(reason, requestAuthGeneration);
-        else setLibraryError(errorMessage(reason));
+        else setLibraryError(errorMessage(reason, localeRef.current));
       }
     } finally {
       if (
@@ -1180,11 +1233,36 @@ function TimelineEditor({
     pendingFocus.current = { id: itemId, field };
   }
 
+  function editMoment(itemId: string) {
+    setEditingItems((current) => new Set(current).add(itemId));
+    requestFieldFocus(itemId, "caption");
+    setFocusRequestVersion((current) => current + 1);
+  }
+
+  function stopEditing(itemId: string) {
+    setEditingItems((current) => {
+      const next = new Set(current);
+      next.delete(itemId);
+      return next;
+    });
+  }
+
+  function cancelEdit(itemId: string) {
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[itemId];
+      return next;
+    });
+    stopEditing(itemId);
+    requestFieldFocus(itemId, "edit");
+    setFocusRequestVersion((current) => current + 1);
+  }
+
   function selectChronologicalItem(itemId: string) {
     const ordinal =
       chronologicalSnapshotRef.current?.index.storyOrdinalById.get(itemId);
     if (!ordinal) return;
-    const field = focusedFieldsById.current.get(itemId) ?? "caption";
+    const field = focusedFieldsById.current.get(itemId) ?? "edit";
     pendingFocus.current = { id: itemId, field };
     setGoToValue(String(ordinal));
     setRangeStart(Math.floor((ordinal - 1) / 100) * 100);
@@ -1197,6 +1275,7 @@ function TimelineEditor({
     method: string,
     change: Record<string, unknown>,
     updateDisplayedSnapshot = path === "" && method === "PATCH",
+    attempt?: AppendAttempt,
   ): Promise<MutationOutcome> {
     if (
       writing.current ||
@@ -1212,7 +1291,9 @@ function TimelineEditor({
     const operation = ++mutationGeneration.current;
     const operationId = crypto.randomUUID();
     const requestAuthGeneration = authGenerationRef.current;
-    const expectedVersion = writeVersion.current;
+    const isRetry = attempt?.state === "uncertain";
+    const expectedVersion = attempt?.expectedVersion ?? writeVersion.current;
+    if (attempt) attempt.expectedVersion = expectedVersion;
     registerMutation({
       operationId,
       timelineId: id,
@@ -1231,13 +1312,30 @@ function TimelineEditor({
     setError("");
     setNotice("");
     try {
-      const body = jsonBody({ expected_version: expectedVersion, ...change });
+      const body = jsonBody({
+        expected_version: expectedVersion,
+        ...change,
+        ...(attempt && { item_id: attempt.itemId }),
+      });
       await api<void>(`/api/timelines/${encodeURIComponent(id)}${path}`, {
         method,
         ...body,
         headers: { ...body.headers, Prefer: "return=minimal" },
         signal: controller.signal,
       });
+      if (isRetry && ownsEditor()) {
+        // The original append may have been followed by edits in another tab.
+        // Read the current index before assigning a position or publishing a version.
+        acknowledgeMutation(operationId, expectedVersion + 1);
+        if (attempt) {
+          setRangeStart(Math.floor(totalItemsRef.current / 100) * 100);
+          requestFieldFocus(attempt.itemId, "edit");
+          setFocusRequestVersion((current) => current + 1);
+        }
+        beginDetailReconciliation();
+        refreshOverview();
+        return { saved: true, operationId, expectedVersion };
+      }
       const committedVersion = expectedVersion + 1;
       acknowledgeMutation(operationId, committedVersion);
       writePausedRef.current = true;
@@ -1294,6 +1392,17 @@ function TimelineEditor({
         committedVersion,
       };
     } catch (reason) {
+      if (attempt) {
+        if (!(reason instanceof RequestError) || reason.status >= 500) {
+          attempt.state = "uncertain";
+        } else if (reason.code === "APPEND_ALREADY_APPLIED") {
+          attempt.state = "consumed";
+        } else {
+          // A stale version with no receipt is safe to retry after refresh.
+          delete attempt.expectedVersion;
+          delete attempt.state;
+        }
+      }
       finishMutation(operationId);
       if (isAuthorizationFailureResponse(reason)) {
         clearPrivateState(reason, requestAuthGeneration);
@@ -1302,10 +1411,15 @@ function TimelineEditor({
       if (!ownsEditor()) return { saved: false, operationId, expectedVersion };
       if (reason instanceof RequestError && reason.code === "CONFLICT") {
         setError(
-          "This timeline changed elsewhere. The latest story is loading and your unsaved drafts are kept. Review them and try again.",
+          localeRef.current === "zh-Hant"
+            ? "這條時間軸已在其他地方變更，正在載入最新內容。未儲存的草稿已保留，請確認後再試。"
+            : "This timeline changed elsewhere. The latest story is loading and your unsaved drafts are kept. Review them and try again.",
         );
         refreshOverview();
-      } else setError(errorMessage(reason));
+      } else {
+        setError(errorMessage(reason, localeRef.current));
+        if (attempt?.state === "consumed") refreshOverview();
+      }
       return { saved: false, operationId, expectedVersion };
     } finally {
       if (
@@ -1440,6 +1554,7 @@ function TimelineEditor({
         writePausedRef.current = writePaused || !authGenerationIsCurrent;
       } else refreshOverview();
     } else if (ownsDisplayedEditor) refreshOverview();
+    stopEditing(item.id);
     setFocusRequestVersion((current) => current + 1);
     setDrafts((current) => {
       const latest = current[item.id];
@@ -1465,10 +1580,15 @@ function TimelineEditor({
     return true;
   }
 
-  async function append(ids: string[], onCommitted: (assetId: string) => void) {
-    const added: string[] = [];
+  async function append<T extends string | { kind: "text"; caption: string }>(
+    moments: T[],
+    onCommitted?: (moment: T) => void,
+    focusAdded = false,
+    attempt?: AppendAttempt,
+  ) {
+    const added: T[] = [];
     const requestAuthGeneration = authGenerationRef.current;
-    for (const assetId of ids) {
+    for (const moment of moments) {
       if (
         !live.current ||
         authGenerationRef.current !== requestAuthGeneration ||
@@ -1480,8 +1600,9 @@ function TimelineEditor({
       const outcome = await mutation(
         "/items",
         "POST",
-        { asset_id: assetId },
+        typeof moment === "string" ? { asset_id: moment } : moment,
         false,
+        attempt,
       );
       if (!outcome.saved) return added;
       if (
@@ -1491,9 +1612,9 @@ function TimelineEditor({
       )
         return added;
       const expectedVersion = outcome.committedVersion;
+      added.push(moment);
+      onCommitted?.(moment);
       if (expectedVersion === undefined) return added;
-      added.push(assetId);
-      onCommitted(assetId);
       beginDetailReconciliation();
       const params = new URLSearchParams({
         limit: "2",
@@ -1537,6 +1658,10 @@ function TimelineEditor({
           new Set(nextItems.map((row) => row.id)).size !== nextItems.length
         )
           throw new Error("The timeline index could not be verified.");
+        if (focusAdded) {
+          requestFieldFocus(newRow.id, "edit");
+          setRangeStart(Math.floor(previousCount / 100) * 100);
+        }
         setSummary(tail.timeline);
         setIndexItems(nextItems);
         indexItemsRef.current = nextItems;
@@ -1560,6 +1685,11 @@ function TimelineEditor({
         if (isAuthorizationFailureResponse(reason)) {
           clearPrivateState(reason, requestAuthGeneration);
           return added;
+        }
+        if (focusAdded && attempt) {
+          setRangeStart(Math.floor(previousCount / 100) * 100);
+          requestFieldFocus(attempt.itemId, "edit");
+          setFocusRequestVersion((current) => current + 1);
         }
         setError(
           "A moment was added, but the timeline could not confirm its latest order. Reloading the timeline before more changes.",
@@ -1633,6 +1763,7 @@ function TimelineEditor({
       false,
     );
     if (!outcome.saved || !live.current) return;
+    stopEditing(item.id);
     setDrafts((current) => {
       const latest = current[item.id];
       if (!latest) return current;
@@ -1714,14 +1845,18 @@ function TimelineEditor({
                 setOverviewRequest((current) => current + 1);
               }}
             >
-              Retry timeline
+              {zh ? "重試載入時間軸" : "Retry timeline"}
             </button>
           </>
         ) : (
           <p role="status">
             {overviewLoading
-              ? `Loading timeline index… ${overviewProgress} moments`
-              : "Opening your story…"}
+              ? zh
+                ? `正在載入時間軸索引… ${overviewProgress} 個時刻`
+                : `Loading timeline index… ${overviewProgress} moments`
+              : zh
+                ? "正在開啟你的故事…"
+                : "Opening your story…"}
           </p>
         )}
       </main>
@@ -1732,25 +1867,58 @@ function TimelineEditor({
       <div className="timeline-intro editor-intro">
         <div>
           <p className="eyebrow">
-            Living timeline ·{" "}
+            {zh ? "生活時間軸" : "Living timeline"} ·{" "}
             {summary.visibility === "private"
-              ? "Private"
+              ? zh
+                ? "私人"
+                : "Private"
               : summary.visibility === "unlisted"
-                ? "Anyone with the link"
-                : "Public"}
+                ? zh
+                  ? "知道連結的人"
+                  : "Anyone with the link"
+                : zh
+                  ? "公開"
+                  : "Public"}
           </p>
           <h1>{summary.title}</h1>
-          <p>{totalItems} moments, with more to come.</p>
+          <p>
+            {zh
+              ? `目前有 ${totalItems} 個時刻，可以繼續新增。`
+              : `${totalItems} moments, with more to come.`}
+          </p>
         </div>
-        <button
-          className="button primary"
-          type="button"
-          ref={pickerOpener}
-          onClick={() => setPicker(true)}
-        >
-          Add moments
-        </button>
       </div>
+      <MomentComposer
+        key={authGeneration}
+        empty={totalItems === 0}
+        disabled={busy || editorWritePaused || !detailsReady}
+        pickerOpener={pickerOpener}
+        openLibrary={() => setPicker(true)}
+        addText={async (caption, attempt) =>
+          (await append([{ kind: "text", caption }], undefined, true, attempt))
+            .length > 0
+        }
+        addPhoto={async (asset, attempt) => {
+          if (
+            !live.current ||
+            authGenerationRef.current !== authGeneration ||
+            authorizationFailedRef.current
+          )
+            return false;
+          setAssets((current) => ({ ...current, [asset.id]: asset }));
+          setLibrary((current) => [
+            asset,
+            ...current.filter((entry) => entry.id !== asset.id),
+          ]);
+          return (
+            (await append([asset.id], undefined, true, attempt)).length > 0
+          );
+        }}
+        onUploadError={(reason) => {
+          if (isAuthorizationFailureResponse(reason))
+            clearPrivateState(reason, authGeneration);
+        }}
+      />
       {error ? (
         <div className="error editor-notice" role="alert">
           {error}
@@ -1762,7 +1930,7 @@ function TimelineEditor({
               refreshOverview();
             }}
           >
-            Reload timeline
+            {zh ? "重新載入時間軸" : "Reload timeline"}
           </button>
         </div>
       ) : null}
@@ -1772,26 +1940,32 @@ function TimelineEditor({
         </p>
       ) : null}
       {unresolvedDrafts.length ? (
-        <section className="editor-notice" aria-label="Unresolved drafts">
-          <h2>Unresolved drafts</h2>
+        <section
+          className="editor-notice"
+          aria-label={zh ? "待處理草稿" : "Unresolved drafts"}
+        >
+          <h2>{zh ? "待處理草稿" : "Unresolved drafts"}</h2>
           <p>
-            These moments were removed from the timeline elsewhere. Copy or
-            discard each local draft; it cannot be saved to a removed moment.
+            {zh
+              ? "這些時刻已在其他地方從時間軸移除，無法將草稿儲存至已移除的時刻。請複製或捨棄各個本機草稿。"
+              : "These moments were removed from the timeline elsewhere. Copy or discard each local draft; it cannot be saved to a removed moment."}
           </p>
           <ul>
             {unresolvedDrafts.map(([itemId, draft]) => {
               const eventDescription =
                 draft.eventKind === "none"
-                  ? "No event date"
-                  : `${draft.eventKind === "date" ? "Event date" : "Event time"}: ${draft.eventValue}\nTime zone: ${draft.timeZone}`;
-              const copyText = `Caption: ${draft.caption}\n${eventDescription}`;
+                  ? zh
+                    ? "未設定事件日期"
+                    : "No event date"
+                  : `${draft.eventKind === "date" ? (zh ? "事件日期" : "Event date") : zh ? "事件時間" : "Event time"}: ${draft.eventValue}\n${zh ? "時區" : "Time zone"}: ${draft.timeZone}`;
+              const copyText = `${zh ? "文字說明" : "Caption"}: ${draft.caption}\n${eventDescription}`;
               return (
                 <li key={itemId}>
-                  <h3>Removed moment draft</h3>
-                  <p>{draft.caption || "No caption"}</p>
+                  <h3>{zh ? "已移除時刻的草稿" : "Removed moment draft"}</h3>
+                  <p>{draft.caption || (zh ? "沒有文字說明" : "No caption")}</p>
                   <p>{eventDescription}</p>
                   <button type="button" disabled>
-                    Save draft
+                    {zh ? "儲存草稿" : "Save draft"}
                   </button>
                   <button
                     type="button"
@@ -1799,11 +1973,11 @@ function TimelineEditor({
                       void navigator.clipboard
                         .writeText(copyText)
                         .catch((reason: unknown) =>
-                          setError(errorMessage(reason)),
+                          setError(errorMessage(reason, localeRef.current)),
                         );
                     }}
                   >
-                    Copy draft
+                    {zh ? "複製草稿" : "Copy draft"}
                   </button>
                   <button
                     type="button"
@@ -1820,7 +1994,7 @@ function TimelineEditor({
                       });
                     }}
                   >
-                    Discard draft
+                    {zh ? "捨棄草稿" : "Discard draft"}
                   </button>
                 </li>
               );
@@ -1840,24 +2014,26 @@ function TimelineEditor({
           </button>
         </div>
       ) : null}
-      <StoryViewport
-        positions={viewportPositions}
-        index={
-          chronologicalSnapshot?.version === snapshotVersion
-            ? chronologicalSnapshot.index
-            : null
-        }
-        snapshotVersion={snapshotVersion}
-        chronologicalLoading={
-          chronologicalLoading ||
-          (snapshotVersion !== null &&
-            chronologicalSnapshot?.version !== snapshotVersion &&
-            !chronologicalError)
-        }
-        chronologicalError={chronologicalError}
-        retryChronological={refreshOverview}
-        onSelectItem={selectChronologicalItem}
-      />
+      {totalItems > 0 && (
+        <StoryViewport
+          positions={viewportPositions}
+          index={
+            chronologicalSnapshot?.version === snapshotVersion
+              ? chronologicalSnapshot.index
+              : null
+          }
+          snapshotVersion={snapshotVersion}
+          chronologicalLoading={
+            chronologicalLoading ||
+            (snapshotVersion !== null &&
+              chronologicalSnapshot?.version !== snapshotVersion &&
+              !chronologicalError)
+          }
+          chronologicalError={chronologicalError}
+          retryChronological={refreshOverview}
+          onSelectItem={selectChronologicalItem}
+        />
+      )}
       {totalItems > 0 ? (
         <section className="moment-range" aria-label="Moment range navigation">
           <h2 ref={heading} tabIndex={-1} id="moment-range-heading">
@@ -1941,7 +2117,9 @@ function TimelineEditor({
                     <Moment
                       item={item}
                       index={rangeStart + index}
-                      asset={item.asset}
+                      editing={editingItems.has(item.id) || !!drafts[item.id]}
+                      edit={() => editMoment(item.id)}
+                      cancel={() => cancelEdit(item.id)}
                       draft={draftFor(item)}
                       changeDraft={(patch, field) =>
                         changeDraft(item, patch, field)
@@ -1972,12 +2150,7 @@ function TimelineEditor({
                   : "Moments are not available yet."}
               </p>
             )
-          ) : (
-            <div className="empty-state">
-              <h2>A first moment, then another.</h2>
-              <p>Choose photos or videos from your private library to begin.</p>
-            </div>
-          )}
+          ) : null}
         </div>
         <aside className="story-settings">
           <Settings
@@ -2017,7 +2190,9 @@ function momentMediaUrl(asset: MomentAsset) {
 function Moment({
   item,
   index,
-  asset,
+  editing,
+  edit,
+  cancel,
   draft,
   changeDraft,
   busy,
@@ -2031,7 +2206,9 @@ function Moment({
 }: {
   item: ItemDetail;
   index: number;
-  asset?: MomentAsset;
+  editing: boolean;
+  edit: () => void;
+  cancel: () => void;
   draft: TimelineDraft;
   changeDraft: (
     patch: Partial<Omit<TimelineDraft, "dirty">>,
@@ -2050,10 +2227,13 @@ function Moment({
   remove: () => void;
   showMoveControls: boolean;
 }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
   const mediaPlaceholder = useRef<HTMLDivElement>(null);
   const [mediaInBand, setMediaInBand] = useState(false);
   const [explicitMediaLoad, setExplicitMediaLoad] = useState(false);
   const lastFocusedField = useRef("caption");
+  const asset = item.asset;
   const assetId = asset?.id;
   const observerSupported =
     typeof window !== "undefined" &&
@@ -2105,6 +2285,7 @@ function Moment({
       ...(draft.dirty.event ? { event_at: eventAt } : {}),
     };
     if (!Object.keys(change).length) {
+      cancel();
       setNotice("Moment is up to date");
       return;
     }
@@ -2113,7 +2294,7 @@ function Moment({
   }
   const field = `item-${item.id}`;
   const hasDimensions =
-    asset !== undefined &&
+    asset !== null &&
     asset.width !== null &&
     asset.height !== null &&
     Number.isFinite(asset.width) &&
@@ -2124,178 +2305,253 @@ function Moment({
     hasDimensions && asset ? `${asset.width} / ${asset.height}` : undefined;
   const mountMedia = observerSupported ? mediaInBand : explicitMediaLoad;
   return (
-    <fieldset className="moment" aria-label={`Moment ${index + 1}`}>
+    <fieldset
+      className={asset ? "moment" : "moment text-moment"}
+      aria-label={`Moment ${index + 1}`}
+    >
       <legend>Moment {index + 1}</legend>
-      <div
-        ref={mediaPlaceholder}
-        className={`moment-media${aspectRatio ? " has-aspect-ratio" : ""}`}
-        style={aspectRatio ? { aspectRatio } : undefined}
-      >
-        {asset?.kind === "image" && mountMedia ? (
-          <img
-            src={momentMediaUrl(asset)}
-            alt={asset.original_name}
-            loading="lazy"
-          />
-        ) : asset?.kind === "video" && mountMedia ? (
-          <video
-            src={momentMediaUrl(asset)}
-            controls
-            preload="none"
-            aria-label={asset.original_name}
-          >
-            <track kind="captions" />
-          </video>
-        ) : asset && !observerSupported && !explicitMediaLoad ? (
-          <button
-            className="button secondary moment-media-load"
-            type="button"
-            onClick={() => setExplicitMediaLoad(true)}
-          >
-            Load media
-          </button>
-        ) : (
-          <span className="sr-only">
-            {asset
-              ? "Media loads when this moment approaches the viewport."
-              : "Loading this moment’s media…"}
-          </span>
-        )}
-      </div>
-      <div className="moment-content">
-        <h2>{asset?.original_name ?? "Library moment"}</h2>
-        <p className="field-help">
-          This caption and date belong to this story. The original media stays
-          unchanged.
-        </p>
-        <form
-          onSubmit={submit}
-          onFocusCapture={(event) => {
-            const target = event.target;
-            const prefix = `${field}-`;
-            if (target instanceof HTMLElement && target.id.startsWith(prefix))
-              lastFocusedField.current = target.id.slice(prefix.length);
-          }}
+      {asset && (
+        <div
+          ref={mediaPlaceholder}
+          className={`moment-media${aspectRatio ? " has-aspect-ratio" : ""}`}
+          style={aspectRatio ? { aspectRatio } : undefined}
         >
-          <label htmlFor={`${field}-caption`}>Caption</label>
-          <textarea
-            id={`${field}-caption`}
-            value={draft.caption}
-            maxLength={10000}
-            rows={3}
-            onChange={(event) => {
-              changeDraft({ caption: event.target.value }, "caption");
-              setNotice("");
+          {asset?.kind === "image" && mountMedia ? (
+            <img
+              src={momentMediaUrl(asset)}
+              alt={asset.original_name}
+              loading="lazy"
+            />
+          ) : asset?.kind === "video" && mountMedia ? (
+            <video
+              src={momentMediaUrl(asset)}
+              controls
+              preload="none"
+              aria-label={asset.original_name}
+            >
+              <track kind="captions" />
+            </video>
+          ) : asset && !observerSupported && !explicitMediaLoad ? (
+            <button
+              className="button secondary moment-media-load"
+              type="button"
+              onClick={() => setExplicitMediaLoad(true)}
+            >
+              Load media
+            </button>
+          ) : (
+            <span className="sr-only">
+              Media loads when this moment approaches the viewport.
+            </span>
+          )}
+        </div>
+      )}
+      <div className="moment-content">
+        {asset && <h2>{asset.original_name}</h2>}
+        {editing ? (
+          <form
+            onSubmit={submit}
+            onFocusCapture={(event) => {
+              const target = event.target;
+              const prefix = `${field}-`;
+              if (target instanceof HTMLElement && target.id.startsWith(prefix))
+                lastFocusedField.current = target.id.slice(prefix.length);
             }}
-          />
-          <div className="event-fields">
-            <div>
-              <label htmlFor={`${field}-kind`}>Date type</label>
-              <select
-                id={`${field}-kind`}
-                value={draft.eventKind}
-                onChange={(event) => {
-                  changeDraft(
-                    {
-                      eventKind: event.target
-                        .value as TimelineDraft["eventKind"],
-                    },
-                    "event",
-                  );
-                  setNotice("");
-                }}
-              >
-                <option value="none">No event date</option>
-                <option value="date">Calendar date</option>
-                <option value="instant">Exact time</option>
-              </select>
+          >
+            <label htmlFor={`${field}-caption`}>
+              {asset
+                ? zh
+                  ? "照片說明"
+                  : "Caption"
+                : zh
+                  ? "時刻文字"
+                  : "Moment text"}
+            </label>
+            <textarea
+              id={`${field}-caption`}
+              value={draft.caption}
+              maxLength={10000}
+              rows={asset ? 2 : 4}
+              required={!asset}
+              onChange={(event) => {
+                changeDraft({ caption: event.target.value }, "caption");
+                setNotice("");
+              }}
+            />
+            <div className="event-fields">
+              <div>
+                <label htmlFor={`${field}-kind`}>
+                  {zh ? "日期類型" : "Date type"}
+                </label>
+                <select
+                  id={`${field}-kind`}
+                  value={draft.eventKind}
+                  onChange={(event) => {
+                    changeDraft(
+                      {
+                        eventKind: event.target
+                          .value as TimelineDraft["eventKind"],
+                      },
+                      "event",
+                    );
+                    setNotice("");
+                  }}
+                >
+                  <option value="none">
+                    {zh ? "不設定日期" : "No event date"}
+                  </option>
+                  <option value="date">
+                    {zh ? "日曆日期" : "Calendar date"}
+                  </option>
+                  <option value="instant">
+                    {zh ? "精確時間" : "Exact time"}
+                  </option>
+                </select>
+              </div>
+              {draft.eventKind === "date" ? (
+                <div>
+                  <label htmlFor={`${field}-date`}>
+                    {zh ? "事件日期" : "Event date"}
+                  </label>
+                  <input
+                    id={`${field}-date`}
+                    type="date"
+                    value={draft.eventValue}
+                    required
+                    onChange={(event) => {
+                      changeDraft({ eventValue: event.target.value }, "event");
+                    }}
+                  />
+                </div>
+              ) : draft.eventKind === "instant" ? (
+                <div>
+                  <label htmlFor={`${field}-instant`}>
+                    {zh ? "事件時間" : "Event instant"}
+                  </label>
+                  <input
+                    id={`${field}-instant`}
+                    value={draft.eventValue}
+                    required
+                    placeholder="2026-10-04T10:30:00+08:00"
+                    onChange={(event) => {
+                      changeDraft({ eventValue: event.target.value }, "event");
+                    }}
+                  />
+                </div>
+              ) : null}
+              {draft.eventKind !== "none" ? (
+                <div>
+                  <label htmlFor={`${field}-zone`}>
+                    {zh ? "時區" : "Time zone"}
+                  </label>
+                  <input
+                    id={`${field}-zone`}
+                    value={draft.timeZone}
+                    required
+                    maxLength={100}
+                    placeholder="Asia/Taipei"
+                    onChange={(event) => {
+                      changeDraft({ timeZone: event.target.value }, "event");
+                    }}
+                  />
+                </div>
+              ) : null}
             </div>
-            {draft.eventKind === "date" ? (
-              <div>
-                <label htmlFor={`${field}-date`}>Event date</label>
-                <input
-                  id={`${field}-date`}
-                  type="date"
-                  value={draft.eventValue}
-                  required
-                  onChange={(event) => {
-                    changeDraft({ eventValue: event.target.value }, "event");
-                  }}
-                />
-              </div>
-            ) : draft.eventKind === "instant" ? (
-              <div>
-                <label htmlFor={`${field}-instant`}>Event instant</label>
-                <input
-                  id={`${field}-instant`}
-                  value={draft.eventValue}
-                  required
-                  placeholder="2026-10-04T10:30:00+08:00"
-                  onChange={(event) => {
-                    changeDraft({ eventValue: event.target.value }, "event");
-                  }}
-                />
-              </div>
+            {draft.eventKind === "instant" ? (
+              <p className="field-help">
+                Use an ISO timestamp with an explicit offset. The named time
+                zone controls presentation.
+              </p>
             ) : null}
-            {draft.eventKind !== "none" ? (
-              <div>
-                <label htmlFor={`${field}-zone`}>Time zone</label>
-                <input
-                  id={`${field}-zone`}
-                  value={draft.timeZone}
-                  required
-                  maxLength={100}
-                  placeholder="Asia/Taipei"
-                  onChange={(event) => {
-                    changeDraft({ timeZone: event.target.value }, "event");
-                  }}
-                />
-              </div>
-            ) : null}
-          </div>
-          {draft.eventKind === "instant" ? (
-            <p className="field-help">
-              Use an ISO timestamp with an explicit offset. The named time zone
-              controls presentation.
-            </p>
-          ) : null}
-          <div className="moment-actions">
-            <button className="button secondary" type="submit" disabled={busy}>
-              Save moment
-            </button>
+            <div className="moment-actions">
+              <button
+                className="button secondary"
+                type="submit"
+                disabled={busy || (!asset && !draft.caption.trim())}
+              >
+                {zh ? "儲存時刻" : "Save moment"}
+              </button>
+              <button
+                className="text-button"
+                type="button"
+                disabled={busy}
+                onClick={cancel}
+              >
+                {zh ? "取消" : "Cancel"}
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            {item.event_at ? <MomentDate event={item.event_at} /> : null}
+            {item.caption && <p className="moment-prose">{item.caption}</p>}
             <button
               className="text-button"
               type="button"
-              disabled={busy}
-              onClick={remove}
+              id={`${field}-edit`}
+              onClick={edit}
             >
-              Remove moment
+              {zh ? "編輯時刻" : "Edit moment"}
             </button>
-            {notice ? <p role="status">{notice}</p> : null}
-          </div>
-        </form>
-        {showMoveControls ? (
-          <div className="order-actions">
-            <button
-              className="text-button"
-              type="button"
-              disabled={busy || index === 0}
-              onClick={() => void move(-1)}
-            >
-              Move earlier
-            </button>
-            <button
-              className="text-button"
-              type="button"
-              disabled={busy || last}
-              onClick={() => void move(1)}
-            >
-              Move later
-            </button>
-          </div>
+          </>
+        )}
+        {notice ? (
+          <p role="status" className="moment-status">
+            {notice}
+          </p>
         ) : null}
+        <div className="order-actions">
+          <button
+            className="text-button"
+            type="button"
+            disabled={busy}
+            onClick={remove}
+          >
+            {zh ? "移除時刻" : "Remove moment"}
+          </button>
+          {showMoveControls ? (
+            <>
+              <button
+                className="text-button"
+                type="button"
+                disabled={busy || index === 0}
+                onClick={() => void move(-1)}
+              >
+                {zh ? "往前移" : "Move earlier"}
+              </button>
+              <button
+                className="text-button"
+                type="button"
+                disabled={busy || last}
+                onClick={() => void move(1)}
+              >
+                {zh ? "往後移" : "Move later"}
+              </button>
+            </>
+          ) : null}
+        </div>
       </div>
     </fieldset>
+  );
+}
+
+function MomentDate({ event }: { event: EventAt }) {
+  if (event.kind === "date") {
+    return (
+      <time className="moment-date" dateTime={event.date}>
+        {event.date}
+      </time>
+    );
+  }
+  const label = new Intl.DateTimeFormat(undefined, {
+    timeZone: event.time_zone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(event.instant));
+  return (
+    <time className="moment-date" dateTime={event.instant}>
+      {label} · {event.time_zone}
+    </time>
   );
 }
 
@@ -2310,6 +2566,8 @@ function Settings({
   busy: boolean;
   save: (change: Record<string, unknown>) => Promise<boolean>;
 }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
   const [title, setTitle] = useState(story.title);
   const [visibility, setVisibility] = useState(story.visibility);
   const [cover, setCover] = useState(story.cover_asset_id ?? "");
@@ -2333,18 +2591,20 @@ function Settings({
       ...(dirty.cover ? { cover_asset_id: cover || null } : {}),
     };
     if (!Object.keys(change).length) {
-      setNotice("Timeline is up to date");
+      setNotice(zh ? "時間軸已是最新狀態" : "Timeline is up to date");
       return;
     }
     if (await save(change)) {
       setDirty({ title: false, visibility: false, cover: false });
-      setNotice("Timeline saved");
+      setNotice(zh ? "時間軸已儲存" : "Timeline saved");
     }
   }
   return (
     <form className="settings-form" onSubmit={submit}>
-      <h2>About this story</h2>
-      <label htmlFor="story-title">Timeline title</label>
+      <h2>{zh ? "關於這個故事" : "About this story"}</h2>
+      <label htmlFor="story-title">
+        {zh ? "時間軸標題" : "Timeline title"}
+      </label>
       <input
         id="story-title"
         value={title}
@@ -2355,7 +2615,7 @@ function Settings({
           setDirty((value) => ({ ...value, title: true }));
         }}
       />
-      <label htmlFor="story-cover">Cover</label>
+      <label htmlFor="story-cover">{zh ? "封面" : "Cover"}</label>
       <select
         id="story-cover"
         value={cover}
@@ -2364,14 +2624,14 @@ function Settings({
           setDirty((value) => ({ ...value, cover: true }));
         }}
       >
-        <option value="">No cover</option>
+        <option value="">{zh ? "不設封面" : "No cover"}</option>
         {assets.map((asset) => (
           <option key={asset.id} value={asset.id}>
             {asset.original_name}
           </option>
         ))}
       </select>
-      <label htmlFor="story-visibility">Visibility</label>
+      <label htmlFor="story-visibility">{zh ? "可見範圍" : "Visibility"}</label>
       <select
         id="story-visibility"
         value={visibility}
@@ -2380,17 +2640,19 @@ function Settings({
           setDirty((value) => ({ ...value, visibility: true }));
         }}
       >
-        <option value="private">Private</option>
-        <option value="unlisted">Anyone with the link</option>
-        <option value="public">Public</option>
+        <option value="private">{zh ? "私人" : "Private"}</option>
+        <option value="unlisted">
+          {zh ? "知道連結的人" : "Anyone with the link"}
+        </option>
+        <option value="public">{zh ? "公開" : "Public"}</option>
       </select>
       <p className="field-help">
-        Private is only for you. Anyone with the link can view an unlisted
-        story; it asks search engines not to index it. Public stories permit
-        indexing.
+        {zh
+          ? "私人內容只有你能查看。知道連結的人可以查看不公開列出的故事，並會要求搜尋引擎不要索引。公開故事允許搜尋引擎索引。"
+          : "Private is only for you. Anyone with the link can view an unlisted story; it asks search engines not to index it. Public stories permit indexing."}
       </p>
       <button type="submit" className="button secondary" disabled={busy}>
-        Save timeline
+        {zh ? "儲存時間軸" : "Save timeline"}
       </button>
       {notice ? <p role="status">{notice}</p> : null}
     </form>
@@ -2404,14 +2666,16 @@ function ShareLink({
   id: string;
   visibility: Story["visibility"];
 }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
   const [url, setUrl] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(false);
   const [request, setRequest] = useState({
     path: `/t/${encodeURIComponent(id)}`,
   });
   useEffect(() => {
     setUrl("");
-    setError("");
+    setError(false);
     if (visibility === "private") return;
     const controller = new AbortController();
     const path = request.path;
@@ -2437,32 +2701,42 @@ function ShareLink({
         if (!controller.signal.aborted) setUrl(canonical.href);
       })
       .catch(() => {
-        if (!controller.signal.aborted)
-          setError("The share link could not be loaded. Please retry.");
+        if (!controller.signal.aborted) setError(true);
       });
     return () => controller.abort();
   }, [visibility, request]);
   return (
-    <section className="share-panel" aria-label="Share timeline">
-      <h2>Keep the story going</h2>
+    <section
+      className="share-panel"
+      aria-label={zh ? "分享時間軸" : "Share timeline"}
+    >
+      <h2>{zh ? "讓故事持續延伸" : "Keep the story going"}</h2>
       {visibility === "private" ? (
-        <p>This story is private. Choose “Anyone with the link” to share it.</p>
+        <p>
+          {zh
+            ? "這個故事是私人的。選擇「知道連結的人」即可分享。"
+            : "This story is private. Choose “Anyone with the link” to share it."}
+        </p>
       ) : error ? (
         <>
           <p role="alert" className="error">
-            {error}
+            {zh
+              ? "無法載入分享連結，請重試。"
+              : "The share link could not be loaded. Please retry."}
           </p>
           <button
             className="button secondary"
             type="button"
             onClick={() => setRequest({ path: `/t/${encodeURIComponent(id)}` })}
           >
-            Retry share link
+            {zh ? "重新載入分享連結" : "Retry share link"}
           </button>
         </>
       ) : url ? (
         <>
-          <label htmlFor="canonical-share-link">Share URL</label>
+          <label htmlFor="canonical-share-link">
+            {zh ? "分享網址" : "Share URL"}
+          </label>
           <input
             id="canonical-share-link"
             readOnly
@@ -2470,14 +2744,16 @@ function ShareLink({
             onFocus={(event) => event.currentTarget.select()}
           />
           <a className="text-button" href={url}>
-            Open shared timeline
+            {zh ? "開啟分享的時間軸" : "Open shared timeline"}
           </a>
           <p className="field-help">
-            This link stays the same when you add more moments.
+            {zh
+              ? "新增時刻後，這個連結保持不變。"
+              : "This link stays the same when you add more moments."}
           </p>
         </>
       ) : (
-        <p role="status">Loading share link…</p>
+        <p role="status">{zh ? "正在載入分享連結…" : "Loading share link…"}</p>
       )}
     </section>
   );

@@ -83,18 +83,23 @@ export function putFixture(key: string, bytes: Buffer) {
     "image/png",
   ]);
 }
-export async function seedLibrary(context: BrowserContext) {
+export async function seedLibrary(
+  context: BrowserContext,
+  { empty = false } = {},
+) {
   const suffix = randomUUID();
   const owner = `us_browser_${suffix}`;
   const token = randomBytes(32).toString("base64url");
   const hash = createHash("sha256").update(token).digest("hex");
   const now = new Date().toISOString();
   const expiry = new Date(Date.now() + 3_600_000).toISOString();
-  const rows = [
-    { name: "Coastal light.png", width: 600, height: 400, tone: 0 },
-    { name: "A quiet afternoon.png", width: 400, height: 600, tone: 1 },
-    { name: "Mountain air.png", width: 600, height: 400, tone: 2 },
-  ];
+  const rows = empty
+    ? []
+    : [
+        { name: "Coastal light.png", width: 600, height: 400, tone: 0 },
+        { name: "A quiet afternoon.png", width: 400, height: 600, tone: 1 },
+        { name: "Mountain air.png", width: 600, height: 400, tone: 2 },
+      ];
   const sql = [
     `INSERT INTO users (id,email,display_name,created_at,updated_at) VALUES ('${owner}','${suffix}@example.test','Alex','${now}','${now}');`,
     `INSERT INTO usage_quotas (user_id,storage_limit_bytes,max_asset_bytes,timeline_limit,link_limit,updated_at) VALUES ('${owner}',1073741824,262144000,10,100,'${now}');`,

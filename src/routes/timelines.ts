@@ -31,13 +31,13 @@ type TimelineChronologicalOverviewRow = TimelineReadPosition & {
 };
 type TimelineDetailRow = {
   id: string;
-  asset_id: string;
+  asset_id: string | null;
   position: number;
   caption: string;
   event_at: string | null;
-  asset_summary_id: string;
-  asset_kind: string;
-  asset_original_name: string;
+  asset_summary_id: string | null;
+  asset_kind: string | null;
+  asset_original_name: string | null;
   asset_width: number | null;
   asset_height: number | null;
   asset_duration_ms: number | null;
@@ -264,7 +264,7 @@ timelines.get("/:id/items", async (context) => {
         a.original_name AS asset_original_name, a.width AS asset_width,
         a.height AS asset_height, a.duration_ms AS asset_duration_ms
       FROM timeline_items i
-      JOIN assets a ON a.id = i.asset_id AND a.owner_id = i.owner_id
+      LEFT JOIN assets a ON a.id = i.asset_id AND a.owner_id = i.owner_id
       WHERE i.timeline_id = ? AND i.owner_id = ? ${selector.sql}
       ORDER BY i.position, i.id LIMIT ?`).bind(
       id,
@@ -287,14 +287,17 @@ timelines.get("/:id/items", async (context) => {
       position: item.position,
       caption: item.caption,
       event_at: item.event_at === null ? null : JSON.parse(item.event_at),
-      asset: {
-        id: item.asset_summary_id,
-        kind: item.asset_kind,
-        original_name: item.asset_original_name,
-        width: item.asset_width,
-        height: item.asset_height,
-        duration_ms: item.asset_duration_ms,
-      },
+      asset:
+        item.asset_id === null
+          ? null
+          : {
+              id: item.asset_summary_id,
+              kind: item.asset_kind,
+              original_name: item.asset_original_name,
+              width: item.asset_width,
+              height: item.asset_height,
+              duration_ms: item.asset_duration_ms,
+            },
     })),
     next_cursor: nextReadCursor(rows, page.length > limit, id),
   });
@@ -346,7 +349,13 @@ timelines.post("/:id/items", async (context) => {
     context.get("user").id,
     context.req.param("id"),
     expected_version,
-    { kind: "append", ...change },
+    {
+      kind: "append",
+      item_id: change.item_id,
+      asset_id: "asset_id" in change ? change.asset_id : null,
+      caption: change.caption,
+      event_at: change.event_at,
+    },
     { includeItems: !minimal },
   );
   if (minimal) return context.body(null, 204);
