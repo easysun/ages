@@ -105,11 +105,15 @@ export function MomentComposer({
       if (added) setPhoto(null);
       else if (job.attempt.state === "consumed")
         setPhotoError(
-          "This photo was already added and the moment has since changed. Review the latest timeline.",
+          zh
+            ? "這張照片已加入時間軸，而該時刻之後已有變更。請查看最新的時間軸。"
+            : "This photo was already added and the moment has since changed. Review the latest timeline.",
         );
       else
         setPhotoError(
-          "Your photo is in your library. You can retry adding it to this timeline.",
+          zh
+            ? "照片已儲存至素材庫，你可以重試將它加入時間軸。"
+            : "Your photo is in your library. You can retry adding it to this timeline.",
         );
     } catch (reason) {
       if (!controller.signal.aborted) {
