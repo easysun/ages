@@ -1941,6 +1941,62 @@ describe("Timeline mutation edge cases", () => {
       [0, 1, 2],
     );
   });
+  it("serializes a reorder against an append without losing either existing item", async () => {
+    await ready();
+    await ready("asset_b");
+    let timeline = await append(await create(), "asset_a", {
+      caption: "First",
+    });
+    timeline = await append(timeline, "asset_b", { caption: "Second" });
+    const originalItems = timeline.items;
+    const reversedIds = originalItems.map((item) => item.id).reverse();
+    const reorderBody = {
+      expected_version: timeline.version,
+      item_ids: reversedIds,
+    };
+    const appendBody = {
+      expected_version: timeline.version,
+      asset_id: "asset_a",
+      caption: "New moment",
+    };
+    const [reorder, added] = await Promise.all([
+      request(`/${timeline.id}/order`, "PUT", reorderBody),
+      request(`/${timeline.id}/items`, "POST", appendBody),
+    ]);
+    expect([
+      [200, 409],
+      [409, 201],
+    ]).toContainEqual([reorder.status, added.status]);
+    const result = await get(timeline.id);
+    expect(result.version).toBe(timeline.version + 1);
+    if (reorder.status === 200) {
+      expect(result.items.map((item) => item.id)).toEqual(reversedIds);
+      expect(result.items.map((item) => item.caption)).toEqual([
+        "Second",
+        "First",
+      ]);
+    } else {
+      expect(result.items.map((item) => item.id).slice(0, 2)).toEqual(
+        originalItems.map((item) => item.id),
+      );
+      expect(result.items.map((item) => item.caption)).toEqual([
+        "First",
+        "Second",
+        "New moment",
+      ]);
+      expect(result.items[2]?.asset_id).toBe("asset_a");
+    }
+    expect(result.items.map((item) => item.position)).toEqual(
+      result.items.map((_, index) => index),
+    );
+    const saved = await snapshot(timeline.id);
+    const retry =
+      reorder.status === 409
+        ? request(`/${timeline.id}/order`, "PUT", reorderBody)
+        : request(`/${timeline.id}/items`, "POST", appendBody);
+    expect((await retry).status).toBe(409);
+    expect(await snapshot(timeline.id)).toEqual(saved);
+  });
   it("serializes reorder against metadata and returns each winner's own batch state", async () => {
     await ready();
     let timeline = await append(await create());
