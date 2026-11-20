@@ -62,7 +62,7 @@ export function createTrackingApp() {
       if (retryAfter !== null)
         context.header("Retry-After", String(retryAfter));
       context.header("Cache-Control", "no-store");
-      context.header("Referrer-Policy", "no-referrer");
+      context.header("Referrer-Policy", "strict-origin");
       context.header("X-Content-Type-Options", "nosniff");
       context.header("X-Robots-Tag", "noindex, nofollow");
       context.header("X-Frame-Options", "DENY");
