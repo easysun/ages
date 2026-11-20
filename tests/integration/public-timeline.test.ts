@@ -110,6 +110,37 @@ async function unavailable(response: Response) {
 }
 
 describe("Canonical public timeline SSR", () => {
+  it("localizes visitor controls without translating story content or leaking private timelines", async () => {
+    await timeline("story", "unlisted", "A personal memory");
+    const zh = await request("/t/story", {
+      headers: { "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8" },
+    });
+    expect(zh.headers.get("cache-control")).toBe("private, no-store");
+    expect(zh.headers.get("x-robots-tag")).toContain("noindex");
+    const html = await zh.text();
+    expect(html).toContain('<html lang="zh-Hant">');
+    expect(html).toContain("檢舉此時間軸");
+    expect(html).toContain("A personal memory");
+    const ranked = await request("/t/story", {
+      headers: { "Accept-Language": "en;q=0.5,zh-TW;q=0.9" },
+    });
+    expect(await ranked.text()).toContain('<html lang="zh-Hant">');
+    const excluded = await request("/t/story", {
+      headers: { "Accept-Language": "zh;q=0,en;q=0.5" },
+    });
+    expect(await excluded.text()).toContain('<html lang="en">');
+    const en = await request("/t/story", {
+      headers: { Cookie: "ages_locale=en", "Accept-Language": "zh-TW" },
+    });
+    expect(await en.text()).toContain('<html lang="en">');
+    await timeline("private-story", "private", "A secret");
+    const hidden = await request("/t/private-story", {
+      headers: { Cookie: "ages_locale=zh-Hant" },
+    });
+    expect(hidden.status).toBe(404);
+    expect(await hidden.text()).not.toContain("A secret");
+  });
+
   it("serves escaped OG and story text without JavaScript and uses the configured canonical origin", async () => {
     const title = 'A <script>alert("title")</script> & memory';
     const caption = 'A <img src=x onerror="alert(1)"> & "moment"';

@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { errorMessage, type LibraryAsset } from "./api";
+import { useLocale } from "./i18n";
 import { type UploadJob, uploadFile } from "./upload";
 
 export type AppendAttempt = {
@@ -31,6 +32,8 @@ export function MomentComposer({
   addPhoto: (asset: LibraryAsset, attempt: AppendAttempt) => Promise<boolean>;
   onUploadError: (reason: unknown) => void;
 }) {
+  const { locale } = useLocale();
+  const zh = locale === "zh-Hant";
   const [writing, setWriting] = useState(false);
   const [text, setText] = useState("");
   const [working, setWorking] = useState(false);
@@ -102,15 +105,19 @@ export function MomentComposer({
       if (added) setPhoto(null);
       else if (job.attempt.state === "consumed")
         setPhotoError(
-          "This photo was already added and the moment has since changed. Review the latest timeline.",
+          zh
+            ? "這張照片已加入時間軸，而該時刻之後已有變更。請查看最新的時間軸。"
+            : "This photo was already added and the moment has since changed. Review the latest timeline.",
         );
       else
         setPhotoError(
-          "Your photo is in your library. You can retry adding it to this timeline.",
+          zh
+            ? "照片已儲存至素材庫，你可以重試將它加入時間軸。"
+            : "Your photo is in your library. You can retry adding it to this timeline.",
         );
     } catch (reason) {
       if (!controller.signal.aborted) {
-        setPhotoError(errorMessage(reason));
+        setPhotoError(errorMessage(reason, locale));
         onUploadError(reason);
       }
     } finally {
@@ -122,8 +129,19 @@ export function MomentComposer({
   }
 
   return (
-    <section className="moment-composer" aria-label="Add to timeline">
-      <h2>{empty ? "Add your first moment" : "Add a moment"}</h2>
+    <section
+      className="moment-composer"
+      aria-label={zh ? "新增至時間軸" : "Add to timeline"}
+    >
+      <h2>
+        {empty
+          ? zh
+            ? "新增第一個時刻"
+            : "Add your first moment"
+          : zh
+            ? "新增時刻"
+            : "Add a moment"}
+      </h2>
       <div className="composer-actions">
         <button
           className="button primary"
@@ -131,13 +149,13 @@ export function MomentComposer({
           disabled={working || disabled}
           onClick={() => fileInput.current?.click()}
         >
-          Upload photo
+          {zh ? "上傳照片" : "Upload photo"}
         </button>
         <input
           hidden
           type="file"
           accept="image/jpeg,image/png,image/webp,image/gif"
-          aria-label="Choose a photo"
+          aria-label={zh ? "選擇照片" : "Choose a photo"}
           ref={fileInput}
           onChange={(event) => {
             const file = event.currentTarget.files?.[0];
@@ -162,7 +180,7 @@ export function MomentComposer({
             textInput.current?.focus();
           }}
         >
-          Write text
+          {zh ? "撰寫文字" : "Write text"}
         </button>
         <button
           className="text-button"
@@ -172,15 +190,17 @@ export function MomentComposer({
           disabled={working}
           onClick={openLibrary}
         >
-          Add moments
+          {zh ? "新增時刻" : "Add moments"}
         </button>
         <span className="field-help" id="composer-library-hint">
-          From your library
+          {zh ? "從素材庫選擇" : "From your library"}
         </span>
       </div>
       {writing ? (
         <form className="text-composer" onSubmit={saveText}>
-          <label htmlFor="new-moment-text">Moment text</label>
+          <label htmlFor="new-moment-text">
+            {zh ? "時刻文字" : "Moment text"}
+          </label>
           <textarea
             ref={textInput}
             id="new-moment-text"
@@ -217,7 +237,7 @@ export function MomentComposer({
                 textAttempt.current?.state === "consumed"
               }
             >
-              Add text moment
+              {zh ? "新增文字時刻" : "Add text moment"}
             </button>
             <button
               type="button"
@@ -225,7 +245,7 @@ export function MomentComposer({
               disabled={working}
               onClick={closeText}
             >
-              Cancel
+              {zh ? "取消" : "Cancel"}
             </button>
           </div>
         </form>
@@ -233,10 +253,16 @@ export function MomentComposer({
       {working && photo ? (
         <p role="status" className="field-help">
           {photo.asset
-            ? "Adding to timeline…"
+            ? zh
+              ? "正在加入時間軸…"
+              : "Adding to timeline…"
             : photo.phase === "checking"
-              ? "Checking photo…"
-              : "Uploading photo…"}
+              ? zh
+                ? "正在檢查照片…"
+                : "Checking photo…"
+              : zh
+                ? "正在上傳照片…"
+                : "Uploading photo…"}
         </p>
       ) : null}
       {photoError && photo ? (
@@ -248,7 +274,13 @@ export function MomentComposer({
             disabled={working || disabled || photo.attempt.state === "consumed"}
             onClick={() => void savePhoto(photo)}
           >
-            {photo.asset ? "Retry adding photo" : "Retry upload"}
+            {photo.asset
+              ? zh
+                ? "重試加入照片"
+                : "Retry adding photo"
+              : zh
+                ? "重試上傳"
+                : "Retry upload"}
           </button>
           <button
             type="button"
@@ -259,7 +291,7 @@ export function MomentComposer({
               setPhotoError("");
             }}
           >
-            Dismiss
+            {zh ? "關閉" : "Dismiss"}
           </button>
         </div>
       ) : null}
