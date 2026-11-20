@@ -3024,3 +3024,28 @@ progress::-moz-progress-bar {
   color: var(--muted);
   font-size: 13px;
 }
+
+.locale-selector {
+  flex: none;
+}
+.locale-selector select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+
+.locale-selector .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
