@@ -52,7 +52,7 @@ it("limits random valid-format tickets per trusted IP with an atomic shared buck
   const limited = results.find((r) => r.status === 429);
   expect(limited?.headers.get("Retry-After")).toBe("45");
   expect(limited?.headers.get("Cache-Control")).toBe("no-store");
-  expect(limited?.headers.get("Referrer-Policy")).toBe("no-referrer");
+  expect(limited?.headers.get("Referrer-Policy")).toBe("strict-origin");
   expect(limited?.headers.get("Set-Cookie")).toBeNull();
   expect(limited?.headers.get("Access-Control-Allow-Origin")).toBeNull();
   expect((await request("203.0.113.2")).status).toBe(404);
