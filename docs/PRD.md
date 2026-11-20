@@ -46,6 +46,26 @@ sharing with server-rendered OG metadata, then a fourth appended photo. See
   size and file content before completion, and finalize idempotently.
   Storage cleanup and reconciliation must be safe under retries and races.
 
+### Images launch usage and upgrade experience
+
+- The Phase 1 Images owner experience at `im.ages.tw` shows a labelled storage
+  meter and percentage for positive allowances, remaining capacity, and the
+  distinction between completed usage and pending upload reservations. A zero
+  allowance is a clearly explained exhausted state without a calculated percent.
+  If an image-count entitlement is
+  actually enforced, show a second count meter with used/allowed/remaining;
+  otherwise show only an informational image count without a fake limit.
+- Reuse the authoritative D1-backed account quota and existing Library progress
+  UI. Any Images-specific or count-based quota must first establish server-side
+  ownership, atomic admission, Trash/retention counting, and cross-product
+  Asset reuse semantics. Specific Free and paid plan capacity entitlements
+  remain proposals until separately approved.
+- Offer a discoverable informational **Upgrade plan** entry, linked to the
+  official `https://ages.tw/pricing` page and visibly stating that subscriptions
+  are not yet available. Do not create payment sessions, activate subscriptions,
+  or imply an upgrade took effect while the merchant and payment gates remain
+  incomplete. See [images-quota-and-upgrade.md](images-quota-and-upgrade.md).
+
 ### Sharing, access, and recovery
 
 - Assets and timelines default to private. Unlisted pages are accessible by
@@ -87,6 +107,9 @@ support received under the creator's plan. Specific plan features, storage
 limits, annual pricing, and provider charges remain open until confirmed.
 The official pricing page does not advertise a free trial. Do not advertise or
 activate checkout while payment integration and merchant review remain incomplete.
+An Images quota-panel upgrade link is informational only until paid entitlements
+are approved and enabled; unpublished per-plan storage and image-count limits
+must not be represented as purchasable benefits.
 
 Before paid launch, durable idempotent checkout, verified and deduplicated
 provider events, correct entitlement transitions, refunds, dispute handling,
@@ -119,6 +142,9 @@ Release acceptance must cover:
 - Anonymous and cross-owner access denial for private content and media.
 - Expired or revoked links, unlisted noindex, and protected preview images.
 - Upload retries, incomplete uploads, corrupted files, quota races, and cleanup.
+- Images storage and optional enforced image-count usage/remaining indicators,
+  quota boundary and concurrency states, bilingual accessibility, and a clearly
+  unavailable-but-future-ready upgrade link without payment-side effects.
 - A referenced Asset is protected from trash. An unreferenced Asset can be
   trashed and restored without affecting other stories or media.
 - English and Traditional Chinese plan presentation, prices, support contact,
