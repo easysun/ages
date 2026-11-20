@@ -233,3 +233,24 @@ test("first-time language selection honors supported browser preferences after a
   await page.reload();
   await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
 });
+
+test("browser preferences work when storage is blocked and no cookie exists", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new DOMException("blocked", "SecurityError");
+      },
+    });
+    Object.defineProperty(navigator, "language", { get: () => "fr-FR" });
+    Object.defineProperty(navigator, "languages", {
+      get: () => ["fr-FR", "zh-TW"],
+    });
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
+});

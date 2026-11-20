@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 
-import { type Locale, supportedLocale } from "./locale";
+import { browserLocale, type Locale, supportedLocale } from "./locale";
 
 export type { Locale } from "./locale";
 
@@ -87,15 +87,7 @@ function initialLocale(): Locale {
   } catch {
     // Fall back to the browser language when cookies are unavailable.
   }
-  const languages = navigator.languages?.length
-    ? navigator.languages
-    : [navigator.language];
-  for (const language of languages) {
-    const normalized = language.toLowerCase();
-    if (/^zh(-|$)/.test(normalized)) return "zh-Hant";
-    if (/^en(-|$)/.test(normalized)) return "en";
-  }
-  return "en";
+  return browserLocale(navigator.languages, navigator.language);
 }
 
 export function LocaleProvider({ children }: { children: ReactNode }) {

@@ -7,3 +7,16 @@ export function supportedLocale(
   if (value === "en" || value === "zh-Hant") return value;
   return null;
 }
+
+export function browserLocale(
+  languages: readonly string[] | undefined,
+  language: string,
+): Locale {
+  const preferences = languages?.length ? languages : [language];
+  for (const preference of preferences) {
+    const normalized = preference.toLowerCase();
+    if (/^zh(-|$)/.test(normalized)) return "zh-Hant";
+    if (/^en(-|$)/.test(normalized)) return "en";
+  }
+  return "en";
+}
