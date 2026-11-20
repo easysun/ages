@@ -36,6 +36,36 @@ test("language selection persists across reload and updates the document and nav
   await expect(language).toHaveValue("en");
 });
 
+test("a saved Taiwan locale takes precedence and survives reload", async ({
+  page,
+  context,
+}) => {
+  await context.addCookies([
+    { name: "ages_locale", value: "en", url: e2eOrigin },
+  ]);
+  await page.addInitScript(() => {
+    if (!window.localStorage.getItem("ages_locale")) {
+      window.localStorage.setItem("ages_locale", "zh-TW");
+    }
+  });
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByLabel("Language / 語言")).toHaveValue("zh-Hant");
+  await expect(
+    page.getByRole("heading", { name: "珍藏你的每個時刻。" }),
+  ).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("ages_locale")))
+    .toBe("zh-Hant");
+  expect(
+    (await context.cookies()).find((cookie) => cookie.name === "ages_locale")
+      ?.value,
+  ).toBe("zh-Hant");
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-Hant");
+  await expect(page.getByLabel("Language / 語言")).toHaveValue("zh-Hant");
+});
+
 test("first-time visitors can select Chinese before signing in", async ({
   page,
 }) => {
