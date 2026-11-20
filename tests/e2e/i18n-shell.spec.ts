@@ -94,6 +94,12 @@ test("Chinese owners can start a timeline and write a text moment", async ({
   await page.goto("/timelines");
   await page.getByLabel("Language / 語言").selectOption("zh-Hant");
   await expect(page.getByRole("heading", { name: "你的時間軸" })).toBeVisible();
+  await expect(
+    page.getByText("新建的時間軸預設為私人，原始媒體會保留在素材庫。"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("你的第一個故事，從一個時刻開始。"),
+  ).toBeVisible();
   await page.getByLabel("新時間軸標題").fill("旅行日記");
   await page.getByRole("button", { name: "建立時間軸" }).click();
   await expect(page.getByRole("heading", { name: "旅行日記" })).toBeVisible();
@@ -137,6 +143,9 @@ test("Chinese privacy and share settings accurately reflect visibility", async (
 }) => {
   const { owner, ids } = await seedLibrary(context);
   const { id } = seedTimeline(owner, ids, 1);
+  await page.goto("/timelines");
+  await page.getByLabel("Language / 語言").selectOption("zh-Hant");
+  await expect(page.locator(".timeline-tile").getByText("私人")).toBeVisible();
   await page.goto(`/timelines/${id}`);
   await page.getByLabel("Language / 語言").selectOption("zh-Hant");
   await expect(page.getByLabel("可見範圍")).toHaveValue("private");

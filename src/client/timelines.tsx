@@ -345,7 +345,9 @@ function TimelineList({
               : "Create timeline"}
         </button>
         <p className="field-help">
-          New timelines are private. Your original media stays in your library.
+          {zh
+            ? "新建的時間軸預設為私人，原始媒體會保留在素材庫。"
+            : "New timelines are private. Your original media stays in your library."}
         </p>
       </form>
       {error ? (
@@ -356,7 +358,7 @@ function TimelineList({
             className="text-button"
             onClick={() => setRequest({ path: "/api/timelines?limit=30" })}
           >
-            Retry timelines
+            {zh ? "重新載入時間軸" : "Retry timelines"}
           </button>
         </div>
       ) : null}
@@ -381,26 +383,36 @@ function TimelineList({
             <h2>{story.title}</h2>
             <span>
               {story.visibility === "private"
-                ? "Private"
+                ? zh
+                  ? "私人"
+                  : "Private"
                 : story.visibility === "unlisted"
-                  ? "Anyone with the link"
-                  : "Public"}
+                  ? zh
+                    ? "知道連結的人"
+                    : "Anyone with the link"
+                  : zh
+                    ? "公開"
+                    : "Public"}
             </span>
           </a>
         ))}
       </div>
       {loading ? (
-        <p role="status">Opening timelines…</p>
+        <p role="status">{zh ? "正在載入時間軸…" : "Opening timelines…"}</p>
       ) : cursor ? (
         <button
           type="button"
           className="button secondary"
           onClick={() => void more()}
         >
-          More timelines
+          {zh ? "更多時間軸" : "More timelines"}
         </button>
       ) : stories.length === 0 && !error ? (
-        <p className="empty-state">Your first story starts with a moment.</p>
+        <p className="empty-state">
+          {zh
+            ? "你的第一個故事，從一個時刻開始。"
+            : "Your first story starts with a moment."}
+        </p>
       ) : null}
     </main>
   );
