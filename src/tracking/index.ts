@@ -3,7 +3,7 @@ import { consumeLimit } from "../abuse/limits";
 import { ApiError } from "../http/errors";
 import { type TrackingWorkerBindings, trackingPageOrigins } from "./config";
 import { escapeHtml, renderTrackingInterstitial } from "./interstitial";
-import { readTrackingTicket } from "./tickets";
+import { readTrackingTicket, tokenPattern } from "./tickets";
 
 export function createTrackingApp() {
   const app = new Hono<{ Bindings: TrackingWorkerBindings }>();
@@ -42,6 +42,8 @@ export function createTrackingApp() {
       requestUrl.hash !== ""
     )
       throw new ApiError("NOT_FOUND");
+    const token = context.req.param("token");
+    if (!tokenPattern.test(token)) throw new ApiError("NOT_FOUND");
     // Only the edge-provided client IP is trusted; never use forwarded headers.
     const ip =
       context.req.header("CF-Connecting-IP") ||
@@ -64,12 +66,6 @@ export function createTrackingApp() {
       context.header("X-Content-Type-Options", "nosniff");
       context.header("X-Robots-Tag", "noindex, nofollow");
       context.header("X-Frame-Options", "DENY");
-      const token = context.req.param("token");
-      if (!/^[0-9a-f]{64}$/.test(token))
-        return context.text(
-          unavailable ? "Unavailable" : "Too many requests.",
-          status,
-        );
       context.header(
         "Content-Security-Policy",
         `default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action ${origins.appOrigin}`,
@@ -87,14 +83,10 @@ export function createTrackingApp() {
         status,
       );
     }
-    const view = await readTrackingTicket(
-      context.env.DB,
-      context.req.param("token"),
-      new Date(),
-    );
+    const view = await readTrackingTicket(context.env.DB, token, new Date());
     if (!view) throw new ApiError("NOT_FOUND");
     const { html, contentSecurityPolicy } = await renderTrackingInterstitial(
-      context.req.param("token"),
+      token,
       view,
       origins,
     );

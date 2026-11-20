@@ -63,7 +63,7 @@ it("limits random valid-format tickets per trusted IP with an atomic shared buck
     },
     bindings,
   );
-  expect(malicious.status).toBe(429);
+  expect(malicious.status).toBe(404);
   expect(await malicious.text()).not.toContain("<script>");
 
   const stored = JSON.stringify(
@@ -73,6 +73,29 @@ it("limits random valid-format tickets per trusted IP with an atomic shared buck
   expect(stored).not.toContain(token);
   vi.setSystemTime(initialTime + 45_000);
   expect((await request("203.0.113.1")).status).toBe(404);
+});
+
+it("rejects malformed ticket paths before consuming database or client quota", async () => {
+  const prepare = vi.spyOn(env.DB, "prepare");
+  try {
+    const response = await app.request(
+      `${origin}/favicon.ico`,
+      { headers: { "CF-Connecting-IP": "203.0.113.3" } },
+      bindings,
+    );
+    expect(response.status).toBe(404);
+    expect(prepare).not.toHaveBeenCalled();
+  } finally {
+    prepare.mockRestore();
+  }
+  expect((await request("203.0.113.3")).status).toBe(404);
+  const scope = await hashToken("tracking:203.0.113.3");
+  const row = await env.DB.prepare(
+    "SELECT count FROM rate_limits WHERE scope_hash = ?",
+  )
+    .bind(scope)
+    .first<{ count: number }>();
+  expect(row?.count).toBe(1);
 });
 
 it("requires the Cloudflare client IP outside local development", async () => {
